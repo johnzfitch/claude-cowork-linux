@@ -20,7 +20,7 @@
 
 ## ![](.github/assets/icons/info-32x32.png) Overview
 
-Claude Cowork is a special Claude Desktop build that can autonomously work inside a folder on your machine—creating, editing, and organizing files as it executes multi-step plans. Cowork is currently a **macOS-only preview** backed by a sandboxed Linux VM; this repo reverse-engineers and stubs the macOS-native pieces so Cowork can run directly on Linux (x86_64) with an X11 UI—no VM and no macOS required.
+Claude Cowork is a special Claude Desktop build that works inside a folder you point it at—it reads, writes, and organizes files there while it runs a plan. Cowork is currently a **macOS-only preview** backed by a sandboxed Linux VM; this repo reverse-engineers and stubs the macOS-native pieces so Cowork can run directly on Linux (x86_64 + X11)—no VM and no macOS required. The stub translates VM paths to host paths so Cowork points at the right files on Linux.
 
 **How it works:**
 
