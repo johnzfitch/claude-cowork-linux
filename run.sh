@@ -17,6 +17,7 @@ mkdir -p "$LOG_DIR"
 rotate_logs() {
     local current="$LOG_DIR/claude-cowork.log"
     if [ -f "$current" ] && [ "$(stat -c%s "$current" 2>/dev/null || echo 0)" -gt "$MAX_LOG_SIZE" ]; then
+        # Rotate: remove oldest, shift others
         rm -f "$LOG_DIR/claude-cowork.$MAX_LOGS.log" 2>/dev/null
         for i in $(seq $((MAX_LOGS - 1)) -1 1); do
             [ -f "$LOG_DIR/claude-cowork.$i.log" ] && mv "$LOG_DIR/claude-cowork.$i.log" "$LOG_DIR/claude-cowork.$((i + 1)).log"
@@ -40,24 +41,13 @@ SESSION_START=$(date '+%Y-%m-%d %H:%M:%S')
 export ELECTRON_ENABLE_LOGGING=1
 
 # Clear trace log for fresh session
-> "$LOG_DIR/claude-swift-trace.log" 2>/dev/null
+> /tmp/claude-swift-trace.log 2>/dev/null
 
-# Detect display server and set appropriate flags
-PLATFORM_FLAGS=""
-if [ "$XDG_SESSION_TYPE" = "wayland" ] || [ -n "$WAYLAND_DISPLAY" ]; then
-    # Native Wayland support
-    PLATFORM_FLAGS="--enable-features=UseOzonePlatform,WaylandWindowDecorations --ozone-platform=wayland"
-    echo "[$(date '+%H:%M:%S')] Running with native Wayland support" >> "$LOG_DIR/claude-cowork.log"
-else
-    # X11 fallback
-    PLATFORM_FLAGS="--enable-features=UseOzonePlatform --ozone-platform=x11"
-    echo "[$(date '+%H:%M:%S')] Running with X11" >> "$LOG_DIR/claude-cowork.log"
-fi
-
-# Run with logging
+# Run with logging - stderr to log, stdout to both terminal and log
 exec "$ELECTRON" "$APP_DIR" \
     --disable-gpu-sandbox \
+    --enable-features=UseOzonePlatform \
+    --ozone-platform=x11 \
     --disable-gpu-compositing \
-    $PLATFORM_FLAGS \
     "$@" \
     2>> "$LOG_DIR/claude-cowork.log"
