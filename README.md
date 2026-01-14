@@ -48,6 +48,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 - **p7zip** (to extract the macOS DMG)
 - **Claude Desktop DMG** (download from [claude.ai/download](https://claude.ai/download))
 - **Claude Max subscription** for Cowork access
+- **One-time sudo** (recommended) to create the `/sessions` symlink
 
 ---
 
@@ -71,6 +72,7 @@ The installer will:
 - Install our stub modules
 - Create required directories
 - Install Electron
+- Prompt once for `sudo` to create `/sessions` as a symlink into user space (required by the Claude Code binary)
 
 > [!IMPORTANT]
 > You must provide your own Claude Desktop DMG file. This repo does not include Anthropic's proprietary code.
@@ -110,7 +112,7 @@ The stub translates VM paths to host paths:
 | `/sessions/...` | `~/.local/share/claude-cowork/sessions/...` |
 
 > [!NOTE]
-> The binary still requires `/sessions` to exist on the host. We create a symlink to user space for security.
+> The Claude Code binary expects `/sessions` to exist. `install.sh` creates `/sessions` as a symlink into `~/.local/share/claude-cowork/sessions` (requires `sudo` once) so you don't need a world-writable root directory.
 
 ---
 
