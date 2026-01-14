@@ -1,19 +1,8 @@
-<picture>
-  <img width="2816" height="1536" alt="claude-cowork-linux" src="https://github.com/user-attachments/assets/b50a50bb-2404-4153-a312-aa5784a16928" />
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/icons/linux.png">
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/icons/linux.png">
-  <img alt="Linux" src=".github/assets/icons/linux.png" width="32" align="left">
-</picture>
-
-# Claude Cowork for Linux
-
-> Running Claude Desktop's Cowork feature on Linux through reverse engineering and native module stubbing.
-
-<br clear="left"/>
-
----
-
 <div align="center">
+
+<img src="https://github.com/user-attachments/assets/b50a50bb-2404-4153-a312-aa5784a16928" alt="Claude Cowork for Linux" width="800">
+
+<br>
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-blue?style=flat-square)
 ![Tested](https://img.shields.io/badge/tested-Arch%20Linux-1793D1?style=flat-square&logo=archlinux&logoColor=white)
@@ -107,10 +96,10 @@ The stub transparently translates VM paths to host paths:
 | VM Path | Host Path |
 |:--------|:----------|
 | `/usr/local/bin/claude` | `~/.config/Claude/claude-code-vm/2.1.5/claude` |
-| `/sessions/...` | `~/.config/Claude/cowork-sessions/...` |
+| `/sessions/...` | `~/.local/share/claude-cowork/sessions/...` |
 
 > [!NOTE]
-> The binary still requires `/sessions` to exist on the host due to hardcoded internal paths.
+> The binary still requires `/sessions` to exist on the host. We create a symlink to user space for security.
 
 ---
 
@@ -240,12 +229,12 @@ if (process.platform === 'linux') {
 <summary><strong>4. Create Required Directories</strong></summary>
 
 ```bash
-# Required - binary has hardcoded path
-sudo mkdir -p /sessions
-sudo chmod 777 /sessions
+# Create user session directory
+mkdir -p ~/.local/share/claude-cowork/sessions
+chmod 700 ~/.local/share/claude-cowork/sessions
 
-# Session storage
-mkdir -p ~/.config/Claude/cowork-sessions
+# Create symlink (requires sudo once)
+sudo ln -s ~/.local/share/claude-cowork/sessions /sessions
 ```
 
 </details>
@@ -267,11 +256,11 @@ npm install electron
 <details>
 <summary><strong>EACCES: permission denied, mkdir '/sessions'</strong></summary>
 
-The Claude binary has hardcoded paths. Create the directory:
+Create a symlink to user space instead of a world-writable directory:
 
 ```bash
-sudo mkdir -p /sessions
-sudo chmod 777 /sessions
+mkdir -p ~/.local/share/claude-cowork/sessions
+sudo ln -s ~/.local/share/claude-cowork/sessions /sessions
 ```
 
 </details>
@@ -282,7 +271,7 @@ sudo chmod 777 /sessions
 JSON parsing issue. The stub uses line buffering to send complete JSON objects. If this persists, check the trace log:
 
 ```bash
-cat /tmp/claude-swift-trace.log
+cat ~/.local/share/claude-cowork/logs/claude-swift-trace.log
 ```
 
 </details>
@@ -304,11 +293,11 @@ Check that:
 Check stderr in the trace log for the actual error:
 
 ```bash
-tail -50 /tmp/claude-swift-trace.log
+tail -50 ~/.local/share/claude-cowork/logs/claude-swift-trace.log
 ```
 
 Common issues:
-- Missing `/sessions` directory
+- Missing `/sessions` symlink
 - Binary not found
 - Permission issues
 
@@ -332,18 +321,18 @@ Ensure the stub has methods on the `this.vm` object, not just the class.
 
 ```bash
 # Clear old logs
-rm -f /tmp/claude-swift-trace.log
+rm -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
 
 # Run with output capture
 ./run.sh 2>&1 | tee /tmp/claude-full.log
 
 # In another terminal, watch the trace
-tail -f /tmp/claude-swift-trace.log
+tail -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
 ```
 
 ### Trace Log Format
 
-The stub writes to `/tmp/claude-swift-trace.log`:
+The stub writes to `~/.local/share/claude-cowork/logs/claude-swift-trace.log`:
 
 ```
 [timestamp] === MODULE LOADING ===
@@ -357,7 +346,19 @@ The stub writes to `/tmp/claude-swift-trace.log`:
 
 ---
 
-## ![](.github/assets/icons/shield-security-protection-16x16.png) Legal Notice
+## ![](.github/assets/icons/shield-security-protection-16x16.png) Security
+
+This project includes security hardening:
+
+- **Command injection prevention** - Uses `execFile()` instead of `exec()`
+- **Path traversal protection** - Validates session paths
+- **Environment filtering** - Allowlist of safe environment variables
+- **Secure permissions** - Session directory uses 700, not 777
+- **Symlink for /sessions** - No world-writable directories
+
+---
+
+## Legal Notice
 
 > [!CAUTION]
 > This project is for **educational and research purposes**. Claude Desktop is proprietary software owned by Anthropic PBC. Use of Cowork requires a valid Claude Max subscription.
