@@ -1,0 +1,378 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/icons/linux.png">
+  <source media="(prefers-color-scheme: light)" srcset=".github/assets/icons/linux.png">
+  <img alt="Linux" src=".github/assets/icons/linux.png" width="32" align="left">
+</picture>
+
+# Claude Cowork for Linux
+
+> Running Claude Desktop's Cowork feature on Linux through reverse engineering and native module stubbing.
+
+<br clear="left"/>
+
+---
+
+<div align="center">
+
+![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-blue?style=flat-square)
+![Tested](https://img.shields.io/badge/tested-Arch%20Linux-1793D1?style=flat-square&logo=archlinux&logoColor=white)
+![Status](https://img.shields.io/badge/status-Working-success?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+
+**[Quick Start](#-quick-start)** · **[How It Works](#-how-it-works)** · **[Manual Setup](#-manual-setup)** · **[Troubleshooting](#-troubleshooting)**
+
+</div>
+
+---
+
+## ![](.github/assets/icons/info-32x32.png) Overview
+
+Claude Cowork is a premium feature in Claude Desktop ($200/month Max subscription) that provides a local AI coding assistant with file access and terminal execution capabilities. It's officially **macOS-only**, using Apple's Virtualization Framework to run a sandboxed Linux VM.
+
+This project enables Cowork on Linux by:
+
+| Step | Description |
+|:-----|:------------|
+| ![](.github/assets/icons/script.png) **Stubbing** | Replace the native Swift addon (`@ant/claude-swift`) with JavaScript |
+| ![](.github/assets/icons/console.png) **Direct Execution** | Run the Claude Code binary directly (no VM needed—we're already on Linux!) |
+| ![](.github/assets/icons/folder.png) **Path Translation** | Convert VM paths to host paths transparently |
+| ![](.github/assets/icons/lock.png) **Platform Spoofing** | Send macOS headers so the server enables the feature |
+
+---
+
+## ![](.github/assets/icons/checkbox.png) Requirements
+
+- **Linux x86_64** (tested on Arch Linux, kernel 6.17.9)
+- **Node.js / npm** (for Electron)
+- **p7zip** (to extract the macOS DMG)
+- **Claude Desktop DMG** (download from [claude.ai/download](https://claude.ai/download))
+- **Claude Max subscription** ($200/month) for Cowork access
+
+---
+
+## ![](.github/assets/icons/rocket.png) Quick Start
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/johnzfitch/claude-cowork-linux.git
+cd claude-cowork-linux
+
+# 2. Run the installer (provide path to Claude Desktop DMG)
+./install.sh ~/Downloads/Claude-*.dmg
+
+# 3. Launch
+./run.sh
+```
+
+The installer will:
+- Extract the Claude Desktop app from the DMG
+- Apply Linux compatibility patches
+- Install our stub modules
+- Create required directories
+- Install Electron
+
+> [!IMPORTANT]
+> You must provide your own Claude Desktop DMG file. This repo does not include Anthropic's proprietary code.
+
+---
+
+## ![](.github/assets/icons/settings.png) Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Claude Desktop (Electron)                    │
+├─────────────────────────────────────────────────────────────────┤
+│  Main Process (index.js)                                        │
+│  ├── Platform headers: darwin/14.0 (spoofed)                    │
+│  ├── Ege() function: patched for Linux support                  │
+│  └── LocalAgentModeSessionManager                               │
+├─────────────────────────────────────────────────────────────────┤
+│  @ant/claude-swift (STUBBED)                                    │
+│  ├── vm.setEventCallbacks() → Register process event handlers   │
+│  ├── vm.startVM() → No-op (we're already on Linux)              │
+│  ├── vm.spawn() → Spawns real processes via child_process       │
+│  ├── vm.kill() → Kills spawned processes                        │
+│  └── vm.writeStdin() → Writes to process stdin                  │
+├─────────────────────────────────────────────────────────────────┤
+│  Claude Code Binary                                             │
+│  └── ~/.config/Claude/claude-code-vm/2.1.5/claude (ELF x86_64) │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Path Translation
+
+The stub transparently translates VM paths to host paths:
+
+| VM Path | Host Path |
+|:--------|:----------|
+| `/usr/local/bin/claude` | `~/.config/Claude/claude-code-vm/2.1.5/claude` |
+| `/sessions/...` | `~/.config/Claude/cowork-sessions/...` |
+
+> [!NOTE]
+> The binary still requires `/sessions` to exist on the host due to hardcoded internal paths.
+
+---
+
+## ![](.github/assets/icons/key.png) How It Works
+
+<details>
+<summary><strong>1. Platform Spoofing</strong></summary>
+
+The app sends these headers to Anthropic's servers:
+
+```javascript
+'Anthropic-Client-OS-Platform': 'darwin'
+'Anthropic-Client-OS-Version': '14.0'
+```
+
+This makes the server think we're on macOS 14 (Sonoma), enabling Cowork features.
+
+</details>
+
+<details>
+<summary><strong>2. Platform Gate Bypass</strong></summary>
+
+The `Ege()` function checks if Cowork is supported. We patch it to return `{status: "supported"}` for Linux:
+
+```javascript
+if (process.platform === 'linux') {
+  return { status: "supported" };
+}
+```
+
+</details>
+
+<details>
+<summary><strong>3. Swift Addon Stub</strong></summary>
+
+The original `@ant/claude-swift` uses Apple's Virtualization Framework. Our stub:
+
+- Implements the same API surface
+- Uses Node.js `child_process` to spawn real processes
+- Line-buffers JSON output for proper stream parsing
+- Translates VM paths to host paths
+
+Key insight: The app calls `Si()` which returns `module.default.vm`, so methods must be on the `vm` object.
+
+</details>
+
+<details>
+<summary><strong>4. Direct Execution</strong></summary>
+
+On macOS, Cowork runs a Linux VM. On Linux, we skip the VM entirely and run the Claude Code binary directly on the host. This is actually simpler and faster!
+
+The binary is a Bun-compiled executable at:
+```
+~/.config/Claude/claude-code-vm/2.1.5/claude
+```
+
+</details>
+
+---
+
+## ![](.github/assets/icons/folder.png) Project Structure
+
+```
+claude-cowork-linux/
+├── stubs/
+│   └── @ant/
+│       ├── claude-swift/
+│       │   └── js/index.js       # Swift addon stub (VM emulation)
+│       └── claude-native/
+│           └── index.js          # Native utilities stub
+├── .github/
+│   └── assets/icons/             # Documentation icons
+├── install.sh                    # Automated installer
+├── run.sh                        # Launch script
+└── README.md                     # This file
+```
+
+After running `install.sh`, the `app/` directory will contain the extracted Claude Desktop.
+
+---
+
+## ![](.github/assets/icons/console.png) Manual Setup
+
+If the automated installer doesn't work, follow these steps:
+
+<details>
+<summary><strong>1. Extract Claude Desktop from DMG</strong></summary>
+
+```bash
+# Extract DMG with 7z
+7z x Claude-*.dmg -o/tmp/claude-extract
+
+# Copy app resources
+mkdir -p app
+cp -r "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app/"* app/
+
+# Cleanup
+rm -rf /tmp/claude-extract
+```
+
+</details>
+
+<details>
+<summary><strong>2. Install Stub Modules</strong></summary>
+
+```bash
+# Copy our stubs over the original modules
+cp -r stubs/@ant/* app/node_modules/@ant/
+```
+
+</details>
+
+<details>
+<summary><strong>3. Patch index.js</strong></summary>
+
+Edit `app/.vite/build/index.js` and find the `Ege()` function. Add this at the start:
+
+```javascript
+if (process.platform === 'linux') {
+  return { status: "supported" };
+}
+```
+
+</details>
+
+<details>
+<summary><strong>4. Create Required Directories</strong></summary>
+
+```bash
+# Required - binary has hardcoded path
+sudo mkdir -p /sessions
+sudo chmod 777 /sessions
+
+# Session storage
+mkdir -p ~/.config/Claude/cowork-sessions
+```
+
+</details>
+
+<details>
+<summary><strong>5. Install Electron</strong></summary>
+
+```bash
+npm init -y
+npm install electron
+```
+
+</details>
+
+---
+
+## ![](.github/assets/icons/warning-24x24.png) Troubleshooting
+
+<details>
+<summary><strong>EACCES: permission denied, mkdir '/sessions'</strong></summary>
+
+The Claude binary has hardcoded paths. Create the directory:
+
+```bash
+sudo mkdir -p /sessions
+sudo chmod 777 /sessions
+```
+
+</details>
+
+<details>
+<summary><strong>Unexpected non-whitespace character after JSON</strong></summary>
+
+JSON parsing issue. The stub uses line buffering to send complete JSON objects. If this persists, check the trace log:
+
+```bash
+cat /tmp/claude-swift-trace.log
+```
+
+</details>
+
+<details>
+<summary><strong>Failed to start Claude's workspace</strong></summary>
+
+Check that:
+
+1. The swift stub is properly loaded (check for `[claude-swift-stub] LOADING MODULE` in logs)
+2. The Claude binary exists at `~/.config/Claude/claude-code-vm/2.1.5/claude`
+3. You have Cowork enabled on your account (Max subscription)
+
+</details>
+
+<details>
+<summary><strong>Process exits immediately (code=1)</strong></summary>
+
+Check stderr in the trace log for the actual error:
+
+```bash
+tail -50 /tmp/claude-swift-trace.log
+```
+
+Common issues:
+- Missing `/sessions` directory
+- Binary not found
+- Permission issues
+
+</details>
+
+<details>
+<summary><strong>t.setEventCallbacks is not a function</strong></summary>
+
+This means the stub isn't exporting methods correctly. The app expects:
+- `module.default.vm.setEventCallbacks()` — NOT on the class directly
+
+Ensure the stub has methods on the `this.vm` object, not just the class.
+
+</details>
+
+---
+
+## ![](.github/assets/icons/console.png) Development
+
+### Enable Debug Logging
+
+```bash
+# Clear old logs
+rm -f /tmp/claude-swift-trace.log
+
+# Run with output capture
+./run.sh 2>&1 | tee /tmp/claude-full.log
+
+# In another terminal, watch the trace
+tail -f /tmp/claude-swift-trace.log
+```
+
+### Trace Log Format
+
+The stub writes to `/tmp/claude-swift-trace.log`:
+
+```
+[timestamp] === MODULE LOADING ===
+[timestamp] vm.setEventCallbacks() CALLED
+[timestamp] vm.startVM() bundlePath=... memoryGB=4
+[timestamp] vm.spawn() id=... cmd=... args=[...]
+[timestamp] Translated command: /usr/local/bin/claude -> ~/.config/Claude/...
+[timestamp] stdout line: {"type":"stream_event",...}
+[timestamp] Process ... exited: code=0
+```
+
+---
+
+## ![](.github/assets/icons/shield-security-protection-16x16.png) Legal Notice
+
+> [!CAUTION]
+> This project is for **educational and research purposes**. Claude Desktop is proprietary software owned by Anthropic PBC. Use of Cowork requires a valid Claude Max subscription.
+>
+> This repository contains only stub implementations and patches—**not** the Claude Desktop application itself. You must obtain Claude Desktop directly from Anthropic.
+
+---
+
+## Credits
+
+Reverse engineered and implemented by examining the Claude Desktop Electron app structure, binary analysis with pyghidra, and iterative debugging.
+
+---
+
+<div align="center">
+
+**MIT License** · See [LICENSE](LICENSE) for details
+
+</div>

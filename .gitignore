@@ -1,0 +1,23 @@
+# Extracted Claude Desktop app (proprietary - do not commit)
+app/
+
+# Node modules
+node_modules/
+
+# npm
+package-lock.json
+
+# Logs
+*.log
+/tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
