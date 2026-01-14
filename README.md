@@ -2,7 +2,7 @@
 
 <img src="https://github.com/user-attachments/assets/b50a50bb-2404-4153-a312-aa5784a16928" alt="Claude Cowork for Linux (Unofficial)" width="800">
 
- # Run Claude Cowork on Linux
+ # Claude Cowork on Linux
  ### No macOS, no VM required.
 
 <br>
