@@ -1,0 +1,12 @@
+{
+  "name": "claude-cowork-linux",
+  "version": "1.0.0",
+  "description": "Claude Cowork for Linux",
+  "main": "app/.vite/build/index.js",
+  "scripts": {
+    "start": "./run.sh"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
