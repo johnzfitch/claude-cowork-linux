@@ -166,19 +166,43 @@ if [ -f "$INDEX_FILE" ]; then
         const file = '$INDEX_FILE';
         let content = fs.readFileSync(file, 'utf8');
 
-        // Find and replace the Ege function
-        const original = 'function Ege(){return process.platform!==\"darwin\"?{status:\"unsupported\",reason:\"Darwin only\"}:process.arch!==\"arm64\"?{status:\"unsupported\",reason:\"arm64 only\"}:z8().major<14?{status:\"unsupported\",reason:\"minimum macOS version not met\"}:{status:\"supported\"}}';
+        // Patch 1: Ege function for platform support
+        const egeOriginal = 'function Ege(){return process.platform!==\"darwin\"?{status:\"unsupported\",reason:\"Darwin only\"}:process.arch!==\"arm64\"?{status:\"unsupported\",reason:\"arm64 only\"}:z8().major<14?{status:\"unsupported\",reason:\"minimum macOS version not met\"}:{status:\"supported\"}}';
 
-        const patched = 'function Ege(){if(process.platform===\"linux\")return{status:\"supported\"};return process.platform!==\"darwin\"?{status:\"unsupported\",reason:\"Darwin only\"}:process.arch!==\"arm64\"?{status:\"unsupported\",reason:\"arm64 only\"}:z8().major<14?{status:\"unsupported\",reason:\"minimum macOS version not met\"}:{status:\"supported\"}}';
+        const egePatched = 'function Ege(){if(process.platform===\"linux\")return{status:\"supported\"};return process.platform!==\"darwin\"?{status:\"unsupported\",reason:\"Darwin only\"}:process.arch!==\"arm64\"?{status:\"unsupported\",reason:\"arm64 only\"}:z8().major<14?{status:\"unsupported\",reason:\"minimum macOS version not met\"}:{status:\"supported\"}}';
 
-        if (content.includes(original)) {
-          content = content.replace(original, patched);
-          fs.writeFileSync(file, content, 'utf8');
-          process.exit(0);
+        if (content.includes(egeOriginal)) {
+          content = content.replace(egeOriginal, egePatched);
+          console.log('Patched: Ege function for platform support');
         } else {
-          console.error('ERROR: Could not find Ege function to patch');
-          process.exit(1);
+          console.error('WARNING: Could not find Ege function to patch');
         }
+
+        // Patch 2: Q7 function for IPC origin validation
+        const q7Original = 'function Q7(t){var r;if(!t.senderFrame)return!1;const e=new URL(t.senderFrame.url);return!!(((r=t.senderFrame)==null?void 0:r.parent)===null&&(e.origin===\"https://claude.ai\"||e.origin===\"https://preview.claude.ai\"||e.origin===\"https://claude.com\"||e.origin===\"https://preview.claude.com\"||globalThis.isDeveloperApprovedLocalOverrideEnabled&&e.hostname===\"localhost\"||e.hostname===\"localhost\"&&ce.app.isPackaged===!1||e.protocol===\"file:\"&&ce.app.isPackaged===!0))}';
+
+        const q7Patched = 'function Q7(t){var r;if(!t.senderFrame)return!1;const e=new URL(t.senderFrame.url);return!!(((r=t.senderFrame)==null?void 0:r.parent)===null&&(e.origin===\"https://claude.ai\"||e.origin===\"https://preview.claude.ai\"||e.origin===\"https://claude.com\"||e.origin===\"https://preview.claude.com\"||globalThis.isDeveloperApprovedLocalOverrideEnabled&&e.hostname===\"localhost\"||e.hostname===\"localhost\"&&ce.app.isPackaged===!1||e.protocol===\"file:\"&&(ce.app.isPackaged===!0||process.platform===\"linux\")))}';
+
+        if (content.includes(q7Original)) {
+          content = content.replace(q7Original, q7Patched);
+          console.log('Patched: Q7 function for IPC origin validation on Linux');
+        } else {
+          console.error('WARNING: Could not find Q7 function to patch (may already be patched)');
+        }
+
+        // Patch 3: \$n variable for feature availability (connectors/extensions)
+        const platformOriginal = '\$n=process.platform===\"darwin\"';
+        const platformPatched = '\$n=process.platform===\"darwin\"||process.platform===\"linux\"';
+
+        if (content.includes(platformOriginal)) {
+          content = content.replace(platformOriginal, platformPatched);
+          console.log('Patched: \$n variable to enable extensions/connectors on Linux');
+        } else {
+          console.error('WARNING: Could not find \$n platform check to patch (may already be patched)');
+        }
+
+        fs.writeFileSync(file, content, 'utf8');
+        process.exit(0);
         " || {
             warn "Auto-patch failed - manual patching may be required"
             echo "  See README.md for manual patching instructions"
