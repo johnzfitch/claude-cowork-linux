@@ -334,10 +334,24 @@ const vm = createEmitterObject('vm', {
         proc.removeAllListeners();
       };
 
+      // Buffer stdout to reduce callback frequency (helps prevent renderer overload)
+      let stdoutBuffer = '';
+      let stdoutTimer = null;
+      const STDOUT_FLUSH_DELAY = 16; // ~1 frame
+
       if (proc.stdout) {
         proc.stdout.on('data', (data) => {
-          trace('vm', 'stdout', { id, len: data.length });
-          if (vm._onStdout) vm._onStdout(id, data.toString('utf-8'));
+          stdoutBuffer += data.toString('utf-8');
+          if (!stdoutTimer) {
+            stdoutTimer = setTimeout(() => {
+              if (stdoutBuffer && vm._onStdout) {
+                trace('vm', 'stdout', { id, len: stdoutBuffer.length });
+                vm._onStdout(id, stdoutBuffer);
+              }
+              stdoutBuffer = '';
+              stdoutTimer = null;
+            }, STDOUT_FLUSH_DELAY);
+          }
         });
       }
       if (proc.stderr) {
