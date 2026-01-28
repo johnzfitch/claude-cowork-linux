@@ -1,6 +1,15 @@
 # Extracted Claude Desktop app (proprietary - do not commit)
+app
 app/
+app-extracted/
+linux-app-extracted/
+squashfs-root/
+claude-app-*/
+
+# AppImage and binaries
+*.AppImage
 *.dmg
+swift_addon.node
 
 # Node modules
 node_modules/
@@ -11,6 +20,41 @@ package-lock.json
 # Logs
 *.log
 /tmp/
+
+# Working/investigation files (keep repo clean)
+/archive/
+AGENT_HANDOFF.md
+ARCHITECTURE_MAP.md
+COMPLETE_SYSTEM_MAP.md
+DEBUG_FINDINGS.md
+FILESYSTEM_MAP.md
+FINAL_REPORT.md
+HANDOFF.md
+INSTALLATION_REPORT.md
+SECURITY_ANALYSIS.md
+SECURITY_FIXES.md
+TEST_RESULTS.md
+
+# Debug scripts (not needed for users)
+analyze-logs.sh
+debug-launch.sh
+debug.sh
+test-loader.js
+ipc-handler-setup.js
+scripts/
+
+# Old loader variants
+linux-loader-fixed.js
+linux-loader-minimal.js
+linux-loader-traced.js
+linux-loader-updated.js
+linux-loader-v2.js
+
+# Old scripts
+final-fix.sh
+fix-structure.sh
+install-claude-linux.sh
+claude-launcher-fixed.sh
 
 # Internal docs (may contain paths, session IDs, etc.)
 docs/plans/

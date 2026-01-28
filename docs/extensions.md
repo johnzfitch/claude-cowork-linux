@@ -24,7 +24,7 @@ MCP servers are the primary way to extend Claude Desktop functionality on Linux.
 
 ### Configuration
 
-Edit `~/.config/Claude/claude_desktop_config.json`:
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -136,16 +136,22 @@ This is **non-critical**. The app works without it. This refers to an internal e
 
 ## Directories
 
-Claude Desktop uses these directories on Linux:
+Claude Desktop uses these directories on Linux (macOS-style paths for compatibility):
 
 ```
-~/.config/Claude/
-├── claude_desktop_config.json    # MCP server configuration
-├── Claude Extensions/             # Extension storage (empty for now)
+~/Library/Application Support/Claude/
+├── claude_desktop_config.json     # MCP server configuration
+├── config.json                    # App settings
+├── Claude Extensions/             # Extension storage
 ├── Claude Extensions Settings/    # Extension settings
-├── extensions-installations.json  # Installed extensions registry
-├── extensions-blocklist.json      # Blocked extensions list
-└── logs/                          # Application logs
+├── Projects/                      # Saved projects
+└── Conversations/                 # Chat history
+
+~/Library/Logs/Claude/
+└── startup.log                    # Application logs
+
+~/.local/share/claude-cowork/
+└── logs/                          # Stub trace logs
 ```
 
 ## Recommendations
@@ -204,8 +210,8 @@ You can write your own MCP server in any language. See the MCP documentation:
 
 ### MCP Server Not Appearing
 
-1. Check config syntax: `cat ~/.config/Claude/claude_desktop_config.json | jq .`
-2. Check logs: `tail -f ~/.local/share/claude-cowork/logs/claude-cowork.log`
+1. Check config syntax: `cat ~/Library/Application\ Support/Claude/claude_desktop_config.json | jq .`
+2. Check logs: `tail -f ~/Library/Logs/Claude/startup.log`
 3. Restart Claude Desktop completely
 4. Verify the command works standalone: `npx -y @modelcontextprotocol/server-filesystem --help`
 
@@ -220,4 +226,4 @@ MCP servers run with your user permissions. Make sure:
 
 - MCP Server Directory: https://github.com/modelcontextprotocol/servers
 - MCP Documentation: https://modelcontextprotocol.io/
-- Claude Desktop Config: `~/.config/Claude/claude_desktop_config.json`
+- Claude Desktop Config: `~/Library/Application Support/Claude/claude_desktop_config.json`
