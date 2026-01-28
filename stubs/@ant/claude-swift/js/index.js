@@ -679,6 +679,13 @@ const files = createEmitterObject('files', {
     const { spawn } = require('child_process');
     spawn('xdg-open', [path.dirname(hostPath)], { detached: true, stdio: 'ignore' });
   },
+  openLocalFile: (filePath) => {
+    const hostPath = translateVmPathToHost(filePath);
+    trace('files', 'openLocalFile()', { filePath, hostPath });
+    const { spawn } = require('child_process');
+    spawn('xdg-open', [hostPath], { detached: true, stdio: 'ignore' });
+    return Promise.resolve(true);
+  },
   read: (filePath) => Promise.resolve(fs.readFileSync(filePath, 'utf-8')),
   write: (filePath, content) => { fs.writeFileSync(filePath, content, 'utf-8'); return Promise.resolve(true); },
   exists: (filePath) => Promise.resolve(fs.existsSync(filePath)),
