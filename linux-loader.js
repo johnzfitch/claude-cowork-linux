@@ -362,6 +362,44 @@ patchedElectron = electron;
 console.log('[Electron] Patched systemPreferences + BrowserWindow.prototype + Menu');
 
 // ============================================================
+// 3.5. USER-AGENT SPOOFING - Fixes "Active Sessions" platform detection
+// ============================================================
+// Electron builds User-Agent with OS info. We need to override to show macOS.
+// This prevents the server from detecting "Linux" in the User-Agent header.
+
+const { app, session } = electron;
+
+// Set app-wide User-Agent fallback (used when session UA is not set)
+// Format: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/...
+const macOSUserAgent = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36`;
+
+if (app.userAgentFallback) {
+  const origUA = app.userAgentFallback;
+  // Replace Linux/X11 with macOS in the User-Agent
+  app.userAgentFallback = origUA
+    .replace(/\(X11; Linux [^)]+\)/, '(Macintosh; Intel Mac OS X 10_15_7)')
+    .replace(/Linux/, 'Mac OS X');
+  console.log('[UserAgent] Spoofed app.userAgentFallback');
+}
+
+// Also set on the default session once app is ready
+app.whenReady().then(() => {
+  try {
+    const defaultSession = session.defaultSession;
+    if (defaultSession) {
+      const currentUA = defaultSession.getUserAgent();
+      const spoofedUA = currentUA
+        .replace(/\(X11; Linux [^)]+\)/, '(Macintosh; Intel Mac OS X 10_15_7)')
+        .replace(/Linux/, 'Mac OS X');
+      defaultSession.setUserAgent(spoofedUA);
+      console.log('[UserAgent] Spoofed session User-Agent');
+    }
+  } catch (e) {
+    console.error('[UserAgent] Failed to spoof session UA:', e.message);
+  }
+});
+
+// ============================================================
 // 4. IPC DEBUGGING
 // ============================================================
 
