@@ -190,8 +190,8 @@ class AuthRequest extends EventEmitter {
 
 const nativeStub = {
   // Platform detection
-  platform: 'linux',
-  arch: process.arch,
+  platform: 'darwin',   // Spoofed for Cowork support
+  arch: 'arm64',        // Spoofed for Cowork support
 
   // System integration stubs
   getSystemTheme: () => 'dark',

@@ -29,8 +29,8 @@ fi
 # Create log directory
 mkdir -p ~/.local/share/claude-cowork/logs
 
-# Run with AppImage's electron
+# Run with AppImage's electron - use app/ directory instead of asar for better stub handling
 echo "Launching Claude Desktop..."
 exec ./squashfs-root/usr/lib/node_modules/electron/dist/electron \
-  ./squashfs-root/usr/lib/node_modules/electron/dist/resources/app.asar \
+  ./squashfs-root/usr/lib/node_modules/electron/dist/resources/app \
   --no-sandbox 2>&1 | tee -a ~/.local/share/claude-cowork/logs/startup.log

@@ -1,909 +1,1184 @@
 /**
- * @ant/claude-swift stub for Linux
+ * Linux stub for @ant/claude-swift
  *
- * This replaces the macOS Swift native module with JS stubs.
- * The app accesses this module in various ways - we need to handle them all.
+ * This module replaces the native Swift addon that uses Apple's Virtualization
+ * Framework on macOS. On Linux, we don't need a VM - we run the Claude Code
+ * binary directly on the host system.
  *
- * Key insight from debug: setupSwiftNotificationHandlers calls e.on()
- * where 'e' is likely the result of accessing a property on this module.
+ * Architecture:
+ *   Claude Desktop (Electron) -> This Stub -> child_process.spawn() -> Claude Binary
  *
- * CRITICAL: Every sub-object must be an EventEmitter with .on(), .emit(), etc.
+ * Key insight from reverse engineering:
+ *   - The app imports this module and calls Si() which returns `module.default.vm`
+ *   - Therefore, all VM methods must be on `this.vm`, not on the class itself
+ *   - The app calls vm.setEventCallbacks() to register stdout/stderr/exit handlers
+ *   - Then vm.spawn() to launch the Claude Code binary
+ *
+ * Path translations performed:
+ *   - /usr/local/bin/claude -> ~/.config/Claude/claude-code-vm/2.1.5/claude
+ *   - /sessions/... -> ~/.local/share/claude-cowork/sessions/...
+ *
+ * Security hardening applied:
+ *   - Command injection prevention (execFile instead of exec)
+ *   - Path traversal protection
+ *   - Environment variable filtering
+ *   - Secure file permissions
+ *
+ * Based on reverse engineering of swift_addon.node via pyghidra-lite
  */
+console.log('[claude-swift-stub] LOADING MODULE - this confirms our stub is being used');
+console.log('[claude-swift-stub] process.platform at load time:', process.platform);
+console.log('[claude-swift-stub] Stack at load:', new Error().stack.split('\n').slice(1, 5).join('\n'));
+console.log('[claude-swift-stub] Module filename:', __filename);
+const EventEmitter = require("events");
+const { spawn: nodeSpawn, spawnSync: nodeSpawnSync, execFileSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 
-const EventEmitter = require('events');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { spawn: nodeSpawn, execFileSync } = require('child_process');
-
-const LOG_PREFIX = '[claude-swift-stub]';
-const TRACE_ENABLED = !!process.env.CLAUDE_TRACE; // Controlled by env var
-
-// Sessions directory in user space
-const SESSIONS_BASE = path.join(os.homedir(), '.local/share/claude-cowork/sessions');
+// SECURITY: Log to user-writable location with restricted permissions
 const LOG_DIR = path.join(os.homedir(), '.local/share/claude-cowork/logs');
+const TRACE_FILE = path.join(LOG_DIR, 'claude-swift-trace.log');
 
-// Log rotation settings
-const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
-const LOG_FILE = path.join(LOG_DIR, 'claude-swift-trace.log');
-
-// Cache for created directories
-const CREATED_DIRS = new Set();
-
-// Resolve Claude binary path once at startup
-const CLAUDE_BINARY = path.join(os.homedir(), '.config/Claude/claude-code-vm/2.1.5/claude');
-
-// Ensure directories exist
+// Ensure log directory exists with secure permissions
 try {
   fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(SESSIONS_BASE, { recursive: true, mode: 0o700 });
-  CREATED_DIRS.add(LOG_DIR);
-  CREATED_DIRS.add(SESSIONS_BASE);
 } catch (e) {}
 
-// Trace logging with rotation
-function trace(category, msg, data = null) {
-  if (!TRACE_ENABLED) return;
+const TRACE_IO = process.env.CLAUDE_COWORK_TRACE_IO === '1';
 
-  const entry = `[TRACE:${category}] ${msg}`;
-  console.log(entry);
+function redactForLogs(input) {
+  let text = String(input);
 
-  try {
-    // Check log size and rotate if needed
-    try {
-      const stats = fs.statSync(LOG_FILE);
-      if (stats.size > MAX_LOG_SIZE) {
-        fs.renameSync(LOG_FILE, `${LOG_FILE}.old`);
-      }
-    } catch (e) {
-      // File doesn't exist yet, OK
-    }
+  // Common header / token formats
+  text = text.replace(/(Authorization:\s*Bearer)\s+[^\s]+/gi, '$1 [REDACTED]');
+  text = text.replace(/(Bearer)\s+[A-Za-z0-9._-]+/g, '$1 [REDACTED]');
 
-    fs.appendFileSync(
-      LOG_FILE,
-      `[${new Date().toISOString()}] ${entry}${data ? ' ' + JSON.stringify(data) : ''}\n`,
-      { mode: 0o600 }
-    );
-  } catch (e) {
-    // Don't fail if logging fails
-  }
+  // JSON-style secrets
+  text = text.replace(/("authorization"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
+  text = text.replace(/("api[_-]?key"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
+  text = text.replace(/("access[_-]?token"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
+  text = text.replace(/("refresh[_-]?token"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
+
+  // Env var leakage
+  text = text.replace(/(ANTHROPIC_API_KEY=)[^\s]+/g, '$1[REDACTED]');
+
+  // Cookies
+  text = text.replace(/(cookie:\s*)[^\n\r]+/gi, '$1[REDACTED]');
+
+  return text;
 }
 
-console.log(`${LOG_PREFIX} LOADING MODULE`);
-console.log(`${LOG_PREFIX} process.platform at load time: ${process.platform}`);
+function trace(msg) {
+  const ts = new Date().toISOString();
+  const safeMsg = redactForLogs(msg);
+  const line = `[${ts}] ${safeMsg}\n`;
+  console.log('[TRACE] ' + safeMsg);
+  try {
+    // SECURITY: Append with restrictive permissions
+    fs.appendFileSync(TRACE_FILE, line, { mode: 0o600 });
+  } catch(e) {}
+}
+trace("=== MODULE LOADING ===");
+trace("Trace IO logging: " + (TRACE_IO ? "enabled (CLAUDE_COWORK_TRACE_IO=1)" : "disabled"));
+
+// SECURITY: Allowlist of environment variables to pass to spawned process
+const ENV_ALLOWLIST = [
+  'PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+  'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS',
+  'NODE_ENV', 'ELECTRON_RUN_AS_NODE',
+  // Claude-specific
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'
+];
+
+function filterEnv(baseEnv, additionalEnv) {
+  const filtered = {};
+  for (const key of ENV_ALLOWLIST) {
+    if (baseEnv[key] !== undefined) {
+      filtered[key] = baseEnv[key];
+    }
+  }
+  // Additional env vars from the app are trusted (come from Claude Desktop)
+  if (additionalEnv) {
+    Object.assign(filtered, additionalEnv);
+  }
+  return filtered;
+}
+
+// SECURITY: Validate path doesn't escape intended directory
+function isPathSafe(basePath, targetPath) {
+  const resolved = path.resolve(basePath, targetPath);
+  return resolved.startsWith(path.resolve(basePath) + path.sep) || resolved === path.resolve(basePath);
+}
+
+// Sessions directory in user space (not /sessions)
+const SESSIONS_BASE = path.join(os.homedir(), '.local/share/claude-cowork/sessions');
 
 /**
- * Create an EventEmitter-based object that also has all the stub methods.
- * This is the key - every sub-object must have .on(), .emit(), etc.
+ * Create mount symlinks for a session
+ *
+ * The additionalMounts object contains mount mappings:
+ * {
+ *   "mountName": { path: "relative/path/from/homedir", mode: "rw"|"ro" }
+ * }
+ *
+ * We create symlinks at:
+ *   ~/.local/share/claude-cowork/sessions/<session>/mnt/<mountName>
+ * Pointing to:
+ *   ~/<additionalMounts[mountName].path>
+ *
+ * Special cases:
+ *   - Empty path ("") means homedir itself
+ *   - "uploads" is a directory, not a symlink
+ *   - "outputs" is typically handled separately
  */
-function createEmitterObject(name, extraMethods = {}) {
-  const emitter = new EventEmitter();
-  emitter.setMaxListeners(50);
+function createMountSymlinks(sessionName, additionalMounts) {
+  trace('=== CREATE MOUNT SYMLINKS ===');
+  trace('Session name: ' + sessionName);
+  trace('additionalMounts: ' + JSON.stringify(additionalMounts, null, 2));
 
-  // Add name for debugging
-  emitter._stubName = name;
+  if (!sessionName) {
+    trace('ERROR: No session name provided, cannot create mounts');
+    return false;
+  }
 
-  // Add common stub methods
-  Object.assign(emitter, {
-    // Async stubs that return resolved promises
-    initialize: async () => { trace(name, 'initialize()'); return true; },
-    shutdown: async () => { trace(name, 'shutdown()'); return true; },
-    getState: async () => { trace(name, 'getState()'); return {}; },
-    setState: async (state) => { trace(name, 'setState()', state); return true; },
+  if (!additionalMounts || typeof additionalMounts !== 'object') {
+    trace('WARNING: No additionalMounts provided or invalid format');
+    return false;
+  }
 
-    // Sync stubs
-    isAvailable: () => true,
-    isEnabled: () => true,
-    isSupported: () => true,
-    enable: () => { trace(name, 'enable()'); },
-    disable: () => { trace(name, 'disable()'); },
+  const sessionDir = path.join(SESSIONS_BASE, sessionName);
+  const mntDir = path.join(sessionDir, 'mnt');
 
-    ...extraMethods,
-  });
+  trace('Session directory: ' + sessionDir);
+  trace('Mount directory: ' + mntDir);
 
-  // Override emit to log
-  const originalEmit = emitter.emit.bind(emitter);
-  emitter.emit = function(event, ...args) {
-    trace(name, `emit('${event}')`, args.length > 0 ? args : null);
-    return originalEmit(event, ...args);
-  };
-
-  return emitter;
-}
-
-// ============================================================
-// Sub-modules - each is an EventEmitter with stub methods
-// ============================================================
-
-const notifications = createEmitterObject('notifications', {
-  show: async (options) => {
-    trace('notifications', 'show()', options?.title);
-    try {
-      const title = String(options?.title || 'Claude').substring(0, 200);
-      const body = String(options?.body || '').substring(0, 1000);
-      execFileSync('notify-send', [title, body], { timeout: 5000, stdio: 'ignore' });
-    } catch (e) {}
-    return { id: Date.now().toString() };
-  },
-  hide: async (id) => { trace('notifications', 'hide()', { id }); },
-  hideAll: async () => { trace('notifications', 'hideAll()'); },
-  close: (id) => { trace('notifications', 'close()', { id }); },
-  requestAuth: () => Promise.resolve(true),
-  getAuthStatus: () => 'authorized',
-});
-
-const vm = createEmitterObject('vm', {
-  start: async () => { trace('vm', 'start()'); return { success: true }; },
-  stop: async () => { trace('vm', 'stop()'); return { success: true }; },
-  startVM: async (bundlePath, memoryGB) => {
-    trace('vm', 'startVM()', { bundlePath, memoryGB });
-    return { success: true };
-  },
-  stopVM: async () => { trace('vm', 'stopVM()'); return { success: true }; },
-  getStatus: async () => ({ running: true, connected: true, supported: true, status: 'supported' }),
-  getRunningStatus: () => ({ running: true, connected: true, ready: true, status: 'running' }),
-  getDownloadStatus: () => ({ status: 'ready', downloaded: true, installed: true, progress: 100 }),
-  getSupportStatus: () => {
-    trace('vm', 'getSupportStatus() returning supported');
-    return 'supported';
-  },
-  isGuestConnected: () => true,
-  isSupported: () => true,
-  needsUpdate: () => false,
-  installSdk: async () => ({ success: true }),
-  sendMessage: async (msg) => { trace('vm', 'sendMessage()', msg); return null; },
-
-  setEventCallbacks: (onStdout, onStderr, onExit, onError, onNetworkStatus) => {
-    trace('vm', 'setEventCallbacks()', { hasStdout: !!onStdout, hasStderr: !!onStderr });
-    // Store callbacks for spawn()
-    vm._onStdout = onStdout;
-    vm._onStderr = onStderr;
-    vm._onExit = onExit;
-    vm._onError = onError;
-    vm._onNetworkStatus = onNetworkStatus;
-    if (onNetworkStatus) onNetworkStatus('connected');
-  },
-
-  spawn: (id, processName, command, args, options, envVars, additionalMounts, isResume, allowedDomains, sharedCwdPath) => {
-    trace('vm', 'spawn()', { id, processName, command, additionalMounts });
-
-    // Create session directory (cached)
-    const sessionDir = path.join(SESSIONS_BASE, processName);
-    if (!CREATED_DIRS.has(sessionDir)) {
+  // Create session and mnt directories
+  try {
+    if (!fs.existsSync(sessionDir)) {
       fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
-      CREATED_DIRS.add(sessionDir);
+      trace('Created session directory: ' + sessionDir);
     }
-
-    // Translate command path (use cached constant)
-    let hostCommand = command;
-    if (command === '/usr/local/bin/claude') {
-      hostCommand = CLAUDE_BINARY;
+    if (!fs.existsSync(mntDir)) {
+      fs.mkdirSync(mntDir, { recursive: true, mode: 0o700 });
+      trace('Created mnt directory: ' + mntDir);
     }
+  } catch (e) {
+    trace('ERROR creating directories: ' + e.message);
+    return false;
+  }
 
-    // Build mount mappings from additionalMounts
-    const username = os.userInfo().username;
-    const mountMap = {};
+  // Create symlinks for each mount
+  const mountEntries = Object.entries(additionalMounts);
+  trace('Processing ' + mountEntries.length + ' mount entries');
 
-    // Process additionalMounts to build the mapping
-    if (additionalMounts && typeof additionalMounts === 'object') {
-      for (const [mountName, mountInfo] of Object.entries(additionalMounts)) {
-        if (mountInfo && typeof mountInfo === 'object') {
-          // mountInfo.path is relative to home, empty string means home itself
-          const relPath = mountInfo.path || '';
-          mountMap[mountName] = relPath ? path.join(os.homedir(), relPath) : os.homedir();
+  for (const [mountName, mountInfo] of mountEntries) {
+    trace('--- Processing mount: ' + mountName + ' ---');
+    trace('  Mount info: ' + JSON.stringify(mountInfo));
+
+    const mountPoint = path.join(mntDir, mountName);
+
+    // Handle special cases
+    if (mountName === 'uploads') {
+      // uploads is a directory, not a symlink
+      try {
+        if (!fs.existsSync(mountPoint)) {
+          fs.mkdirSync(mountPoint, { recursive: true, mode: 0o700 });
+          trace('  Created uploads directory: ' + mountPoint);
+        } else {
+          trace('  Uploads directory already exists: ' + mountPoint);
         }
+      } catch (e) {
+        trace('  ERROR creating uploads directory: ' + e.message);
       }
+      continue;
     }
 
-    // Fallback defaults if not in additionalMounts
-    if (!mountMap[username]) mountMap[username] = os.homedir();
-    if (!mountMap['.claude']) mountMap['.claude'] = path.join(os.homedir(), '.claude');
-    if (!mountMap['.skills']) mountMap['.skills'] = path.join(os.homedir(), '.config/Claude/local-agent-mode-sessions/skills-plugin');
-    if (!mountMap['uploads']) mountMap['uploads'] = path.join(sessionDir, 'uploads');
+    // Get the host path from the mount info
+    let relativePath = '';
+    if (typeof mountInfo === 'object' && mountInfo !== null) {
+      relativePath = mountInfo.path || '';
+    } else if (typeof mountInfo === 'string') {
+      relativePath = mountInfo;
+    }
 
-    // Ensure mount targets exist (with caching)
-    for (const hostPath of Object.values(mountMap)) {
-      if (!CREATED_DIRS.has(hostPath)) {
+    // Construct the full host path
+    // Empty path means homedir itself
+    const hostPath = relativePath === ''
+      ? os.homedir()
+      : path.join(os.homedir(), relativePath);
+
+    trace('  Relative path: "' + relativePath + '"');
+    trace('  Host path: ' + hostPath);
+    trace('  Mount point: ' + mountPoint);
+
+    // Verify host path exists
+    if (!fs.existsSync(hostPath)) {
+      trace('  WARNING: Host path does not exist: ' + hostPath);
+      // Try to create it for output directories
+      if (mountName === 'outputs' || mountInfo.mode === 'rw') {
         try {
           fs.mkdirSync(hostPath, { recursive: true, mode: 0o700 });
-          CREATED_DIRS.add(hostPath);
-        } catch(e) {}
+          trace('  Created host directory: ' + hostPath);
+        } catch (e) {
+          trace('  ERROR creating host directory: ' + e.message);
+          continue;
+        }
+      } else {
+        continue;
       }
     }
 
-    // Build bwrap arguments with security hardening
-    // This creates an isolated namespace where /sessions/{processName}/mnt/{mountName} is available
-    const vmSessionPath = `/sessions/${processName}`;
-
-    // Network enabled by default, can be isolated for testing
-    const isolateNetwork = ['true', '1'].includes(process.env.CLAUDE_ISOLATE_NETWORK);
-
-    const bwrapArgs = [
-      // User namespace isolation
-      '--unshare-user',
-      '--uid', String(process.getuid()),
-      '--gid', String(process.getgid()),
-      '--die-with-parent',
-
-      // Network isolation (opt-in for testing/security)
-      ...(isolateNetwork ? ['--unshare-net'] : []),
-
-      // Start with empty tmpfs root for maximum isolation
-      '--tmpfs', '/',
-
-      // Bind only necessary system directories (READ-ONLY where possible)
-      '--ro-bind', '/usr', '/usr',
-      '--ro-bind', '/bin', '/bin',
-      '--ro-bind', '/lib', '/lib',
-      '--ro-bind', '/etc', '/etc',
-
-      // Only bind user's home directory (not all of /home)
-      '--bind', os.homedir(), os.homedir(),
-
-      // Isolated temp directory (NOT host /tmp)
-      '--tmpfs', '/tmp',
-
-      // Minimal /dev and /proc
-      '--dev', '/dev',
-      '--proc', '/proc',
-
-      // DO NOT MOUNT: /run (IPC sockets), /var (system state)
-    ];
-
-    // Optional system dirs that may exist (READ-ONLY)
-    for (const optDir of ['/lib64', '/lib32', '/opt', '/snap', '/nix']) {
-      try {
-        if (fs.existsSync(optDir)) {
-          bwrapArgs.push('--ro-bind', optDir, optDir);
+    // Create symlink (remove existing if present)
+    try {
+      if (fs.existsSync(mountPoint)) {
+        const stats = fs.lstatSync(mountPoint);
+        if (stats.isSymbolicLink()) {
+          const existingTarget = fs.readlinkSync(mountPoint);
+          if (existingTarget === hostPath) {
+            trace('  Symlink already exists and points to correct target');
+            continue;
+          }
+          trace('  Removing existing symlink (pointed to: ' + existingTarget + ')');
+          fs.unlinkSync(mountPoint);
+        } else if (stats.isDirectory()) {
+          trace('  Mount point is a directory, skipping symlink creation');
+          continue;
+        } else {
+          trace('  Removing existing file at mount point');
+          fs.unlinkSync(mountPoint);
         }
-      } catch(e) {}
+      }
+
+      fs.symlinkSync(hostPath, mountPoint);
+      trace('  SUCCESS: Created symlink ' + mountPoint + ' -> ' + hostPath);
+    } catch (e) {
+      trace('  ERROR creating symlink: ' + e.message);
     }
+  }
 
-    // Create /sessions directory structure in the namespace
-    bwrapArgs.push('--dir', '/sessions');
-    bwrapArgs.push('--dir', `${vmSessionPath}`);
-    bwrapArgs.push('--dir', `${vmSessionPath}/mnt`);
-
-    // Add bind mounts for each mount point
-    for (const [mountName, hostPath] of Object.entries(mountMap)) {
-      const vmMountPath = `${vmSessionPath}/mnt/${mountName}`;
-      bwrapArgs.push('--dir', vmMountPath);
-      bwrapArgs.push('--bind', hostPath, vmMountPath);
+  // Log final directory structure
+  trace('=== FINAL MOUNT STRUCTURE ===');
+  try {
+    const entries = fs.readdirSync(mntDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(mntDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = fs.readlinkSync(entryPath);
+        trace('  ' + entry.name + ' -> ' + target);
+      } else if (entry.isDirectory()) {
+        trace('  ' + entry.name + '/ (directory)');
+      } else {
+        trace('  ' + entry.name + ' (file)');
+      }
     }
+  } catch (e) {
+    trace('  ERROR listing mnt directory: ' + e.message);
+  }
+  trace('=== END MOUNT SYMLINKS ===');
 
-    // Set working directory inside the sandbox
-    let vmCwd = sharedCwdPath || `${vmSessionPath}/mnt/${username}`;
-    bwrapArgs.push('--chdir', vmCwd);
+  return true;
+}
 
-    // Add the actual command to run
-    bwrapArgs.push('--', hostCommand, ...(args || []));
+/**
+ * Extract session name from spawn arguments or process name
+ * The session name is used in paths like /sessions/<sessionName>/mnt/...
+ */
+function extractSessionName(processName, args) {
+  // First try to extract from args (look for /sessions/<name>/ pattern)
+  if (args && Array.isArray(args)) {
+    for (const arg of args) {
+      if (typeof arg === 'string') {
+        const match = arg.match(/\/sessions\/([^\/]+)\//);
+        if (match) {
+          trace('Extracted session name from args: ' + match[1]);
+          return match[1];
+        }
+      }
+    }
+  }
 
-    trace('vm', 'spawn bwrap', { bwrapArgs: bwrapArgs.slice(0, 20) });
+  // Fall back to process name
+  if (processName) {
+    trace('Using process name as session name: ' + processName);
+    return processName;
+  }
 
-    // Build secure environment with whitelist
-    const userInfo = os.userInfo();
-    const vmEnv = {
-      // Essential system vars
-      HOME: os.homedir(),
-      USER: userInfo.username,
-      LOGNAME: userInfo.username,
-      SHELL: userInfo.shell || '/bin/bash',
-      TERM: process.env.TERM || 'xterm-256color',
-      LANG: process.env.LANG || 'en_US.UTF-8',
-      LC_ALL: process.env.LC_ALL || process.env.LANG || 'en_US.UTF-8',
-      PATH: '/usr/local/bin:/usr/bin:/bin',
-      TMPDIR: '/tmp',
+  trace('WARNING: Could not determine session name');
+  return null;
+}
 
-      // Claude-specific environment
-      CLAUDE_COWORK_SESSION: processName,
-      CLAUDE_VM_VERSION: '2.1.5',
-      CLAUDE_SANDBOX: 'true',
-      CLAUDE_SESSION_DIR: vmSessionPath,
+class SwiftAddonStub extends EventEmitter {
+  constructor() {
+    super();
+    trace('Constructor START');
+    console.log('[claude-swift-stub] Constructor called');
+    this._eventListener = null;
+    this._guestConnected = true;  // Linux: always "connected" since we run directly on host
+    this._processes = new Map();
+    this._processIdCounter = 0;
 
-      // Explicitly passed env vars
-      ...envVars,
+    // Event callbacks for VM processes
+    this._onStdout = null;
+    this._onStderr = null;
+    this._onExit = null;
+    this._onError = null;
+    this._onNetworkStatus = null;
 
-      // Selectively pass display/graphics vars if present
-      ...(process.env.DISPLAY && { DISPLAY: process.env.DISPLAY }),
-      ...(process.env.WAYLAND_DISPLAY && { WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY }),
-      ...(process.env.XDG_RUNTIME_DIR && !isolateNetwork && { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR }),
-
-      // Development vars (if explicitly enabled)
-      ...(process.env.CLAUDE_DEBUG && { CLAUDE_DEBUG: process.env.CLAUDE_DEBUG }),
-      ...(process.env.NODE_OPTIONS && { NODE_OPTIONS: process.env.NODE_OPTIONS }),
+    // Events system - native.events.setListener()
+    this.events = {
+      setListener: (callback) => {
+        this._eventListener = callback;
+        console.log('[claude-swift] Event listener registered');
+      }
     };
 
-    // DO NOT PASS: SSH_AUTH_SOCK, GPG_AGENT_INFO, DBUS_SESSION_BUS_ADDRESS,
-    // AWS_*, AZURE_*, GCP_*, *_API_KEY, *_SECRET, *_TOKEN (unless in envVars)
+    // Quick Access / Quick Entry UI
+    this.quickAccess = {
+      show: () => {
+        console.log('[claude-swift] quickAccess.show()');
+        this._emit('quickAccessShown');
+      },
+      hide: () => {
+        console.log('[claude-swift] quickAccess.hide()');
+        this._emit('quickAccessHidden');
+      },
+      isVisible: () => false,
+      submit: (data) => {
+        console.log('[claude-swift] quickAccess.submit()', data);
+      }
+    };
 
-    try {
-      const proc = nodeSpawn('bwrap', bwrapArgs, {
-        env: vmEnv,
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
+    // Notifications
+    this.notifications = {
+      requestAuth: () => {
+        console.log('[claude-swift] notifications.requestAuth()');
+        return Promise.resolve(true);
+      },
+      getAuthStatus: () => {
+        return 'authorized';
+      },
+      show: (options) => {
+        console.log('[claude-swift] notifications.show()', options && options.title);
+        try {
+          const title = String((options && options.title) || 'Claude').substring(0, 200);
+          const body = String((options && options.body) || '').substring(0, 1000);
+          // SECURITY: Use execFileSync with argument array to prevent command injection
+          execFileSync('notify-send', [title, body], { timeout: 5000, stdio: 'ignore' });
+        } catch (e) {
+          // Notification failed - not critical
+        }
+        return Promise.resolve({ id: Date.now().toString() });
+      },
+      close: (id) => {
+        console.log('[claude-swift] notifications.close()', id);
+      }
+    };
 
-      // Store process for writeStdin/kill
-      vm._processes = vm._processes || new Map();
-      vm._processes.set(id, proc);
-
-      // Initialize process state for handshake simulation
-      // The macOS VM has a proper guest connection handshake; we simulate it by
-      // waiting for first stdout (proves process is alive and reading)
-      vm._processState = vm._processState || new Map();
-      vm._processState.set(id, {
-        ready: false,
-        writeQueue: [],  // Queue writes until process is ready
-      });
-
-      // Create cleanup function to remove all listeners
-      // NOTE: We keep stdin error listener to catch late EPIPE from writes-in-flight
-      const cleanup = () => {
-        vm._processes?.delete(id);
-        vm._processState?.delete(id);
-        if (proc.stdout) proc.stdout.removeAllListeners();
-        if (proc.stderr) proc.stderr.removeAllListeners();
-        // Don't remove stdin listeners - keep error handler for late EPIPE
-        proc.removeAllListeners();
-      };
-
-      // Function to flush queued writes once process is ready
-      const flushWriteQueue = () => {
-        const state = vm._processState?.get(id);
-        if (!state || !state.writeQueue.length) return;
-
-        trace('vm', 'flushing write queue', { id, count: state.writeQueue.length });
-
-        while (state.writeQueue.length > 0) {
-          const { data, resolve } = state.writeQueue.shift();
-          if (proc.stdin && !proc.stdin.destroyed) {
-            try {
-              proc.stdin.write(data);
-              resolve(true);
-            } catch (err) {
-              trace('vm', 'queued write error', { id, error: err.message });
-              resolve(false);
+    // Desktop integration
+    this.desktop = {
+      captureScreenshot: (args) => {
+        console.log('[claude-swift] desktop.captureScreenshot()', args);
+        return Promise.resolve(null);
+      },
+      captureWindowScreenshot: (windowId) => {
+        console.log('[claude-swift] desktop.captureWindowScreenshot()', windowId);
+        return Promise.resolve(null);
+      },
+      getSessionId: () => {
+        return 'linux-session-' + Date.now();
+      },
+      // Get list of open documents (Linux implementation)
+      getOpenDocuments: () => {
+        console.log('[claude-swift] desktop.getOpenDocuments()');
+        // On Linux, we can check recent files or return empty
+        // Could integrate with GTK recent files or track opened files
+        return Promise.resolve([]);
+      },
+      // Get list of open windows
+      getOpenWindows: () => {
+        console.log('[claude-swift] desktop.getOpenWindows()');
+        try {
+          // Try wmctrl first, fall back to empty
+          const { execFileSync } = require('child_process');
+          const output = execFileSync('wmctrl', ['-l'], { encoding: 'utf-8', timeout: 2000 });
+          const windows = output.trim().split('\n').filter(Boolean).map(line => {
+            const parts = line.split(/\s+/);
+            return {
+              id: parts[0],
+              desktop: parts[1],
+              title: parts.slice(3).join(' ')
+            };
+          });
+          return Promise.resolve(windows);
+        } catch (e) {
+          return Promise.resolve([]);
+        }
+      },
+      // Open file with default application
+      openFile: (filePath) => {
+        console.log('[claude-swift] desktop.openFile()', filePath);
+        // Translate /sessions/... paths to host paths
+        let hostPath = filePath;
+        if (typeof filePath === 'string' && filePath.startsWith('/sessions/')) {
+          hostPath = path.join(SESSIONS_BASE, filePath.substring('/sessions/'.length));
+          console.log('[claude-swift] desktop.openFile() translated to:', hostPath);
+        }
+        try {
+          const { execFile } = require('child_process');
+          execFile('xdg-open', [hostPath], (err) => {
+            if (err) console.error('[claude-swift] openFile error:', err.message);
+          });
+          return Promise.resolve(true);
+        } catch (e) {
+          return Promise.resolve(false);
+        }
+      },
+      // Reveal file in file manager
+      revealFile: (filePath) => {
+        console.log('[claude-swift] desktop.revealFile()', filePath);
+        // Translate /sessions/... paths to host paths
+        let hostPath = filePath;
+        if (typeof filePath === 'string' && filePath.startsWith('/sessions/')) {
+          hostPath = path.join(SESSIONS_BASE, filePath.substring('/sessions/'.length));
+          console.log('[claude-swift] desktop.revealFile() translated to:', hostPath);
+        }
+        try {
+          const { execFile } = require('child_process');
+          const dir = path.dirname(hostPath);
+          // Try nautilus first (GNOME), fall back to xdg-open
+          execFile('nautilus', ['--select', hostPath], (err) => {
+            if (err) {
+              // Fall back to opening the directory
+              execFile('xdg-open', [dir], () => {});
             }
-          } else {
-            resolve(false);
+          });
+          return Promise.resolve(true);
+        } catch (e) {
+          return Promise.resolve(false);
+        }
+      },
+      // Preview file (Quick Look equivalent)
+      previewFile: (filePath) => {
+        console.log('[claude-swift] desktop.previewFile()', filePath);
+        // Translate /sessions/... paths to host paths
+        let hostPath = filePath;
+        if (typeof filePath === 'string' && filePath.startsWith('/sessions/')) {
+          hostPath = path.join(SESSIONS_BASE, filePath.substring('/sessions/'.length));
+          console.log('[claude-swift] desktop.previewFile() translated to:', hostPath);
+        }
+        try {
+          const { execFile } = require('child_process');
+          // Try gnome-sushi (GNOME Quick Look), fall back to xdg-open
+          execFile('gnome-sushi', [hostPath], (err) => {
+            if (err) {
+              execFile('xdg-open', [hostPath], () => {});
+            }
+          });
+          return Promise.resolve(true);
+        } catch (e) {
+          return Promise.resolve(false);
+        }
+      }
+    };
+
+    // Window management (macOS-specific, no-op on Linux)
+    this.window = {
+      setWindowButtonPosition: (browserWindow, x, y) => {
+        console.log('[claude-swift] window.setWindowButtonPosition() - no-op on Linux');
+        // macOS-only: positions traffic light buttons
+        // Linux window managers handle this automatically
+      },
+      setThemeMode: (mode) => {
+        console.log('[claude-swift] window.setThemeMode(' + mode + ')');
+        // Would set system theme preference
+      },
+      setTrafficLightPosition: (x, y) => {
+        console.log('[claude-swift] window.setTrafficLightPosition() - no-op on Linux');
+      }
+    };
+
+    // Also add as top-level methods for direct calls
+    this.setWindowButtonPosition = (browserWindow, x, y) => {
+      console.log('[claude-swift] setWindowButtonPosition() - no-op on Linux');
+    };
+
+    this.setThemeMode = (mode) => {
+      console.log('[claude-swift] setThemeMode(' + mode + ')');
+    };
+
+    // File system operations
+    this.files = {
+      // Read file contents
+      read: (filePath) => {
+        console.log('[claude-swift] files.read()', filePath);
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          return Promise.resolve(content);
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      },
+      // Write file contents
+      write: (filePath, content) => {
+        console.log('[claude-swift] files.write()', filePath);
+        try {
+          fs.writeFileSync(filePath, content, 'utf-8');
+          return Promise.resolve(true);
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      },
+      // Check if file exists
+      exists: (filePath) => {
+        return Promise.resolve(fs.existsSync(filePath));
+      },
+      // Get file stats
+      stat: (filePath) => {
+        console.log('[claude-swift] files.stat()', filePath);
+        try {
+          const stats = fs.statSync(filePath);
+          return Promise.resolve({
+            size: stats.size,
+            isFile: stats.isFile(),
+            isDirectory: stats.isDirectory(),
+            created: stats.birthtime,
+            modified: stats.mtime,
+            accessed: stats.atime
+          });
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      },
+      // List directory contents
+      list: (dirPath) => {
+        console.log('[claude-swift] files.list()', dirPath);
+        try {
+          const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+          return Promise.resolve(entries.map(e => ({
+            name: e.name,
+            isFile: e.isFile(),
+            isDirectory: e.isDirectory(),
+            path: path.join(dirPath, e.name)
+          })));
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      },
+      // Watch file for changes
+      watch: (filePath, callback) => {
+        console.log('[claude-swift] files.watch()', filePath);
+        try {
+          const watcher = fs.watch(filePath, (eventType, filename) => {
+            callback({ type: eventType, filename });
+          });
+          return { close: () => watcher.close() };
+        } catch (e) {
+          return { close: () => {} };
+        }
+      }
+    };
+
+    // API object (general purpose)
+    this.api = {};
+
+    // Midnight Owl (scheduling/time-based features)
+    this.midnightOwl = {
+      isEnabled: () => false,
+      enable: () => {},
+      disable: () => {},
+      setEnabled: (enabled) => {
+        console.log('[claude-swift] midnightOwl.setEnabled(' + enabled + ')');
+      },
+      getEnabled: () => false,
+    };
+
+    // VM Management (nested object)
+    // CRITICAL: The app accesses methods via module.default.vm, so all methods must be here
+    const self = this;
+
+    /**
+     * VM object - This is the main interface the app uses
+     * The app calls Si() which returns module.default.vm
+     */
+    this.vm = {
+      isSupported: () => {
+        console.log('[claude-swift] vm.isSupported() called - returning true');
+        trace('vm.isSupported() called');
+        return true;
+      },
+      isGuestConnected: () => {
+        console.log('[claude-swift] vm.isGuestConnected() called - returning', self._guestConnected);
+        return self._guestConnected;
+      },
+      getRunningStatus: () => {
+        const status = {
+          running: true,
+          connected: true,
+          ready: true,
+          status: 'running'
+        };
+        console.log('[claude-swift] vm.getRunningStatus() called - returning:', JSON.stringify(status));
+        return status;
+      },
+
+      setEventCallbacks: (onStdout, onStderr, onExit, onError, onNetworkStatus) => {
+        trace('vm.setEventCallbacks() CALLED with callbacks: stdout=' + !!onStdout + ' stderr=' + !!onStderr + ' exit=' + !!onExit);
+        console.log('[claude-swift] vm.setEventCallbacks() called - REGISTERING CALLBACKS');
+        console.log('[claude-swift] Callbacks: stdout=' + typeof onStdout + ' stderr=' + typeof onStderr + ' exit=' + typeof onExit);
+        self._onStdout = onStdout;
+        self._onStderr = onStderr;
+        self._onExit = onExit;
+        self._onError = onError;
+        self._onNetworkStatus = onNetworkStatus;
+        if (self._onNetworkStatus) {
+          self._onNetworkStatus('connected');
+        }
+      },
+
+      startVM: async (bundlePath, memoryGB) => {
+        trace('vm.startVM() bundlePath=' + bundlePath + ' memoryGB=' + memoryGB);
+        console.log('[claude-swift] vm.startVM() bundlePath=' + bundlePath + ' memoryGB=' + memoryGB);
+        self._guestConnected = true;
+        self._emit('guestConnectionChanged', { connected: true });
+        self._emit('guestReady');
+        return { success: true };
+      },
+
+      installSdk: async (subpath, version) => {
+        console.log('[claude-swift] vm.installSdk() subpath=' + subpath + ' version=' + version);
+        trace('vm.installSdk() subpath=' + subpath + ' version=' + version);
+        return { success: true };
+      },
+
+      // Check VM download/install status
+      getDownloadStatus: () => {
+        console.log('[claude-swift] vm.getDownloadStatus() called');
+        trace('vm.getDownloadStatus() called');
+        return {
+          status: 'ready',
+          downloaded: true,
+          installed: true,
+          progress: 100
+        };
+      },
+
+      // Check if SDK needs update
+      needsUpdate: () => {
+        console.log('[claude-swift] vm.needsUpdate() called');
+        return false;
+      },
+
+      /**
+       * Spawn a process - This is called to launch the Claude Code binary
+       *
+       * Parameters (reverse-engineered from Claude Desktop):
+       *   id: string - unique process identifier
+       *   processName: string - human-readable name (e.g., "stoic-busy-hawking")
+       *   command: string - command to run (e.g., "/usr/local/bin/claude")
+       *   args: string[] - command arguments
+       *   options: object - spawn options (cwd, etc.)
+       *   envVars: object - environment variables
+       *   additionalMounts: object - mount mappings { mountName: { path, mode } }
+       *   isResume: boolean - whether resuming an existing session
+       *   allowedDomains: string[] - allowed network domains
+       *   sharedCwdPath: string - shared working directory path
+       */
+      spawn: (id, processName, command, args, options, envVars, additionalMounts, isResume, allowedDomains, sharedCwdPath) => {
+        trace('=== VM.SPAWN CALLED ===');
+        trace('vm.spawn() id=' + id);
+        trace('vm.spawn() processName=' + processName);
+        trace('vm.spawn() command=' + command);
+        trace('vm.spawn() args=' + JSON.stringify(args));
+        trace('vm.spawn() additionalMounts=' + JSON.stringify(additionalMounts));
+        trace('vm.spawn() isResume=' + isResume);
+        trace('vm.spawn() sharedCwdPath=' + sharedCwdPath);
+
+        // Extract session name and create mount symlinks BEFORE translating paths
+        const sessionName = extractSessionName(processName, args);
+        if (sessionName && additionalMounts) {
+          trace('Creating mount symlinks for session: ' + sessionName);
+          createMountSymlinks(sessionName, additionalMounts);
+        } else {
+          trace('Skipping mount symlink creation: sessionName=' + sessionName + ', hasAdditionalMounts=' + !!additionalMounts);
+        }
+
+        // SECURITY: Validate command is the expected Claude binary
+        let hostCommand = command;
+        if (command === '/usr/local/bin/claude') {
+          hostCommand = path.join(os.homedir(), '.config/Claude/claude-code-vm/2.1.5/claude');
+          trace('Translated command: ' + command + ' -> ' + hostCommand);
+        } else {
+          // SECURITY: Only allow the expected command
+          trace('SECURITY: Unexpected command blocked: ' + command);
+          if (self._onError) self._onError(id, 'Unexpected command: ' + command, '');
+          return { success: false, error: 'Unexpected command' };
+        }
+
+        // SECURITY: Verify binary exists and is in expected location
+        const expectedDir = path.join(os.homedir(), '.config/Claude/claude-code-vm');
+        if (!hostCommand.startsWith(expectedDir)) {
+          trace('SECURITY: Command outside expected directory: ' + hostCommand);
+          if (self._onError) self._onError(id, 'Invalid binary path', '');
+          return { success: false, error: 'Invalid binary path' };
+        }
+
+        // Translate VM paths in args with path traversal protection
+        let hostArgs = (args || []).map(arg => {
+          if (typeof arg === 'string' && arg.startsWith('/sessions/')) {
+            // Extract session path component
+            const sessionPath = arg.substring('/sessions/'.length);
+
+            // SECURITY: Validate no path traversal
+            if (sessionPath.includes('..') || !isPathSafe(SESSIONS_BASE, sessionPath)) {
+              trace('SECURITY: Path traversal blocked: ' + arg);
+              return arg; // Return original (will fail gracefully)
+            }
+
+            const translated = path.join(SESSIONS_BASE, sessionPath);
+            trace('Translated arg: ' + arg + ' -> ' + translated);
+            return translated;
+          }
+          return arg;
+        });
+
+        // Ensure sessions directory exists with secure permissions
+        try {
+          if (!fs.existsSync(SESSIONS_BASE)) {
+            fs.mkdirSync(SESSIONS_BASE, { recursive: true, mode: 0o700 });
+            trace('Created sessions dir: ' + SESSIONS_BASE);
+          }
+        } catch (e) {
+          trace('Failed to create sessions dir: ' + e.message);
+        }
+
+        // Translate sharedCwdPath if it's a VM path
+        let hostCwdPath = sharedCwdPath;
+        if (typeof sharedCwdPath === 'string' && sharedCwdPath.startsWith('/sessions/')) {
+          const sessionPath = sharedCwdPath.substring('/sessions/'.length);
+          if (!sessionPath.includes('..') && isPathSafe(SESSIONS_BASE, sessionPath)) {
+            hostCwdPath = path.join(SESSIONS_BASE, sessionPath);
+            trace('Translated sharedCwdPath: ' + sharedCwdPath + ' -> ' + hostCwdPath);
           }
         }
-      };
+        trace('vm.spawn() sharedCwdPath=' + sharedCwdPath + ' hostCwdPath=' + hostCwdPath);
 
-      // Mark process as ready (called on first stdout)
-      const markReady = () => {
-        const state = vm._processState?.get(id);
-        if (state && !state.ready) {
-          state.ready = true;
-          trace('vm', 'process ready (first stdout received)', { id });
-          // Emit guestConnectionChanged to match native behavior
-          vm.emit('guestConnectionChanged', { connected: true, processId: id });
-          // Flush any queued writes
-          flushWriteQueue();
+        console.log('[claude-swift] vm.spawn() id=' + id + ' cmd=' + hostCommand);
+        return self.spawn(id, processName, hostCommand, hostArgs, options, envVars, additionalMounts, isResume, allowedDomains, hostCwdPath);
+      },
+
+      kill: (id, signal) => {
+        console.log('[claude-swift] vm.kill(' + id + ', ' + signal + ')');
+        return Promise.resolve(self.killProcess(id));
+      },
+
+      writeStdin: (id, data) => {
+        console.log('[claude-swift] vm.writeStdin(' + id + ')');
+        return Promise.resolve(self.writeToProcess(id, data));
+      },
+
+      start: () => {
+        console.log('[claude-swift] vm.start()');
+        self._guestConnected = true;
+        self._emit('guestConnectionChanged', { connected: true });
+        self._emit('guestReady');
+        return Promise.resolve({ success: true });
+      },
+
+      stop: () => {
+        console.log('[claude-swift] vm.stop()');
+        self._guestConnected = false;
+        self._emit('guestConnectionChanged', { connected: false });
+        return Promise.resolve({ success: true });
+      },
+
+      sendCommand: (cmd) => {
+        console.log('[claude-swift] vm.sendCommand()', cmd);
+        return Promise.resolve({});
+      },
+
+      /**
+       * Read file from VM filesystem
+       * The app calls this as readFile(sessionName, fullVmPath)
+       * Returns base64-encoded content
+       */
+      readFile: async (sessionName, vmPath) => {
+        trace('vm.readFile() sessionName=' + sessionName + ' vmPath=' + vmPath);
+
+        // Translate VM path to host path
+        let hostPath = vmPath;
+        if (typeof vmPath === 'string' && vmPath.startsWith('/sessions/')) {
+          const sessionPath = vmPath.substring('/sessions/'.length);
+          if (sessionPath.includes('..') || !isPathSafe(SESSIONS_BASE, sessionPath)) {
+            trace('SECURITY: Path traversal blocked in readFile: ' + vmPath);
+            throw new Error('Invalid path');
+          }
+          hostPath = path.join(SESSIONS_BASE, sessionPath);
         }
-      };
 
-      // Buffer stdout to reduce callback frequency (helps prevent renderer overload)
+        trace('vm.readFile() translated to: ' + hostPath);
+
+        try {
+          const content = fs.readFileSync(hostPath);
+          // Return base64-encoded content as the app expects
+          return content.toString('base64');
+        } catch (e) {
+          trace('vm.readFile() error: ' + e.message);
+          throw e;
+        }
+      },
+
+      /**
+       * Write file to VM filesystem
+       * The app calls this as writeFile(sessionName, fullVmPath, base64Content)
+       * Content is base64-encoded
+       */
+      writeFile: async (sessionName, vmPath, base64Content) => {
+        trace('vm.writeFile() sessionName=' + sessionName + ' vmPath=' + vmPath);
+
+        // Translate VM path to host path
+        let hostPath = vmPath;
+        if (typeof vmPath === 'string' && vmPath.startsWith('/sessions/')) {
+          const sessionPath = vmPath.substring('/sessions/'.length);
+          if (sessionPath.includes('..') || !isPathSafe(SESSIONS_BASE, sessionPath)) {
+            trace('SECURITY: Path traversal blocked in writeFile: ' + vmPath);
+            throw new Error('Invalid path');
+          }
+          hostPath = path.join(SESSIONS_BASE, sessionPath);
+        }
+
+        trace('vm.writeFile() translated to: ' + hostPath);
+
+        try {
+          // Ensure parent directory exists
+          const dir = path.dirname(hostPath);
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+          }
+
+          // Decode base64 and write
+          const content = Buffer.from(base64Content, 'base64');
+          fs.writeFileSync(hostPath, content, { mode: 0o600 });
+          return true;
+        } catch (e) {
+          trace('vm.writeFile() error: ' + e.message);
+          throw e;
+        }
+      },
+
+      /**
+       * Check if debug logging is enabled
+       */
+      isDebugLoggingEnabled: () => {
+        return process.env.CLAUDE_COWORK_DEBUG === '1';
+      },
+
+      /**
+       * Enable/disable debug logging
+       */
+      setDebugLogging: (enabled) => {
+        console.log('[claude-swift] vm.setDebugLogging(' + enabled + ')');
+        // In our stub, this is controlled by env var, so we just log
+      },
+
+      /**
+       * Stop the VM
+       */
+      stopVM: async () => {
+        console.log('[claude-swift] vm.stopVM()');
+        for (const entry of self._processes) {
+          try { entry[1].kill('SIGTERM'); } catch (e) {}
+        }
+        self._processes.clear();
+        self._guestConnected = false;
+        self._emit('guestConnectionChanged', { connected: false });
+        return { success: true };
+      },
+
+      /**
+       * Add approved OAuth token (new in 1.1.381)
+       * This is used to approve OAuth tokens for VM operations
+       */
+      addApprovedOauthToken: async (token) => {
+        trace('vm.addApprovedOauthToken() token=<redacted>');
+        console.log('[claude-swift] vm.addApprovedOauthToken() called');
+        // Store the token for future use
+        // On Linux, we don't have a VM, so we just acknowledge the token
+        return { success: true };
+      },
+
+      /**
+       * Mount a path at runtime (updated in 1.1.381 to include mode parameter)
+       * Creates a symlink from the VM path to the host path
+       *
+       * @param {string} processId - The process ID
+       * @param {string} subpath - Subpath within the session (e.g., "mnt/workspace")
+       * @param {string} pathName - The VM path to mount (e.g., "/sessions/foo/mnt/workspace")
+       * @param {string} mode - Mount mode: "ro" (read-only) or "rw" (read-write)
+       */
+      mountPath: async (processId, subpath, pathName, mode) => {
+        trace('vm.mountPath() processId=' + processId + ' subpath=' + subpath + ' pathName=' + pathName + ' mode=' + mode);
+        console.log('[claude-swift] vm.mountPath() processId=' + processId + ' subpath=' + subpath + ' mode=' + mode);
+
+        // Translate VM path to host path
+        if (typeof pathName === 'string' && pathName.startsWith('/sessions/')) {
+          const sessionPath = pathName.substring('/sessions/'.length);
+
+          // SECURITY: Validate no path traversal
+          if (sessionPath.includes('..') || !isPathSafe(SESSIONS_BASE, sessionPath)) {
+            trace('SECURITY: Path traversal blocked in mountPath: ' + pathName);
+            throw new Error('Invalid path');
+          }
+
+          const hostPath = path.join(SESSIONS_BASE, sessionPath);
+          trace('vm.mountPath() translated to: ' + hostPath);
+
+          // Ensure parent directory exists
+          try {
+            const dir = path.dirname(hostPath);
+            if (!fs.existsSync(dir)) {
+              fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+              trace('vm.mountPath() created parent directory: ' + dir);
+            }
+          } catch (e) {
+            trace('vm.mountPath() error creating parent directory: ' + e.message);
+            throw e;
+          }
+
+          // Create the mount point (directory or symlink as needed)
+          try {
+            if (!fs.existsSync(hostPath)) {
+              // Create directory with appropriate permissions based on mode
+              const dirMode = mode === 'ro' ? 0o500 : 0o700;
+              fs.mkdirSync(hostPath, { recursive: true, mode: dirMode });
+              trace('vm.mountPath() created mount point: ' + hostPath + ' (mode: ' + mode + ')');
+            }
+            return { success: true };
+          } catch (e) {
+            trace('vm.mountPath() error: ' + e.message);
+            throw e;
+          }
+        } else {
+          trace('vm.mountPath() error: pathName does not start with /sessions/');
+          throw new Error('Invalid pathName: must start with /sessions/');
+        }
+      }
+    };
+
+    trace('Constructor COMPLETE. vm.setEventCallbacks=' + typeof this.vm.setEventCallbacks);
+    console.log('[claude-swift-stub] Constructor complete. vm.setEventCallbacks type:', typeof this.vm.setEventCallbacks);
+  }
+
+  // TOP-LEVEL METHODS (for API compatibility)
+  setEventCallbacks(onStdout, onStderr, onExit, onError, onNetworkStatus) {
+    console.log('[claude-swift] setEventCallbacks() called - REGISTERING CALLBACKS');
+    this._onStdout = onStdout;
+    this._onStderr = onStderr;
+    this._onExit = onExit;
+    this._onError = onError;
+    this._onNetworkStatus = onNetworkStatus;
+    if (this._onNetworkStatus) {
+      this._onNetworkStatus('connected');
+    }
+  }
+
+  async startVM(bundlePath, memoryGB) {
+    console.log('[claude-swift] startVM() bundlePath=' + bundlePath + ' memoryGB=' + memoryGB);
+    this._guestConnected = true;
+    this._emit('guestConnectionChanged', { connected: true });
+    return { success: true };
+  }
+
+  async installSdk(subpath, version) {
+    console.log('[claude-swift] installSdk() subpath=' + subpath + ' version=' + version);
+    return { success: true };
+  }
+
+  kill(id, signal) {
+    console.log('[claude-swift] kill(' + id + ', ' + signal + ')');
+    return this.killProcess(id);
+  }
+
+  writeStdin(id, data) {
+    return this.writeToProcess(id, data);
+  }
+
+  spawn(id, processName, command, args, options, envVars, additionalMounts, isResume, allowedDomains, sharedCwdPath) {
+    console.log('[claude-swift] spawn() id=' + id + ' cmd=' + command + ' args=' + JSON.stringify(args));
+    try {
+      // SECURITY: Filter environment variables
+      const env = filterEnv(process.env, envVars);
+      const cwd = sharedCwdPath || (options && options.cwd) || process.cwd();
+      const proc = nodeSpawn(command, args || [], Object.assign({ cwd: cwd, env: env, stdio: ['pipe', 'pipe', 'pipe'] }, options || {}));
+      this._processes.set(id, proc);
+
+      const self = this;
       let stdoutBuffer = '';
-      let stdoutTimer = null;
-      const STDOUT_FLUSH_DELAY = 16; // ~1 frame
+      let stderrBuffer = '';
 
       if (proc.stdout) {
-        proc.stdout.on('data', (data) => {
-          // First stdout = process is ready (handshake complete)
-          markReady();
-
-          stdoutBuffer += data.toString('utf-8');
-          if (!stdoutTimer) {
-            stdoutTimer = setTimeout(() => {
-              if (stdoutBuffer && vm._onStdout) {
-                trace('vm', 'stdout', { id, len: stdoutBuffer.length });
-                vm._onStdout(id, stdoutBuffer);
+        proc.stdout.on('data', function(data) {
+          stdoutBuffer += data.toString();
+          const lines = stdoutBuffer.split('\n');
+          stdoutBuffer = lines.pop();
+          for (const line of lines) {
+            if (line.trim() && self._onStdout) {
+              if (TRACE_IO) {
+                trace('stdout line: ' + line.substring(0, 200) + (line.length > 200 ? '...' : ''));
               }
-              stdoutBuffer = '';
-              stdoutTimer = null;
-            }, STDOUT_FLUSH_DELAY);
+              self._onStdout(id, line + '\n');
+            }
           }
         });
       }
-
       if (proc.stderr) {
-        proc.stderr.on('data', (data) => {
-          // stderr also indicates process is alive
-          markReady();
-          trace('vm', 'stderr', { id, len: data.length });
-          if (vm._onStderr) vm._onStderr(id, data.toString('utf-8'));
-        });
-      }
-
-      // CRITICAL: Add stdin error handler to catch EPIPE
-      if (proc.stdin) {
-        proc.stdin.on('error', (err) => {
-          trace('vm', 'stdin error', { id, code: err.code, msg: err.message });
-          // EPIPE is expected when process exits - don't treat as fatal
-          if (err.code !== 'EPIPE') {
-            if (vm._onError) vm._onError(id, `stdin error: ${err.message}`, err.stack);
+        proc.stderr.on('data', function(data) {
+          stderrBuffer += data.toString();
+          const lines = stderrBuffer.split('\n');
+          stderrBuffer = lines.pop();
+          for (const line of lines) {
+            if (line.trim() && self._onStderr) {
+              if (TRACE_IO) {
+                trace('stderr line: ' + line.substring(0, 200) + (line.length > 200 ? '...' : ''));
+              }
+              self._onStderr(id, line + '\n');
+            }
           }
         });
       }
-
-      proc.on('exit', (code, signal) => {
-        cleanup();
-        if (vm._onExit) vm._onExit(id, code || 0, signal || '');
+      proc.on('exit', function(code, signal) {
+        if (stdoutBuffer.trim() && self._onStdout) {
+          self._onStdout(id, stdoutBuffer);
+        }
+        if (stderrBuffer.trim() && self._onStderr) {
+          self._onStderr(id, stderrBuffer);
+        }
+        console.log('[claude-swift] Process ' + id + ' exited: code=' + code + ' signal=' + signal);
+        trace('Process ' + id + ' exited: code=' + code);
+        if (self._onExit) self._onExit(id, code || 0, signal || '');
+        self._processes.delete(id);
       });
-      proc.on('error', (err) => {
-        cleanup();
-        if (vm._onError) vm._onError(id, err.message, err.stack);
+      proc.on('error', function(err) {
+        console.error('[claude-swift] Process ' + id + ' error:', err);
+        if (self._onError) self._onError(id, err.message, err.stack);
       });
 
       return { success: true, pid: proc.pid };
     } catch (err) {
-      trace('vm', 'spawn error', { error: err.message });
-      if (vm._onError) vm._onError(id, err.message, err.stack);
-      return { success: false, error: err.message };
+      console.error('[claude-swift] spawn error:', err);
+      if (this._onError) this._onError(id, err.message, err.stack);
+      throw err;
     }
-  },
+  }
 
-  kill: async (id, signal) => {
-    trace('vm', 'kill()', { id, signal });
-    const proc = vm._processes?.get(id);
+  spawnSync(command, args, options) {
+    console.log('[claude-swift] spawnSync() cmd=' + command);
+    try {
+      const result = nodeSpawnSync(command, args || [], Object.assign({ encoding: 'utf-8' }, options || {}));
+      return { stdout: result.stdout, stderr: result.stderr, status: result.status, signal: result.signal, error: result.error };
+    } catch (err) {
+      console.error('[claude-swift] spawnSync error:', err);
+      return { error: err, status: 1 };
+    }
+  }
+
+  stopVM() {
+    console.log('[claude-swift] stopVM()');
+    for (const entry of this._processes) {
+      try { entry[1].kill('SIGTERM'); } catch (e) {}
+    }
+    this._processes.clear();
+    this._guestConnected = false;
+    this._emit('guestConnectionChanged', { connected: false });
+  }
+
+  killProcess(id) {
+    console.log('[claude-swift] killProcess(' + id + ')');
+    const proc = this._processes.get(id);
     if (proc) {
-      try {
-        proc.kill(signal || 'SIGTERM');
-      } catch (err) {
-        trace('vm', 'kill error', { id, error: err.message });
-      }
-      // Cleanup will happen in exit handler, but delete from map immediately
-      vm._processes.delete(id);
-      vm._processState?.delete(id);
+      try { proc.kill('SIGTERM'); } catch (e) {}
+      this._processes.delete(id);
     }
-  },
-
-  writeStdin: async (id, data) => {
-    trace('vm', 'writeStdin()', { id, dataLen: data?.length });
-    const proc = vm._processes?.get(id);
-    const state = vm._processState?.get(id);
-
-    if (!proc || !proc.stdin || proc.stdin.destroyed) {
-      trace('vm', 'writeStdin failed - no process or stdin', { id });
-      return Promise.resolve(false);
-    }
-
-    // If process not ready yet, queue the write (handshake simulation)
-    if (state && !state.ready) {
-      trace('vm', 'writeStdin queued (waiting for process ready)', { id, dataLen: data?.length, queueLen: state.writeQueue.length });
-      return new Promise((resolve) => {
-        state.writeQueue.push({ data, resolve });
-      });
-    }
-
-    // Process is ready, write directly
-    return new Promise((resolve) => {
-      try {
-        // Check if write buffer has space (backpressure handling)
-        const canWrite = proc.stdin.write(data);
-        if (!canWrite) {
-          trace('vm', 'writeStdin backpressure detected', { id });
-          // Wait for drain event before resolving
-          proc.stdin.once('drain', () => {
-            trace('vm', 'writeStdin buffer drained', { id });
-            resolve(true);
-          });
-        } else {
-          resolve(true);
-        }
-      } catch (err) {
-        trace('vm', 'writeStdin error', { id, error: err.message });
-        resolve(false);
-      }
-    });
-  },
-
-  readFile: async (sessionName, vmPath) => {
-    let hostPath = vmPath;
-    if (vmPath?.startsWith('/sessions/')) {
-      hostPath = path.join(SESSIONS_BASE, vmPath.substring('/sessions/'.length));
-    }
-    return fs.readFileSync(hostPath).toString('base64');
-  },
-
-  writeFile: async (sessionName, vmPath, base64Content) => {
-    let hostPath = vmPath;
-    if (vmPath?.startsWith('/sessions/')) {
-      hostPath = path.join(SESSIONS_BASE, vmPath.substring('/sessions/'.length));
-    }
-    const dir = path.dirname(hostPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(hostPath, Buffer.from(base64Content, 'base64'), { mode: 0o600 });
-    return true;
-  },
-
-  mountPath: async (processId, subpath, pathName, mode) => {
-    trace('vm', 'mountPath()', { processId, subpath, pathName, mode });
-
-    // On Linux we need to create the mount point directory/symlink
-    // subpath is like "/sessions/laughing-zen-darwin/mnt/zack"
-    // pathName is like "/home/zack" (the actual host path to mount)
-    try {
-      if (subpath && pathName) {
-        let hostMountPoint = subpath;
-        if (subpath.startsWith('/sessions/')) {
-          hostMountPoint = path.join(SESSIONS_BASE, subpath.substring('/sessions/'.length));
-        }
-
-        // Create parent directory
-        const parentDir = path.dirname(hostMountPoint);
-        if (!fs.existsSync(parentDir)) {
-          fs.mkdirSync(parentDir, { recursive: true, mode: 0o700 });
-        }
-
-        // Create symlink to host path (if it doesn't exist)
-        if (!fs.existsSync(hostMountPoint)) {
-          fs.symlinkSync(pathName, hostMountPoint);
-          trace('vm', 'mountPath created symlink', { hostMountPoint, pathName });
-        }
-      }
-    } catch (e) {
-      trace('vm', 'mountPath error (non-fatal)', { error: e.message });
-    }
-
-    return { success: true };
-  },
-
-  addApprovedOauthToken: async (token) => {
-    trace('vm', 'addApprovedOauthToken()');
-    return { success: true };
-  },
-
-  isDebugLoggingEnabled: () => TRACE_ENABLED,
-  setDebugLogging: (enabled) => { trace('vm', 'setDebugLogging()', { enabled }); },
-  showDebugWindow: () => { trace('vm', 'showDebugWindow()'); },
-  hideDebugWindow: () => { trace('vm', 'hideDebugWindow()'); },
-  isConsoleEnabled: () => !!process.env.CLAUDE_ENABLE_LOGGING,
-});
-
-const clipboard = createEmitterObject('clipboard', {
-  read: () => {
-    trace('clipboard', 'read()');
-    try {
-      return execFileSync('xclip', ['-selection', 'clipboard', '-o'], { encoding: 'utf-8', timeout: 2000 });
-    } catch (e) {
-      try {
-        return execFileSync('xsel', ['--clipboard', '--output'], { encoding: 'utf-8', timeout: 2000 });
-      } catch (e2) { return ''; }
-    }
-  },
-  write: (text) => {
-    trace('clipboard', 'write()');
-    try {
-      execFileSync('xclip', ['-selection', 'clipboard'], { input: text, timeout: 2000 });
-    } catch (e) {
-      try {
-        execFileSync('xsel', ['--clipboard', '--input'], { input: text, timeout: 2000 });
-      } catch (e2) {}
-    }
-  },
-  readImage: async () => null,
-  writeImage: async () => {},
-  clear: () => {},
-});
-
-const dictation = createEmitterObject('dictation', {
-  start: async () => { trace('dictation', 'start()'); return false; },
-  stop: async () => { trace('dictation', 'stop()'); },
-  isListening: () => false,
-  isRecording: () => false,
-});
-
-const quickAccess = createEmitterObject('quickAccess', {
-  show: () => { trace('quickAccess', 'show()'); },
-  hide: () => { trace('quickAccess', 'hide()'); },
-  toggle: () => { trace('quickAccess', 'toggle()'); },
-  isVisible: () => false,
-  submit: (data) => { trace('quickAccess', 'submit()', data); },
-});
-
-// Helper to translate VM paths to host paths for file operations
-function translateVmPathToHost(vmPath) {
-  if (!vmPath || typeof vmPath !== 'string') return vmPath;
-
-  // Handle /sessions/{session}/mnt/{mountName}/... paths
-  if (vmPath.startsWith('/sessions/')) {
-    const parts = vmPath.split('/');
-    // /sessions/session-name/mnt/mountName/rest/of/path
-    const mntIdx = parts.indexOf('mnt');
-    if (mntIdx !== -1 && parts[mntIdx + 1]) {
-      const mountName = parts[mntIdx + 1];
-      const rest = parts.slice(mntIdx + 2).join('/');
-
-      // Common mount mappings - mount name matches current user's username
-      const username = os.userInfo().username;
-      if (mountName === username) {
-        return rest ? path.join(os.homedir(), rest) : os.homedir();
-      }
-      if (mountName === '.claude') {
-        return rest ? path.join(os.homedir(), '.claude', rest) : path.join(os.homedir(), '.claude');
-      }
-    }
-    // Fallback: try mapping to sessions base
-    return path.join(SESSIONS_BASE, vmPath.substring('/sessions/'.length));
   }
 
-  return vmPath;
-}
+  cancelProcess(id) {
+    return this.killProcess(id);
+  }
 
-const desktop = createEmitterObject('desktop', {
-  getDisplays: async () => [],
-  getActiveWindow: async () => null,
-  getOpenWindows: async () => [],
-  getOpenDocuments: async () => [],
-  captureScreen: async () => null,
-  captureScreenshot: async () => null,
-  captureWindow: async () => null,
-  captureWindowScreenshot: async () => null,
-  getSessionId: () => 'linux-session-' + Date.now(),
-  openFile: (filePath) => {
-    const hostPath = translateVmPathToHost(filePath);
-    trace('desktop', 'openFile()', { filePath, hostPath });
-    const { execFile } = require('child_process');
-    execFile('xdg-open', [hostPath], (err) => {
-      if (err) trace('desktop', 'openFile error', { error: err.message });
-    });
-    return Promise.resolve(true);
-  },
-  revealFile: (filePath) => {
-    const hostPath = translateVmPathToHost(filePath);
-    trace('desktop', 'revealFile()', { filePath, hostPath });
-    const { execFile } = require('child_process');
-    execFile('xdg-open', [path.dirname(hostPath)], (err) => {
-      if (err) trace('desktop', 'revealFile error', { error: err.message });
-    });
-    return Promise.resolve(true);
-  },
-  previewFile: (filePath) => {
-    const hostPath = translateVmPathToHost(filePath);
-    trace('desktop', 'previewFile()', { filePath, hostPath });
-    const { execFile } = require('child_process');
-    execFile('xdg-open', [hostPath], (err) => {
-      if (err) trace('desktop', 'previewFile error', { error: err.message });
-    });
-    return Promise.resolve(true);
-  },
-});
-
-const events = createEmitterObject('events', {
-  setListener: (callback) => {
-    trace('events', 'setListener()');
-    events._listener = callback;
-  },
-});
-
-const windowModule = createEmitterObject('window', {
-  focus: async () => { trace('window', 'focus()'); },
-  blur: async () => { trace('window', 'blur()'); },
-  minimize: async () => { trace('window', 'minimize()'); },
-  maximize: async () => { trace('window', 'maximize()'); },
-  restore: async () => { trace('window', 'restore()'); },
-  close: async () => { trace('window', 'close()'); },
-  setTitle: async (title) => { trace('window', 'setTitle()', { title }); },
-  setBounds: async (bounds) => { trace('window', 'setBounds()', bounds); },
-  getBounds: async () => ({ x: 0, y: 0, width: 800, height: 600 }),
-  setWindowButtonPosition: () => {},
-  setTrafficLightPosition: () => {},
-  setThemeMode: (mode) => { trace('window', 'setThemeMode()', { mode }); },
-});
-
-// File picker using Electron's built-in dialog (no external dependencies!)
-async function openFileDialog(options = {}) {
-  try {
-    const { dialog } = require('electron');
-
-    const isDirectory = options.directory || options.properties?.includes('openDirectory');
-    const isMultiple = options.multiple || options.properties?.includes('multiSelections');
-    const isSave = options.save;
-    const title = options.title || (isDirectory ? 'Select Folder' : 'Select File');
-    const defaultPath = options.defaultPath || os.homedir();
-
-    trace('files', 'openFileDialog()', { isDirectory, isMultiple, isSave, title, defaultPath });
-
-    if (isSave) {
-      // Save dialog
-      const result = await dialog.showSaveDialog({
-        title: title,
-        defaultPath: defaultPath,
-        properties: ['createDirectory', 'showOverwriteConfirmation']
-      });
-
-      if (result.canceled || !result.filePath) {
-        trace('files', 'save dialog cancelled');
-        return [];
+  writeToProcess(id, data) {
+    console.log('[claude-swift] writeToProcess(' + id + ')');
+    const proc = this._processes.get(id);
+    if (proc && proc.stdin) {
+      // Translate /sessions/... paths to host paths in stdin data
+      let translatedData = data;
+      if (typeof data === 'string' && data.includes('/sessions/')) {
+        translatedData = data.replace(/\/sessions\//g, SESSIONS_BASE + '/');
+        if (TRACE_IO) {
+          trace('writeToProcess: translated /sessions/ paths in stdin');
+        }
       }
-      trace('files', 'save dialog result', { filePath: result.filePath });
-      return [result.filePath];
-    } else {
-      // Open dialog (file or directory)
-      const properties = [];
-      if (isDirectory) {
-        properties.push('openDirectory', 'createDirectory');
-      } else {
-        properties.push('openFile');
-      }
-      if (isMultiple) {
-        properties.push('multiSelections');
-      }
-
-      const result = await dialog.showOpenDialog({
-        title: title,
-        defaultPath: defaultPath,
-        properties: properties
-      });
-
-      if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
-        trace('files', 'open dialog cancelled');
-        return [];
-      }
-      trace('files', 'open dialog result', { filePaths: result.filePaths });
-      return result.filePaths;
+      proc.stdin.write(translatedData);
     }
-  } catch (err) {
-    trace('files', 'openFileDialog error', { error: err.message });
-    // Fallback: return home directory so app doesn't freeze
-    console.warn('[claude-swift-stub] Dialog error, using home as fallback:', err.message);
-    return [os.homedir()];
+  }
+
+  _emit(eventName, payload) {
+    if (this._eventListener) this._eventListener(eventName, payload);
+    this.emit(eventName, payload);
+  }
+
+  isGuestConnected() {
+    return this._guestConnected;
+  }
+
+  getRunningStatus() {
+    return { running: this._guestConnected, connected: this._guestConnected };
   }
 }
 
-const files = createEmitterObject('files', {
-  select: async (options) => {
-    trace('files', 'select()', options);
-    try {
-      const result = await openFileDialog(options);
-      return result;
-    } catch (err) {
-      trace('files', 'select error', { error: err.message });
-      return [];
-    }
-  },
-  save: async (options) => {
-    trace('files', 'save()', options);
-    try {
-      const result = await openFileDialog({ ...options, save: true });
-      return result.length > 0 ? result[0] : null;
-    } catch (err) {
-      trace('files', 'save error', { error: err.message });
-      return null;
-    }
-  },
-  reveal: (filePath) => {
-    const hostPath = translateVmPathToHost(filePath);
-    trace('files', 'reveal()', { filePath, hostPath });
-    const { spawn } = require('child_process');
-    spawn('xdg-open', [path.dirname(hostPath)], { detached: true, stdio: 'ignore' });
-  },
-  openLocalFile: (filePath) => {
-    const hostPath = translateVmPathToHost(filePath);
-    trace('files', 'openLocalFile()', { filePath, hostPath });
-    const { spawn } = require('child_process');
-    spawn('xdg-open', [hostPath], { detached: true, stdio: 'ignore' });
-    return Promise.resolve(true);
-  },
-  read: (filePath) => Promise.resolve(fs.readFileSync(filePath, 'utf-8')),
-  write: (filePath, content) => { fs.writeFileSync(filePath, content, 'utf-8'); return Promise.resolve(true); },
-  exists: (filePath) => Promise.resolve(fs.existsSync(filePath)),
-  stat: (filePath) => {
-    const stats = fs.statSync(filePath);
-    return Promise.resolve({
-      size: stats.size,
-      isFile: stats.isFile(),
-      isDirectory: stats.isDirectory(),
-      created: stats.birthtime,
-      modified: stats.mtime,
-    });
-  },
-  list: (dirPath) => {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    return Promise.resolve(entries.map(e => ({
-      name: e.name,
-      isFile: e.isFile(),
-      isDirectory: e.isDirectory(),
-      path: path.join(dirPath, e.name)
-    })));
-  },
-});
+const instance = new SwiftAddonStub();
+trace('Instance created. vm=' + typeof instance.vm + ' vm.setEventCallbacks=' + typeof instance.vm.setEventCallbacks);
+console.log('[claude-swift-stub] Exporting instance. Instance type:', typeof instance, 'setEventCallbacks:', typeof instance.setEventCallbacks);
+console.log('[claude-swift-stub] instance.on:', typeof instance.on);
+console.log('[claude-swift-stub] instance instanceof EventEmitter:', instance instanceof EventEmitter);
 
-const midnightOwl = createEmitterObject('midnightOwl', {
-  getState: async () => ({ enabled: false }),
-  setEnabled: (enabled) => { trace('midnightOwl', 'setEnabled()', { enabled }); },
-  getEnabled: () => false,
-});
-
-const api = createEmitterObject('api', {});
-
-// ============================================================
-// Main instance - also an EventEmitter
-// ============================================================
-
-class ClaudeSwiftInstance extends EventEmitter {
-  constructor() {
-    super();
-    this.setMaxListeners(50);
-
-    trace('constructor', 'Constructor START');
-
-    // Attach all sub-modules
-    this.notifications = notifications;
-    this.vm = vm;
-    this.clipboard = clipboard;
-    this.dictation = dictation;
-    this.quickAccess = quickAccess;
-    this.desktop = desktop;
-    this.events = events;
-    this.window = windowModule;
-    this.files = files;
-    this.midnightOwl = midnightOwl;
-    this.api = api;
-
-    // Top-level methods
-    this.initialize = async () => { trace('instance', 'initialize()'); return true; };
-    this.shutdown = async () => { trace('instance', 'shutdown()'); };
-    this.setWindowButtonPosition = () => {};
-    this.setThemeMode = (mode) => { trace('instance', 'setThemeMode()', { mode }); };
-    this.setApplicationMenu = () => {};
-
-    trace('constructor', 'Constructor COMPLETE');
-  }
-}
-
-const instance = new ClaudeSwiftInstance();
-
-// Emit ready events after a short delay
+// Emit ready events after a short delay to simulate VM startup
 setTimeout(() => {
-  trace('init', 'Emitting guestConnectionChanged and guestReady events');
-  instance.emit('guestConnectionChanged', { connected: true });
-  instance.emit('guestReady');
-  vm.emit('guestConnectionChanged', { connected: true });
-  vm.emit('guestReady');
+  console.log('[claude-swift-stub] Emitting guestConnectionChanged and guestReady events');
+  instance._emit('guestConnectionChanged', { connected: true });
+  instance._emit('guestReady');
 }, 100);
 
-// ============================================================
-// Export structure - handle all access patterns
-// ============================================================
+// ESM import() of CommonJS returns a module namespace object where:
+// - .default is set to module.exports
+// - Named exports are set to module.exports properties
+//
+// When app does: const mod = (await import("@ant/claude-swift")).default
+// It gets module.exports, which is our instance.
+//
+// The issue is that our instance IS an EventEmitter, so .on() should work.
+// Let's log this for debugging:
 
-// The main export object IS the instance (so module.exports.on works)
 module.exports = instance;
 module.exports.default = instance;
 
-// Re-export all sub-modules at top level
-module.exports.notifications = notifications;
-module.exports.vm = vm;
-module.exports.clipboard = clipboard;
-module.exports.dictation = dictation;
-module.exports.quickAccess = quickAccess;
-module.exports.desktop = desktop;
-module.exports.events = events;
-module.exports.window = windowModule;
-module.exports.files = files;
-module.exports.midnightOwl = midnightOwl;
-module.exports.api = api;
+// For ESM compatibility - mark as ES module
+Object.defineProperty(module.exports, '__esModule', { value: true });
 
-// Make sure .default also has all sub-modules
-module.exports.default.notifications = notifications;
-module.exports.default.vm = vm;
-module.exports.default.clipboard = clipboard;
-module.exports.default.dictation = dictation;
-module.exports.default.quickAccess = quickAccess;
-module.exports.default.desktop = desktop;
-module.exports.default.events = events;
-module.exports.default.window = windowModule;
-module.exports.default.files = files;
-module.exports.default.midnightOwl = midnightOwl;
-module.exports.default.api = api;
+// Explicitly bind EventEmitter methods to ensure they work
+// This may help if 'this' binding is getting lost somewhere
+const origOn = instance.on.bind(instance);
+const origEmit = instance.emit.bind(instance);
+instance.on = function(...args) {
+  console.log('[claude-swift-stub] .on() called with event:', args[0]);
+  return origOn(...args);
+};
+instance.emit = function(...args) {
+  console.log('[claude-swift-stub] .emit() called with event:', args[0]);
+  return origEmit(...args);
+};
 
-// Verification logging
-console.log(`${LOG_PREFIX} === EXPORT VERIFICATION ===`);
-console.log(`${LOG_PREFIX} module.exports.on: ${typeof module.exports.on}`);
-console.log(`${LOG_PREFIX} module.exports.notifications.on: ${typeof module.exports.notifications.on}`);
-console.log(`${LOG_PREFIX} module.exports.vm.on: ${typeof module.exports.vm.on}`);
-console.log(`${LOG_PREFIX} module.exports.vm.setEventCallbacks: ${typeof module.exports.vm.setEventCallbacks}`);
-console.log(`${LOG_PREFIX} module.exports.default.on: ${typeof module.exports.default.on}`);
-
-trace('exports', 'Module exports set up complete');
+trace('Module exports set. default.vm.setEventCallbacks=' + typeof module.exports.default.vm.setEventCallbacks);
+console.log('[claude-swift-stub] module.exports.on:', typeof module.exports.on);
+console.log('[claude-swift-stub] module.exports.default.on:', typeof module.exports.default.on);
+console.log('[claude-swift-stub] Verifying .on is callable:', typeof instance.on === 'function' ? 'YES' : 'NO');
