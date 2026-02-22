@@ -249,7 +249,7 @@ Even though our stubs don't handle tokens, trace logs could theoretically captur
 |--------|--------|-------------|
 | Store OAuth tokens | **Never** | `addApprovedOauthToken` is a documented no-op |
 | Forward `CLAUDE_CODE_OAUTH_TOKEN` to Claude Code CLI | **Yes — intentional** | Required for CLI auth; token flows from Claude Desktop (Anthropic) → Claude Code CLI (Anthropic) only |
-| Forward any other OAuth/credential env vars to subprocesses | **Never** | `filterEnv` + `BLOCKED_ENV_KEY_PATTERN` blocks all others; SDK bridge uses separate allowlist |
+| Forward additional OAuth/credential env vars from `additionalEnv` / `envVars` to subprocesses (e.g., `ANTHROPIC_AUTH_TOKEN`, bearer tokens, session cookies) | **Never** | `filterEnv` + `BLOCKED_ENV_KEY_PATTERN` drop credential-like keys from extra env; base `process.env` forwarding is constrained to a small allowlist (including `ANTHROPIC_API_KEY` as an intentional exception for API/CLI auth) |
 | Intercept OAuth callbacks | **Never** | `AuthRequest.isAvailable()` returns `false`; no protocol handler registered |
 | Process authentication credentials in this layer | **Never** | All auth handling is in unmodified Anthropic code (renderer + CLI) |
 | Log token values | **Never** | `redactForLogs` strips all credential patterns before any log write |
