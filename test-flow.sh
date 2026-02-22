@@ -72,7 +72,7 @@ fi
 
 step "4. Script Syntax Check"
 
-for script in test-launch.sh install-oneclick.sh install.sh; do
+for script in test-launch.sh install.sh; do
     if [[ -f "$script" ]]; then
         if bash -n "$script" 2>/dev/null; then
             pass "$script syntax OK"

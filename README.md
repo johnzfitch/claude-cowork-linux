@@ -36,7 +36,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 ## ![](.github/assets/icons/status-24x24.png) Status
 
 - **Unofficial research preview**: This is reverse-engineered and may break when Claude Desktop updates.
-- **Linux support**: Currently targets **Linux x86_64 + X11** (Wayland support is not implemented).
+- **Linux support**: Currently targets **Linux x86_64**. Wayland: auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Ozone backend).
 - **Access**: Requires your own Claude Desktop DMG and an account with Cowork enabled.
 
 ---
@@ -63,7 +63,7 @@ cd claude-cowork-linux
 ./install.sh ~/Downloads/Claude-*.dmg
 
 # 3. Launch
-./run.sh
+./test-launch.sh
 ```
 
 The installer will:
@@ -87,7 +87,7 @@ The installer will:
 ├─────────────────────────────────────────────────────────────────┤
 │  Main Process (index.js)                                        │
 │  ├── Platform headers: darwin/14.0 (spoofed)                    │
-│  ├── Ege() function: patched for Linux support                  │
+│  ├── wj() function: patched for Linux support                   │
 │  └── LocalAgentModeSessionManager                               │
 ├─────────────────────────────────────────────────────────────────┤
 │  @ant/claude-swift (STUBBED)                                    │
@@ -153,7 +153,7 @@ This makes the server think we're on macOS 14 (Sonoma), enabling Cowork features
 <details>
 <summary><strong>2. Platform Gate Bypass</strong></summary>
 
-The `Ege()` function checks if Cowork is supported. We patch it to return `{status: "supported"}` for Linux:
+The `wj()` function checks if Cowork is supported. We patch it to return `{status: "supported"}` for Linux:
 
 ```javascript
 if (process.platform === 'linux') {
@@ -203,20 +203,39 @@ The binary is a Bun-compiled executable at:
 ```
 claude-cowork-linux/
 ├── stubs/
-│   └── @ant/
-│       ├── claude-swift/
-│       │   └── js/index.js       # Swift addon stub (VM emulation)
-│       └── claude-native/
-│           └── index.js          # Native utilities stub
-├── .github/
-│   └── assets/icons/             # Documentation icons
-├── install.sh                    # Automated installer
-├── run.sh                        # Launch script
-├── debug.sh                      # Multi-window debug launcher
-└── README.md                     # This file
+│   ├── @ant/claude-swift/js/index.js   # Primary stub: vm.spawn(), filterEnv(), path translation
+│   ├── @ant/claude-native/index.js     # Auth (xdg-open), keyboard constants, platform helpers
+│   └── frame-fix/
+│       ├── frame-fix-wrapper.js        # Early bootstrap: TMPDIR fix, platform spoofing, VM markers
+│       └── frame-fix-entry.js          # Entry point: loads frame-fix-wrapper then main index.js
+├── cowork/
+│   ├── event_dispatch.js               # EIPC event dispatch for LocalAgentModeSessions
+│   └── sdk_bridge.js                   # SDK bridge (spawn dead code, kept for session state)
+├── docs/
+│   ├── extensions.md                   # MCP and Chrome Extension integration overview
+│   ├── extensions-connectors-fix.md    # Fix for greyed-out connectors ($n variable patch)
+│   ├── fix-origin-validation.md        # IPC origin validation errors on Linux
+│   ├── known-issues.md                 # Safe Storage encryption, keyring setup
+│   ├── safestorage-tokens.md           # How to persist tokens across restarts
+│   └── security-review-installer.md   # Security audit of install.sh
+├── config/
+│   └── hyprland/claude.conf            # Optional: Hyprland window rules
+├── patches/
+│   └── enable-cowork.py               # Patches wj() to return {status:"supported"}
+├── .github/assets/                     # README icons and hero image
+├── linux-loader.js                     # Entry point: platform spoofing, IPC setup, session lifecycle
+├── install.sh                          # One-click installer: downloads DMG, deploys stubs
+├── test-launch.sh                      # Dev launcher: repacks asar, runs AppImage electron
+├── test-launch-devtools.sh             # Dev launcher with --inspect (Node.js DevTools)
+├── test-flow.sh                        # Pre-flight checks: env vars, stub URLs, log scanning
+├── PKGBUILD                            # Arch Linux AUR package definition
+├── OAUTH-COMPLIANCE.md                 # OAuth token handling audit
+├── CLAUDE.md                           # Project guide and critical paths
+├── README.md                           # This file
+└── LICENSE
 ```
 
-After running `install.sh`, the `app/` directory will contain the extracted Claude Desktop.
+After running `install.sh`, the `linux-app-extracted/` directory will contain the extracted Claude Desktop.
 
 > [!NOTE]
 > The installer automatically detects and extracts both `app.asar` (newer versions) and unpacked `app/` directories (older versions) from the DMG.
@@ -235,17 +254,17 @@ If the automated installer doesn't work, follow these steps:
 7z x Claude-*.dmg -o/tmp/claude-extract
 
 # Create app directory
-mkdir -p app
+mkdir -p linux-app-extracted
 
 # For newer versions (app.asar):
 if [ -f "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar" ]; then
-    npx --yes asar extract "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar" app
+    npx --yes asar extract "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar" linux-app-extracted
     # Copy unpacked files if they exist
     [ -d "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar.unpacked" ] && \
-        cp -r "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar.unpacked/"* app/
+        cp -r "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar.unpacked/"* linux-app-extracted/
 # For older versions (unpacked app/):
 elif [ -d "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app" ]; then
-    cp -r "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app/"* app/
+    cp -r "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app/"* linux-app-extracted/
 fi
 
 # Cleanup
@@ -259,7 +278,7 @@ rm -rf /tmp/claude-extract
 
 ```bash
 # Copy our stubs over the original modules
-cp -r stubs/@ant/* app/node_modules/@ant/
+cp -r stubs/@ant/* linux-app-extracted/node_modules/@ant/
 ```
 
 </details>
@@ -267,7 +286,7 @@ cp -r stubs/@ant/* app/node_modules/@ant/
 <details>
 <summary><strong>3. Patch index.js</strong></summary>
 
-Edit `app/.vite/build/index.js` and find the `Ege()` function. Add this at the start:
+Edit `linux-app-extracted/.vite/build/index.js` and find the `wj()` function. Add this at the start:
 
 ```javascript
 if (process.platform === 'linux') {
@@ -308,17 +327,17 @@ npm install electron
 <details>
 <summary><strong>Verify patches were applied</strong></summary>
 
-Check that all 3 patches are present in `app/.vite/build/index.js`:
+Check that all 3 patches are present in `linux-app-extracted/.vite/build/index.js`:
 
 ```bash
-# 1. Platform support (Ege function)
-grep -q 'if(process.platform==="linux")return{status:"supported"}' app/.vite/build/index.js && echo "✓ Patch 1" || echo "✗ Patch 1 missing"
+# 1. Platform support (wj function)
+grep -q 'if(process.platform==="linux")return{status:"supported"}' linux-app-extracted/.vite/build/index.js && echo "✓ Patch 1" || echo "✗ Patch 1 missing"
 
 # 2. IPC origin validation (Q7 function)
-grep -q 'process.platform==="linux"' app/.vite/build/index.js && echo "✓ Patch 2" || echo "✗ Patch 2 missing"
+grep -q 'process.platform==="linux"' linux-app-extracted/.vite/build/index.js && echo "✓ Patch 2" || echo "✗ Patch 2 missing"
 
 # 3. Extensions/connectors ($n variable)
-grep -q '\$n=process.platform==="darwin"||process.platform==="linux"' app/.vite/build/index.js && echo "✓ Patch 3" || echo "✗ Patch 3 missing"
+grep -q '\$n=process.platform==="darwin"||process.platform==="linux"' linux-app-extracted/.vite/build/index.js && echo "✓ Patch 3" || echo "✗ Patch 3 missing"
 ```
 
 If any patches are missing, run `./install.sh` again.
@@ -389,30 +408,13 @@ Ensure the stub has methods on the `this.vm` object, not just the class.
 
 ## ![](.github/assets/icons/console-24x24.png) Development
 
-### Debug Script (Recommended)
-
-The easiest way to debug is using the included `debug.sh` script, which automatically opens 4 monitoring windows:
-
 ```bash
-./debug.sh
+./test-launch.sh              # repacks asar automatically if stubs changed
+./test-launch-devtools.sh     # with Node.js inspector
+./test-flow.sh                # pre-flight: env, stub URLs, log errors
 ```
 
-This creates a multi-window layout showing:
-- **Window 1**: Main application output
-- **Window 2**: Swift stub trace log (VM operations, path translations)
-- **Window 3**: Main application log (Electron logging)
-- **Window 4**: Process monitor (live view of electron/claude processes)
-
-The script auto-detects and uses:
-- **tmux** (if available) - split-pane layout
-- **kitty** (if available) - native grid layout
-- **gnome-terminal/konsole/xterm** - separate windows
-
-All environment variables are set automatically. Logs are cleared before each run.
-
-### Manual Debug Logging
-
-If you prefer to debug manually:
+### Debug Logging
 
 ```bash
 # Include Claude Code stdout/stderr in the trace log (redacted, but still treat logs as sensitive)
@@ -428,7 +430,7 @@ export ELECTRON_ENABLE_LOGGING=1
 rm -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
 
 # Run with output capture
-./run.sh 2>&1 | tee /tmp/claude-full.log
+./test-launch.sh 2>&1 | tee /tmp/claude-full.log
 
 # In another terminal, watch the trace
 tail -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
@@ -459,6 +461,8 @@ This project includes security hardening:
 - **Environment filtering** - Allowlist of safe environment variables
 - **Secure permissions** - Session directory uses 700, not 777
 - **Symlink for /sessions** - No world-writable directories
+- **URL origin validation** - `Auth_$_doAuthInBrowser` and `AuthRequest.start()` enforce Anthropic-only domains
+- **OAuth compliance** - `BLOCKED_ENV_KEY_PATTERN` + `CREDENTIAL_EXEMPT_KEYS` prevent token leakage to subprocesses
 
 ---
 
