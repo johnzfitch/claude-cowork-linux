@@ -8,6 +8,7 @@ claude-app-*/
 extracted-mac-claude-desktop-*/
 extracted-mac-claude-desktop-*.zip
 linux-app-extracted.zip
+.asar-cache/
 mainView.js
 
 # AppImage and binaries

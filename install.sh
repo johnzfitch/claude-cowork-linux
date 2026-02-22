@@ -1,18 +1,19 @@
 #!/bin/bash
 #
-# Claude Desktop for Linux - One-Click Installer
+# Claude Desktop for Linux - Installer
 #
 # Usage: ./install.sh [path/to/Claude.dmg]
 #        curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh | bash
 #
 # This script:
-#   1. Checks/installs dependencies (7z, node, electron, asar)
-#   2. Downloads Claude macOS DMG from Anthropic's official CDN
-#   3. Extracts and patches the app for Linux compatibility
-#   4. Installs to ~/.local/share/claude-desktop (no sudo required)
-#   5. Creates desktop entry and ~/.local/bin launchers
+#   1. Checks/installs dependencies (git, 7z, node, electron, asar)
+#   2. Clones the claude-cowork-linux repo
+#   3. Extracts Claude Desktop from a macOS DMG
+#   4. Creates ~/.local/bin/claude-desktop launcher
+#   5. Creates desktop entry
 #
-# Requirements: Linux with apt/pacman/dnf, Node.js 18+, ~500MB disk space
+# Everything installs to user-local paths. Sudo is only used if system
+# packages (7z, node, etc.) need to be installed via your package manager.
 #
 # License: MIT
 # Source: https://github.com/johnzfitch/claude-cowork-linux
@@ -23,37 +24,25 @@ set -euo pipefail
 # Configuration
 # ============================================================
 
-VERSION="2.0.0"
-CLAUDE_VERSION="latest"
-
-# Claude Desktop download page (Cloudflare-protected; opened in browser, not curl'd)
+VERSION="3.0.0"
+REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
+INSTALL_DIR="$HOME/.local/share/claude-desktop"
 CLAUDE_DOWNLOAD_PAGE="https://claude.ai/download"
 
-# Stub download URLs (from GitHub repo)
-REPO_BASE="https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master"
-SWIFT_STUB_URL="${REPO_BASE}/stubs/@ant/claude-swift/js/index.js"
-NATIVE_STUB_URL="${REPO_BASE}/stubs/@ant/claude-native/index.js"
-
-# Minimum expected DMG size (100MB) - basic integrity check
+# Minimum expected DMG size (100MB)
 MIN_DMG_SIZE=100000000
 
-# Installation paths (user-local, no sudo required)
-INSTALL_DIR="$HOME/.local/share/claude-desktop"
-USER_DATA_DIR="$HOME/Library/Application Support/Claude"
-USER_LOG_DIR="$HOME/Library/Logs/Claude"
-USER_CACHE_DIR="$HOME/Library/Caches/Claude"
-
-# Temp directory for installation (with cleanup on multiple signals)
+# Temp directory (cleaned up on exit)
 WORK_DIR=$(mktemp -d)
 cleanup() { rm -rf "$WORK_DIR" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # ============================================================
 # Utility Functions
@@ -63,172 +52,84 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+die() { log_error "$@"; exit 1; }
+command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-die() {
-    log_error "$@"
-    exit 1
-}
-
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-# Detect package manager
-detect_pkg_manager() {
-    if command_exists apt-get; then
-        echo "apt"
-    elif command_exists pacman; then
-        echo "pacman"
-    elif command_exists dnf; then
-        echo "dnf"
-    elif command_exists zypper; then
-        echo "zypper"
-    elif command_exists nix-env; then
-        echo "nix"
-    else
-        echo "unknown"
-    fi
-}
-
-# ============================================================
-# Dependency Installation
-# ============================================================
-
-install_dependencies() {
-
-# Portable file size formatter (replacement for numfmt)
 format_size() {
     local size=$1
-    local units=("B" "KB" "MB" "GB" "TB")
+    local units=("B" "KB" "MB" "GB")
     local unit=0
     local num=$size
-    
-    while (( num > 1024 && unit < 4 )); do
+    while (( num > 1024 && unit < 3 )); do
         num=$((num / 1024))
         unit=$((unit + 1))
     done
-    
     echo "${num}${units[$unit]}"
 }
 
-# Optional SHA256 verification if checksum is known
-verify_checksum() {
-    local file_path="$1"
-    local expected_sha256="${CLAUDE_DMG_SHA256:-}"
-    
-    if [[ -z "$expected_sha256" ]]; then
-        log_warn "No SHA256 checksum provided (set CLAUDE_DMG_SHA256=<hash> to verify)"
-        log_info "Anthropic does not publish official checksums for Claude Desktop DMG"
-        log_info "Download page: $CLAUDE_DOWNLOAD_PAGE"
-        return 0
-    fi
-    
-    log_info "Verifying SHA256 checksum..."
-    local actual_sha256
-    if command -v sha256sum >/dev/null 2>&1; then
-        actual_sha256=$(sha256sum "$file_path" | awk "{print \$1}")
-    elif command -v shasum >/dev/null 2>&1; then
-        actual_sha256=$(shasum -a 256 "$file_path" | awk "{print \$1}")
-    else
-        log_warn "No SHA256 tool available (sha256sum or shasum required)"
-        return 0
-    fi
-    
-    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-        die "SHA256 checksum mismatch! Expected: $expected_sha256, Got: $actual_sha256"
-    fi
-    
-    log_success "SHA256 checksum verified"
+detect_pkg_manager() {
+    if command_exists apt-get; then echo "apt"
+    elif command_exists pacman; then echo "pacman"
+    elif command_exists dnf; then echo "dnf"
+    elif command_exists zypper; then echo "zypper"
+    elif command_exists nix-env; then echo "nix"
+    else echo "unknown"; fi
 }
 
+# ============================================================
+# Step 1: Dependencies
+# ============================================================
+
+install_dependencies() {
     log_info "Checking dependencies..."
 
     local pkg_manager
     pkg_manager=$(detect_pkg_manager)
     local missing=()
 
-    # Check each required command
-    if ! command_exists 7z; then
-        missing+=("7z")
-    fi
-    if ! command_exists node; then
-        missing+=("nodejs")
-    fi
-    if ! command_exists npm; then
-        missing+=("npm")
-    fi
-    if ! command_exists bwrap; then
-        missing+=("bubblewrap")
-    fi
-
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        log_info "Missing packages: ${missing[*]}"
-        log_warn "The following packages will be installed via your package manager."
-        echo ""
-        read -r -p "Continue with installation? [Y/n] " response
-        response=${response:-Y}
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            die "Installation cancelled by user"
-        fi
-
-        case "$pkg_manager" in
-            apt)
-                sudo apt-get update -qq
-                sudo apt-get install -y p7zip-full nodejs npm bubblewrap
-                ;;
-            pacman)
-                # Install only required packages without system upgrade
-                sudo pacman -S --noconfirm --needed p7zip nodejs npm bubblewrap
-                ;;
-            dnf)
-                sudo dnf install -y p7zip nodejs npm bubblewrap
-                ;;
-            zypper)
-                sudo zypper install -y p7zip nodejs npm bubblewrap
-                ;;
-            nix)
-                nix-env -iA nixpkgs.p7zip nixpkgs.nodejs nixpkgs.bubblewrap
-                ;;
-            *)
-                die "Unknown package manager. Please install manually: p7zip nodejs npm bubblewrap"
-                ;;
-        esac
-    fi
-
-    # Install npm packages to user prefix (avoid sudo npm)
-    local npm_prefix="${HOME}/.local"
-    mkdir -p "$npm_prefix"
-
-    if ! command_exists asar; then
-        log_info "Installing @electron/asar to $npm_prefix..."
-        npm config set prefix "$npm_prefix" 2>/dev/null || true
-        npm install --silent -g @electron/asar || die "Failed to install asar. Try: npm install -g @electron/asar"
-        export PATH="$npm_prefix/bin:$PATH"
-    fi
-
-    if ! command_exists electron; then
-        log_info "Installing electron to $npm_prefix..."
-        npm config set prefix "$npm_prefix" 2>/dev/null || true
-        npm install --silent -g electron || die "Failed to install electron. Try: npm install -g electron"
-        export PATH="$npm_prefix/bin:$PATH"
-    fi
-
-    # Verify all dependencies
-    local all_ok=true
-    for cmd in 7z node npm asar electron bwrap; do
-        if command_exists "$cmd"; then
-            log_success "Found: $cmd"
-        else
-            log_error "Missing: $cmd"
-            all_ok=false
+    for cmd in git 7z node npm bwrap; do
+        if ! command_exists "$cmd"; then
+            missing+=("$cmd")
         fi
     done
 
-    if [[ "$all_ok" != "true" ]]; then
-        die "Some dependencies could not be installed"
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_info "Missing packages: ${missing[*]}"
+        case "$pkg_manager" in
+            apt) sudo apt-get update -qq && sudo apt-get install -y git p7zip-full nodejs npm bubblewrap ;;
+            pacman) sudo pacman -S --noconfirm --needed git p7zip nodejs npm bubblewrap ;;
+            dnf) sudo dnf install -y git p7zip nodejs npm bubblewrap ;;
+            zypper) sudo zypper install -y git p7zip nodejs npm bubblewrap ;;
+            nix) nix-env -iA nixpkgs.git nixpkgs.p7zip nixpkgs.nodejs nixpkgs.bubblewrap ;;
+            *) die "Unknown package manager. Install manually: git p7zip nodejs npm bubblewrap" ;;
+        esac
     fi
 
-    # Check Node.js version
+    # Install npm packages to user prefix
+    local npm_prefix="$HOME/.local"
+    mkdir -p "$npm_prefix"
+    npm config set prefix "$npm_prefix" 2>/dev/null || true
+    export PATH="$npm_prefix/bin:$PATH"
+
+    if ! command_exists asar; then
+        log_info "Installing @electron/asar..."
+        npm install --silent -g @electron/asar || die "Failed to install asar"
+    fi
+
+    if ! command_exists electron; then
+        log_info "Installing electron..."
+        npm install --silent -g electron || die "Failed to install electron"
+    fi
+
+    # Verify
+    for cmd in git 7z node npm asar electron bwrap; do
+        if command_exists "$cmd"; then
+            log_success "Found: $cmd"
+        else
+            die "Missing: $cmd"
+        fi
+    done
+
     local node_version
     node_version=$(node --version | sed 's/v//' | cut -d. -f1)
     if [[ "$node_version" -lt 18 ]]; then
@@ -238,56 +139,54 @@ verify_checksum() {
 }
 
 # ============================================================
-# Download Claude DMG
+# Step 2: Clone or update the repo
 # ============================================================
 
-download_dmg() {
+setup_repo() {
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+        log_info "Updating existing installation..."
+        git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || log_warn "git pull failed, using existing version"
+        log_success "Repository updated"
+    else
+        # Remove stale non-git install dir if present
+        if [[ -d "$INSTALL_DIR" ]]; then
+            log_warn "Removing previous (non-git) installation at $INSTALL_DIR"
+            rm -rf "$INSTALL_DIR"
+        fi
+        log_info "Cloning claude-cowork-linux to $INSTALL_DIR..."
+        mkdir -p "$(dirname "$INSTALL_DIR")"
+        git clone "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone repository"
+        log_success "Repository cloned"
+    fi
+}
+
+# ============================================================
+# Step 3: Get the Claude Desktop DMG
+# ============================================================
+
+get_dmg() {
     local dmg_path="$1"
 
-    # Validate user-provided DMG path (prevent path traversal)
+    # User-provided DMG path
     if [[ -n "${CLAUDE_DMG:-}" ]]; then
-        # Resolve to absolute path and check it exists
         local resolved_path
-        resolved_path=$(realpath -e "$CLAUDE_DMG" 2>/dev/null) || die "User-provided DMG not found: $CLAUDE_DMG"
-
-        # Verify it's a regular file
-        if [[ ! -f "$resolved_path" ]]; then
-            die "CLAUDE_DMG must be a regular file: $CLAUDE_DMG"
-        fi
-
-        # Basic sanity check - must end in .dmg
-        if [[ ! "$resolved_path" =~ \.dmg$ ]]; then
-            log_warn "File does not have .dmg extension: $CLAUDE_DMG"
-            read -r -p "Continue anyway? [y/N] " response
-            if [[ ! "$response" =~ ^[Yy]$ ]]; then
-                die "Installation cancelled"
-            fi
-        fi
-
+        resolved_path=$(realpath -e "$CLAUDE_DMG" 2>/dev/null) || die "DMG not found: $CLAUDE_DMG"
+        [[ -f "$resolved_path" ]] || die "CLAUDE_DMG must be a regular file: $CLAUDE_DMG"
         log_info "Using user-provided DMG: $resolved_path"
         cp "$resolved_path" "$dmg_path"
         return 0
     fi
 
-    # Check current directory for existing DMG (safely)
+    # Check install dir for existing DMG
     local existing_dmg=""
-    while IFS= read -r -d $'\0' file; do
-        existing_dmg="$file"
-        break
-    done < <(find . -maxdepth 1 \( -name "Claude*.dmg" -o -name "claude*.dmg" \) -type f -print0 2>/dev/null)
-
+    existing_dmg=$(find "$INSTALL_DIR" -maxdepth 1 \( -name "Claude*.dmg" -o -name "claude*.dmg" \) -type f -print -quit 2>/dev/null)
     if [[ -n "$existing_dmg" ]]; then
         log_info "Found existing DMG: $existing_dmg"
-        read -r -p "Use this DMG? [Y/n] " response
-        response=${response:-Y}
-        if [[ "$response" =~ ^[Yy]$ ]]; then
-            cp "$existing_dmg" "$dmg_path"
-            return 0
-        fi
+        cp "$existing_dmg" "$dmg_path"
+        return 0
     fi
 
-    # Open the browser to claude.ai/download so the user always gets the latest build.
-    # The download page is Cloudflare-protected and can't be curl'd directly.
+    # Open browser and watch for download
     local dl_dir
     dl_dir=$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")
     local marker="$WORK_DIR/.download-marker"
@@ -301,26 +200,22 @@ download_dmg() {
         log_info "Please open this URL manually: $CLAUDE_DOWNLOAD_PAGE"
     fi
 
-    # Watch the user's XDG download directory for a new Claude DMG
     log_info "Waiting for Claude*.dmg in $dl_dir ..."
-    local found=""
-    local elapsed=0
-    local timeout=600  # 10 minutes
+    local found="" elapsed=0 timeout=600
     while [[ -z "$found" ]]; do
         sleep 2
         elapsed=$((elapsed + 2))
         if [[ "$elapsed" -ge "$timeout" ]]; then
-            die "Timed out waiting for Claude DMG. Download manually and re-run with: CLAUDE_DMG=/path/to/Claude.dmg $0"
+            die "Timed out. Re-run with: CLAUDE_DMG=/path/to/Claude.dmg $0"
         fi
         found=$(find "$dl_dir" -maxdepth 1 \( -name "Claude*.dmg" -o -name "claude*.dmg" \) \
             -newer "$marker" -type f -print -quit 2>/dev/null)
     done
     log_success "Detected: $found"
 
-    # Wait for the download to finish (file size must stabilize)
+    # Wait for download to finish (file size must stabilize)
     log_info "Waiting for download to complete..."
-    local prev_size=-1
-    local curr_size=0
+    local prev_size=-1 curr_size=0
     while true; do
         curr_size=$(stat -c%s "$found" 2>/dev/null || echo 0)
         if [[ "$prev_size" -eq "$curr_size" && "$curr_size" -gt 0 \
@@ -330,439 +225,195 @@ download_dmg() {
         prev_size=$curr_size
         sleep 3
     done
-
     log_success "Download complete: $(format_size "$curr_size")"
     cp "$found" "$dmg_path"
-
-    # Verify download size (minimum 100MB for valid DMG)
-    local dmg_size
-    dmg_size=$(stat -c%s "$dmg_path" 2>/dev/null || stat -f%z "$dmg_path" 2>/dev/null || echo 0)
-    if [[ ! -f "$dmg_path" ]] || [[ "$dmg_size" -lt "$MIN_DMG_SIZE" ]]; then
-        die "Download appears incomplete or corrupted (size: ${dmg_size} bytes, expected >100MB)"
-    fi
-    log_success "Download verified ($(format_size "$dmg_size"))"
-    
-    # Optional SHA256 verification
-    verify_checksum "$dmg_path"
 }
 
 # ============================================================
-# Extract and Patch App
+# Step 4: Extract DMG into linux-app-extracted/
 # ============================================================
 
-extract_app() {
+extract_dmg() {
     local dmg_path="$1"
-    local extract_dir="$2"
+    local target_dir="$INSTALL_DIR/linux-app-extracted"
 
-    # Log to stderr — stdout is captured by the caller via $()
+    # Extract DMG
     log_info "Extracting DMG..." >&2
+    local extract_dir="$WORK_DIR/extract"
     7z x -y -o"$extract_dir" "$dmg_path" >/dev/null 2>&1 || die "Failed to extract DMG"
 
-    # Find Claude.app
+    # Find Claude.app and app.asar
     local claude_app
     claude_app=$(find "$extract_dir" -name "Claude.app" -type d | head -1)
-    if [[ -z "$claude_app" ]]; then
-        die "Claude.app not found in DMG"
-    fi
-
-    log_success "Extracted Claude.app" >&2
-    echo "$claude_app"
-}
-
-extract_asar() {
-    local claude_app="$1"
-    local app_extract_dir="$2"
+    [[ -n "$claude_app" ]] || die "Claude.app not found in DMG"
 
     local asar_file="$claude_app/Contents/Resources/app.asar"
-    if [[ ! -f "$asar_file" ]]; then
-        log_error "app.asar not found at: $asar_file"
-        log_info "Contents of Resources dir:"
-        ls "$claude_app/Contents/Resources/" 2>/dev/null | head -20 || log_warn "(empty or missing)"
-        log_info "Top-level extract dir:"
-        ls "$(dirname "$claude_app")" 2>/dev/null | head -10
-        die "app.asar not found"
+    [[ -f "$asar_file" ]] || die "app.asar not found at: $asar_file"
+
+    # Extract asar into linux-app-extracted/
+    if [[ -d "$target_dir" ]]; then
+        log_info "Removing previous linux-app-extracted..."
+        rm -rf "$target_dir"
+    fi
+    log_info "Extracting app.asar..."
+    asar extract "$asar_file" "$target_dir" || die "Failed to extract app.asar"
+
+    # Copy unpacked native modules if present
+    local unpacked="$claude_app/Contents/Resources/app.asar.unpacked"
+    if [[ -d "$unpacked" ]]; then
+        cp -r "$unpacked"/* "$target_dir/" 2>/dev/null || true
     fi
 
-    log_info "Extracting app.asar..."
-    asar extract "$asar_file" "$app_extract_dir" || die "Failed to extract app.asar"
-    log_success "Extracted app code"
+    log_success "Extracted app to linux-app-extracted/"
 }
 
 # ============================================================
-# Download Linux Stubs
+# Step 5: Bake stubs into node_modules
 # ============================================================
 
-download_swift_stub() {
-    local stub_dir="$1"
-    mkdir -p "$stub_dir"
-    curl -fsSL "$SWIFT_STUB_URL" -o "$stub_dir/index.js" || die "Failed to download Swift stub"
-    log_success "Downloaded Swift stub"
-}
+install_stubs() {
+    local target_dir="$INSTALL_DIR/linux-app-extracted"
 
-download_native_stub() {
-    local stub_dir="$1"
-    mkdir -p "$stub_dir"
-    curl -fsSL "$NATIVE_STUB_URL" -o "$stub_dir/index.js" || die "Failed to download Native stub"
-    log_success "Downloaded Native stub"
-}
+    log_info "Installing stubs..."
 
-# ============================================================
-# Create Linux Loader
-# ============================================================
+    # Copy stubs from the repo into the extracted app's node_modules
+    local swift_src="$INSTALL_DIR/stubs/@ant/claude-swift/js/index.js"
+    local native_src="$INSTALL_DIR/stubs/@ant/claude-native/index.js"
 
-create_linux_loader() {
-    local resources_dir="$1"
+    [[ -f "$swift_src" ]] || die "Swift stub not found: $swift_src"
+    [[ -f "$native_src" ]] || die "Native stub not found: $native_src"
 
-    cat > "$resources_dir/linux-loader.js" << 'LOADER'
-#!/usr/bin/env node
-/**
- * linux-loader.js - Claude Linux compatibility layer
- */
+    mkdir -p "$target_dir/node_modules/@ant/claude-swift/js"
+    mkdir -p "$target_dir/node_modules/@ant/claude-native"
 
-const Module = require('module');
-const path = require('path');
-const fs = require('fs');
+    cp "$swift_src" "$target_dir/node_modules/@ant/claude-swift/js/index.js"
+    cp "$native_src" "$target_dir/node_modules/@ant/claude-native/index.js"
 
-console.log('Claude Linux Loader');
+    # Copy frame-fix files if present in repo
+    for f in frame-fix-wrapper.js frame-fix-entry.js ipc-handler-setup.js; do
+        if [[ -f "$INSTALL_DIR/stubs/frame-fix/$f" ]]; then
+            cp "$INSTALL_DIR/stubs/frame-fix/$f" "$target_dir/$f"
+        elif [[ -f "$INSTALL_DIR/$f" ]]; then
+            cp "$INSTALL_DIR/$f" "$target_dir/$f"
+        fi
+    done
 
-const REAL_PLATFORM = process.platform;
-const REAL_ARCH = process.arch;
-const RESOURCES_DIR = __dirname;
-const STUB_PATH = path.join(RESOURCES_DIR, 'stubs', '@ant', 'claude-swift', 'js', 'index.js');
-
-let appStarted = false;
-
-Object.defineProperty(process, 'platform', {
-  get() { return appStarted ? 'darwin' : REAL_PLATFORM; },
-  configurable: true
-});
-
-Object.defineProperty(process, 'arch', {
-  get() {
-    const stack = new Error().stack || '';
-    if (stack.includes('internal/') || stack.includes('node:')) return REAL_ARCH;
-    if (stack.includes('/app/') || stack.includes('Claude.app') || stack.includes('.vite/build')) return 'arm64';
-    return REAL_ARCH;
-  },
-  configurable: true
-});
-
-const originalGetSystemVersion = process.getSystemVersion;
-process.getSystemVersion = function() {
-  const stack = new Error().stack || '';
-  if (stack.includes('/app/') || stack.includes('Claude.app') || stack.includes('.vite/build')) return '14.0.0';
-  return originalGetSystemVersion ? originalGetSystemVersion.call(process) : '0.0.0';
-};
-
-const originalLoad = Module._load;
-let swiftStubCache = null;
-let loadingStub = false;
-let patchedElectron = null;
-
-function loadSwiftStub() {
-  if (swiftStubCache) return swiftStubCache;
-  if (!fs.existsSync(STUB_PATH)) throw new Error(`Swift stub not found: ${STUB_PATH}`);
-  loadingStub = true;
-  try {
-    delete require.cache[STUB_PATH];
-    swiftStubCache = originalLoad.call(Module, STUB_PATH, module, false);
-  } finally { loadingStub = false; }
-  return swiftStubCache;
-}
-
-Module._load = function(request, parent, isMain) {
-  if (loadingStub) return originalLoad.apply(this, arguments);
-  if (request.includes('swift_addon') && request.endsWith('.node')) return loadSwiftStub();
-  if (request === 'electron' && patchedElectron) return patchedElectron;
-  return originalLoad.apply(this, arguments);
-};
-
-const electron = require('electron');
-const app = electron.app;
-let pendingDeepLinks = [];
-
-function parseClaudeUrlArg(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.startsWith('claude://') ? trimmed : null;
-}
-
-function dispatchClaudeUrl(url) {
-  try {
-    app.emit('open-url', { preventDefault() {} }, url);
-    console.log('[Protocol] Forwarded URL:', url);
-  } catch (e) {
-    console.error('[Protocol] Failed to forward URL:', e.message);
-  }
-}
-
-app.on('second-instance', (_event, argv) => {
-  const args = Array.isArray(argv) ? argv : [];
-  for (const arg of args) {
-    const url = parseClaudeUrlArg(arg);
-    if (!url) continue;
-    pendingDeepLinks.push(url);
-    if (app.isReady()) dispatchClaudeUrl(url);
-  }
-});
-
-app.whenReady().then(() => {
-  for (const url of pendingDeepLinks) dispatchClaudeUrl(url);
-  pendingDeepLinks = [];
-});
-
-const origSysPrefs = electron.systemPreferences || {};
-const patchedSysPrefs = {
-  getMediaAccessStatus: () => 'granted', askForMediaAccess: async () => true,
-  getEffectiveAppearance: () => 'light', getAppearance: () => 'light', setAppearance: () => {},
-  getAccentColor: () => '007AFF', getColor: () => '#007AFF',
-  getUserDefault: () => null, setUserDefault: () => {}, removeUserDefault: () => {},
-  subscribeNotification: () => 0, unsubscribeNotification: () => {},
-  subscribeWorkspaceNotification: () => 0, unsubscribeWorkspaceNotification: () => {},
-  postNotification: () => {}, postLocalNotification: () => {},
-  isTrustedAccessibilityClient: () => true, isSwipeTrackingFromScrollEventsEnabled: () => false,
-  isAeroGlassEnabled: () => false, isHighContrastColorScheme: () => false,
-  isReducedMotion: () => false, isInvertedColorScheme: () => false,
-};
-for (const [key, val] of Object.entries(patchedSysPrefs)) origSysPrefs[key] = val;
-
-const OrigBrowserWindow = electron.BrowserWindow;
-const macOSWindowMethods = {
-  setWindowButtonPosition: () => {}, getWindowButtonPosition: () => ({ x: 0, y: 0 }),
-  setTrafficLightPosition: () => {}, getTrafficLightPosition: () => ({ x: 0, y: 0 }),
-  setWindowButtonVisibility: () => {}, setVibrancy: () => {}, setBackgroundMaterial: () => {},
-  setRepresentedFilename: () => {}, getRepresentedFilename: () => '',
-  setDocumentEdited: () => {}, isDocumentEdited: () => false,
-  setTouchBar: () => {}, setSheetOffset: () => {}, setAutoHideCursor: () => {},
-};
-for (const [method, impl] of Object.entries(macOSWindowMethods)) {
-  if (typeof OrigBrowserWindow.prototype[method] !== 'function') OrigBrowserWindow.prototype[method] = impl;
-}
-
-const OrigMenu = electron.Menu;
-const origSetApplicationMenu = OrigMenu.setApplicationMenu;
-OrigMenu.setApplicationMenu = function(menu) {
-  try { if (origSetApplicationMenu) return origSetApplicationMenu.call(OrigMenu, menu); } catch (e) {}
-};
-
-const origBuildFromTemplate = OrigMenu.buildFromTemplate;
-OrigMenu.buildFromTemplate = function(template) {
-  const filtered = (template || []).map(item => {
-    if (!item) return null;
-    const f = { ...item };
-    if (f.role === 'services' || f.role === 'recentDocuments') return null;
-    if (f.submenu && Array.isArray(f.submenu)) {
-      f.submenu = f.submenu.filter(s => s && s.role !== 'services' && s.role !== 'recentDocuments');
-    }
-    return f;
-  }).filter(Boolean);
-  return origBuildFromTemplate.call(OrigMenu, filtered);
-};
-
-patchedElectron = electron;
-
-process.on('uncaughtException', (error) => {
-  if (error.message && (error.message.includes('is not a function') || error.message.includes('No handler registered'))) {
-    console.error('[Error]', error.message);
-    return;
-  }
-  throw error;
-});
-
-appStarted = true;
-require('./app/.vite/build/index.js');
-LOADER
-
-    chmod +x "$resources_dir/linux-loader.js"
-    log_success "Created Linux loader"
+    log_success "Stubs installed"
 }
 
 # ============================================================
-# Create Launch Script
+# Step 6: Apply patches
+# ============================================================
+
+apply_patches() {
+    local index_js="$INSTALL_DIR/linux-app-extracted/.vite/build/index.js"
+
+    if [[ -f "$INSTALL_DIR/patches/enable-cowork.py" && -f "$index_js" ]]; then
+        log_info "Applying cowork patch..."
+        python3 "$INSTALL_DIR/patches/enable-cowork.py" "$index_js" || log_warn "Patch may have already been applied"
+        log_success "Patches applied"
+    else
+        log_warn "Patch script or index.js not found, skipping patches"
+    fi
+}
+
+# ============================================================
+# Step 7: Create launcher
 # ============================================================
 
 create_launcher() {
-    local install_dir="$1"
-
-    cat > "$install_dir/claude-desktop" << 'LAUNCHER'
-#!/bin/bash
-# Claude Desktop launcher
-
-SCRIPT_PATH="$0"
-while [ -L "$SCRIPT_PATH" ]; do
-  SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
-  SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
-  [[ "$SCRIPT_PATH" != /* ]] && SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
-done
-
-SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
-cd "$SCRIPT_DIR"
-
-ELECTRON_ARGS=()
-for arg in "$@"; do
-  case "$arg" in
-    --debug) export CLAUDE_TRACE=1 ;;
-    --devtools) ELECTRON_ARGS+=("--inspect") ;;
-    --isolate-network) export CLAUDE_ISOLATE_NETWORK=1 ;;
-    *) ELECTRON_ARGS+=("$arg") ;;
-  esac
-done
-
-export ELECTRON_ENABLE_LOGGING=1
-
-# Wayland support for Hyprland, Sway, and other Wayland compositors
-if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
-  export ELECTRON_OZONE_PLATFORM_HINT=wayland
-fi
-
-mkdir -p "$HOME/Library/Logs/Claude"
-
-# Launch Electron
-exec electron linux-loader.js "${ELECTRON_ARGS[@]}" \
-  --no-sandbox \
-  --password-store=gnome-libsecret \
-  2>&1 | tee -a "$HOME/Library/Logs/Claude/startup.log"
-LAUNCHER
-
-    chmod +x "$install_dir/claude-desktop"
-    log_success "Created launcher script"
-}
-
-# ============================================================
-# Install Application
-# ============================================================
-
-install_app() {
-    local claude_app="$1"
-    local app_extract_dir="$2"
-
-    log_info "Installing to $INSTALL_DIR..."
-
-    # Remove old installation if present
-    if [[ -d "$INSTALL_DIR" ]]; then
-        log_info "Removing previous installation..."
-        rm -rf "$INSTALL_DIR"
-    fi
-
-    # Create directory structure (flat, no macOS hierarchy)
-    mkdir -p "$INSTALL_DIR"/{app,stubs,resources}
     mkdir -p "$HOME/.local/bin"
 
-    # Copy extracted app code
-    cp -r "$app_extract_dir"/* "$INSTALL_DIR/app/"
+    cat > "$HOME/.local/bin/claude-desktop" << EOF
+#!/bin/bash
+# Claude Desktop for Linux — launcher
+# Generated by install.sh v$VERSION
 
-    # Copy resources from original app (icons, lproj, etc.)
-    cp -r "$claude_app/Contents/Resources/"* "$INSTALL_DIR/resources/" 2>/dev/null || true
+COWORK_DIR="${INSTALL_DIR}"
+LOG_DIR="\$HOME/.local/share/claude-cowork/logs"
+mkdir -p "\$LOG_DIR"
 
-    # Download stubs from repo
-    download_swift_stub "$WORK_DIR/stubs/swift"
-    download_native_stub "$WORK_DIR/stubs/native"
+cd "\$COWORK_DIR"
 
-    # Install stubs into app's node_modules
-    cp "$WORK_DIR/stubs/swift/index.js" "$INSTALL_DIR/app/node_modules/@ant/claude-swift/js/index.js"
-    cp "$WORK_DIR/stubs/native/index.js" "$INSTALL_DIR/app/node_modules/@ant/claude-native/index.js"
+case "\${1:-}" in
+    --devtools) shift; exec ./test-launch-devtools.sh "\$@" 2>&1 | tee -a "\$LOG_DIR/startup.log" ;;
+    --debug)    shift; export CLAUDE_TRACE=1; exec ./test-launch.sh "\$@" 2>&1 | tee -a "\$LOG_DIR/startup.log" ;;
+    *)          exec ./test-launch.sh "\$@" 2>&1 | tee -a "\$LOG_DIR/startup.log" ;;
+esac
+EOF
 
-    # Also keep copies in stubs/ for reference
-    mkdir -p "$INSTALL_DIR/stubs/@ant/claude-swift/js" "$INSTALL_DIR/stubs/@ant/claude-native"
-    cp "$WORK_DIR/stubs/swift/index.js" "$INSTALL_DIR/stubs/@ant/claude-swift/js/index.js"
-    cp "$WORK_DIR/stubs/native/index.js" "$INSTALL_DIR/stubs/@ant/claude-native/index.js"
+    chmod +x "$HOME/.local/bin/claude-desktop"
+    # Alias for familiarity
+    ln -sf "$HOME/.local/bin/claude-desktop" "$HOME/.local/bin/claude-cowork"
 
-    # Create Linux loader
-    create_linux_loader "$INSTALL_DIR"
-
-    # Create launcher script
-    create_launcher "$INSTALL_DIR"
-
-    # Symlink into ~/.local/bin (should be on PATH)
-    ln -sf "$INSTALL_DIR/claude-desktop" "$HOME/.local/bin/claude-desktop"
-    ln -sf "$INSTALL_DIR/claude-desktop" "$HOME/.local/bin/claude-cowork"
-
-    log_success "Installed to $INSTALL_DIR"
-    log_info "Launcher: ~/.local/bin/claude-desktop"
+    log_success "Created launchers: ~/.local/bin/claude-desktop, ~/.local/bin/claude-cowork"
 }
 
 # ============================================================
-# Setup User Environment
+# Step 8: Desktop entry + user dirs
 # ============================================================
 
-setup_user_dirs() {
-    log_info "Setting up user directories..."
+setup_environment() {
+    # User data dirs (macOS-style paths that Claude Desktop expects)
+    local data_dir="$HOME/Library/Application Support/Claude"
+    mkdir -p "$data_dir"/{Projects,Conversations}
+    mkdir -p "$HOME/Library/Logs/Claude"
+    mkdir -p "$HOME/Library/Caches/Claude"
+    mkdir -p "$HOME/Library/Preferences"
+    chmod 700 "$data_dir"
 
-    # Create macOS-style directories
-    mkdir -p "$USER_DATA_DIR"/{Projects,Conversations,"Claude Extensions","Claude Extensions Settings",claude-code-vm,vm_bundles,blob_storage}
-    mkdir -p "$USER_LOG_DIR"
-    mkdir -p "$USER_CACHE_DIR"
-    mkdir -p ~/Library/Preferences
-
-    # Create default configs if not exist
-    if [[ ! -f "$USER_DATA_DIR/config.json" ]]; then
-        cat > "$USER_DATA_DIR/config.json" << 'EOF'
+    # Default configs if missing
+    if [[ ! -f "$data_dir/config.json" ]]; then
+        cat > "$data_dir/config.json" << 'CONF'
 {
   "scale": 0,
   "locale": "en-US",
   "userThemeMode": "system",
   "hasTrackedInitialActivation": false
 }
-EOF
+CONF
     fi
 
-    if [[ ! -f "$USER_DATA_DIR/claude_desktop_config.json" ]]; then
-        cat > "$USER_DATA_DIR/claude_desktop_config.json" << 'EOF'
+    if [[ ! -f "$data_dir/claude_desktop_config.json" ]]; then
+        cat > "$data_dir/claude_desktop_config.json" << 'CONF'
 {
   "preferences": {
     "chromeExtensionEnabled": true
   }
 }
-EOF
+CONF
     fi
 
-    # Set permissions
-    chmod 700 "$USER_DATA_DIR" "$USER_LOG_DIR" "$USER_CACHE_DIR"
-
-    log_success "User directories created"
-}
-
-# ============================================================
-# Create Desktop Entry
-# ============================================================
-
-create_desktop_entry() {
-    log_info "Creating desktop entry..."
-
-    mkdir -p ~/.local/share/applications
-
-    cat > ~/.local/share/applications/claude.desktop << EOF
+    # Desktop entry
+    mkdir -p "$HOME/.local/share/applications"
+    cat > "$HOME/.local/share/applications/claude.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Claude
 Comment=AI assistant by Anthropic
 Exec=$HOME/.local/bin/claude-desktop %U
-Icon=$INSTALL_DIR/resources/icon.icns
+Icon=$INSTALL_DIR/linux-app-extracted/resources/icon.icns
 Terminal=false
 Categories=Utility;Development;Chat;
 Keywords=AI;assistant;chat;anthropic;
 StartupWMClass=Claude
 MimeType=x-scheme-handler/claude;
 EOF
-
-    chmod +x ~/.local/share/applications/claude.desktop
+    chmod +x "$HOME/.local/share/applications/claude.desktop"
 
     if command_exists update-desktop-database; then
-        update-desktop-database ~/.local/share/applications 2>/dev/null || true
-    fi
-    if command_exists xdg-mime; then
-        xdg-mime default claude.desktop x-scheme-handler/claude 2>/dev/null || true
+        update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
     fi
 
-    log_success "Desktop entry created"
+    log_success "Environment configured"
 }
 
 # ============================================================
-# Main Installation Flow
+# Main
 # ============================================================
 
 main() {
-    # Allow positional arg as DMG path (e.g. ./install.sh /path/to/Claude.dmg)
+    # Positional arg → CLAUDE_DMG
     if [[ -n "${1:-}" && -z "${CLAUDE_DMG:-}" ]]; then
         export CLAUDE_DMG="$1"
     fi
@@ -774,62 +425,63 @@ main() {
     echo "=========================================="
     echo ""
 
-    # Check if running as root (bad idea)
     if [[ $EUID -eq 0 ]]; then
-        die "Do not run as root. The installer uses user-local paths only."
+        die "Do not run as root."
     fi
 
     # Step 1: Dependencies
     install_dependencies
     echo ""
 
-    # Step 2: Download DMG
+    # Step 2: Clone/update repo
+    setup_repo
+    echo ""
+
+    # Step 3: Get DMG
     local dmg_path="$WORK_DIR/Claude.dmg"
-    download_dmg "$dmg_path"
+    get_dmg "$dmg_path"
     echo ""
 
-    # Step 3: Extract
-    local extract_dir="$WORK_DIR/extract"
-    local claude_app
-    claude_app=$(extract_app "$dmg_path" "$extract_dir")
+    # Step 4: Extract DMG → linux-app-extracted/
+    extract_dmg "$dmg_path"
     echo ""
 
-    # Step 4: Extract app.asar
-    local app_extract_dir="$WORK_DIR/app-extracted"
-    extract_asar "$claude_app" "$app_extract_dir"
+    # Step 5: Bake stubs into node_modules
+    install_stubs
     echo ""
 
-    # Step 5: Install
-    install_app "$claude_app" "$app_extract_dir"
+    # Step 6: Apply patches
+    apply_patches
     echo ""
 
-    # Step 6: User setup
-    setup_user_dirs
+    # Step 7: Create launcher
+    create_launcher
     echo ""
 
-    # Step 7: Desktop entry
-    create_desktop_entry
+    # Step 8: Desktop entry + user dirs
+    setup_environment
     echo ""
 
-    # Done!
+    # Done
     echo "=========================================="
     echo -e "${GREEN} Installation Complete!${NC}"
     echo "=========================================="
     echo ""
     echo "Launch Claude:"
-    echo "  Command:  claude-desktop  (or claude-cowork)"
-    echo "  Desktop:  Search for 'Claude' in app launcher"
+    echo "  claude-desktop       (or claude-cowork)"
     echo ""
     echo "Options:"
     echo "  claude-desktop --debug      Enable trace logging"
-    echo "  claude-desktop --devtools   Enable Chrome DevTools"
+    echo "  claude-desktop --devtools   Open with DevTools"
+    echo ""
+    echo "Update:"
+    echo "  cd $INSTALL_DIR && git pull"
     echo ""
     echo "Installed: $INSTALL_DIR"
-    echo "Logs:      ~/Library/Logs/Claude/startup.log"
+    echo "Logs:      ~/.local/share/claude-cowork/logs/startup.log"
     echo ""
     echo "Make sure ~/.local/bin is on your PATH."
     echo ""
 }
 
-# Run main
 main "$@"
