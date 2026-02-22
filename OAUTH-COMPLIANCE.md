@@ -1,24 +1,26 @@
-# OAuth Compliance & Token Handling — Addendum
+# OAuth Compliance &amp; Token Handling &mdash; Addendum
 
 > **Applicable to**: Claude Cowork for Linux (unofficial compatibility layer)
 > **Last updated**: 2026-02-22
-> **Goal**: Full OAuth handling stays in unmodified Anthropic applications (Claude Desktop + Claude Code)
+> **Goal**: Full <abbr title="Open Authorization">OAuth</abbr> handling stays in unmodified Anthropic applications (Claude Desktop + Claude Code)
 
 ---
 
 ## Executive Summary
 
-This project is a Linux compatibility layer for Claude Desktop's Cowork feature. It stubs macOS-native modules so the unmodified Electron app can run on Linux. **This layer does not implement OAuth flows, intercept OAuth callbacks, or store any credentials.** It passes `CLAUDE_CODE_OAUTH_TOKEN` from Claude Desktop to Claude Code CLI (both unmodified Anthropic apps) because that is the CLI's required authentication mechanism — the same passthrough that occurs on macOS. All OAuth logic itself is handled entirely by Anthropic's own applications:
+This project is a Linux compatibility layer for Claude Desktop&rsquo;s Cowork feature. It stubs macOS-native modules so the unmodified Electron app can run on Linux. **This layer does not implement <abbr title="Open Authorization">OAuth</abbr> flows, intercept <abbr title="Open Authorization">OAuth</abbr> callbacks, or store any credentials.** It passes <kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd> from Claude Desktop to Claude Code <abbr title="Command-Line Interface">CLI</abbr> (both unmodified Anthropic apps) because that is the <abbr title="Command-Line Interface">CLI</abbr>&rsquo;s required authentication mechanism &mdash; the same passthrough that occurs on macOS. All <abbr title="Open Authorization">OAuth</abbr> logic itself is handled entirely by Anthropic&rsquo;s own applications:
 
 | Component | Handles Auth? | Source |
 |-----------|--------------|--------|
-| Claude Desktop (Electron renderer) | **Yes** — manages OAuth flow with Anthropic servers | Unmodified Anthropic code |
-| Claude Code CLI | **Yes** — authenticates independently via `claude login` | Unmodified Anthropic binary |
-| This compatibility layer (stubs) | **No** — satisfies IPC contracts only | This repository |
+| Claude Desktop (Electron renderer) | **Yes** &mdash; manages <abbr title="Open Authorization">OAuth</abbr> flow with Anthropic servers | Unmodified Anthropic code |
+| Claude Code <abbr title="Command-Line Interface">CLI</abbr> | **Yes** &mdash; authenticates independently via `claude login` | Unmodified Anthropic binary |
+| This compatibility layer (stubs) | **No** &mdash; satisfies <abbr title="Inter-Process Communication">IPC</abbr> contracts only | This repository |
 
 ---
 
 ## Architecture: Where OAuth Lives
+
+<figure>
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -44,49 +46,52 @@ This project is a Linux compatibility layer for Claude Desktop's Cowork feature.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+<figcaption>Figure 1: <abbr title="Open Authorization">OAuth</abbr> token boundaries &mdash; our stubs occupy the middle layer and never hold credentials</figcaption>
+</figure>
+
 ---
 
 ## February 2026 Anthropic Policy Update
 
-On **February 19, 2026**, Anthropic clarified their "Authentication and credential use" policy:
+On **February 19, 2026**, Anthropic clarified their &ldquo;Authentication and credential use&rdquo; policy:
 
-> *"OAuth authentication (used with Free, Pro, and Max plans) is intended exclusively for
-> Claude Code and Claude.ai. Using OAuth tokens obtained through Claude Free, Pro, or Max
-> accounts in any other product, tool, or service — including the Agent SDK — is not
-> permitted and constitutes a violation of the Consumer Terms of Service."*
+> *&ldquo;<abbr title="Open Authorization">OAuth</abbr> authentication (used with Free, Pro, and Max plans) is intended exclusively for
+> Claude Code and Claude.ai. Using <abbr title="Open Authorization">OAuth</abbr> tokens obtained through Claude Free, Pro, or Max
+> accounts in any other product, tool, or service &mdash; including the Agent SDK &mdash; is not
+> permitted and constitutes a violation of the Consumer Terms of Service.&rdquo;*
 
 ### How This Project Relates to That Policy
 
-This compatibility layer does **not** independently obtain, store, or use OAuth tokens. Its
-role is to bridge two unmodified Anthropic applications — Claude Desktop and Claude Code CLI
-— so they work together on Linux, exactly as they do on macOS.
+This compatibility layer does **not** independently obtain, store, or use <abbr title="Open Authorization">OAuth</abbr> tokens. Its
+role is to bridge two unmodified Anthropic applications &mdash; Claude Desktop and Claude Code <abbr title="Command-Line Interface">CLI</abbr>
+&mdash; so they work together on Linux, exactly as they do on macOS.
 
-The OAuth token that reaches Claude Code CLI is:
-- **Generated by** Claude Desktop's unmodified renderer (official Anthropic code)
-- **Scoped to** Claude Code CLI authentication (the token type is `CLAUDE_CODE_OAUTH_TOKEN`)
-- **Consumed by** the official Claude Code CLI binary (unmodified Anthropic code)
-- **Not used by** this compatibility layer for any API access of its own
+The <abbr title="Open Authorization">OAuth</abbr> token that reaches Claude Code <abbr title="Command-Line Interface">CLI</abbr> is:
+- **Generated by** Claude Desktop&rsquo;s unmodified renderer (official Anthropic code)
+- **Scoped to** Claude Code <abbr title="Command-Line Interface">CLI</abbr> authentication (the token type is <kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd>)
+- **Consumed by** the official Claude Code <abbr title="Command-Line Interface">CLI</abbr> binary (unmodified Anthropic code)
+- **Not used by** this compatibility layer for any <abbr title="Application Programming Interface">API</abbr> access of its own
 
-The policy targets tools that independently exploit OAuth tokens to access the API outside
+The policy targets tools that independently exploit <abbr title="Open Authorization">OAuth</abbr> tokens to access the <abbr title="Application Programming Interface">API</abbr> outside
 of Claude Code or Claude.ai. This project enables the official Claude Desktop app (which
-*is* Claude.ai's desktop client) to spawn the official Claude Code CLI on Linux — the same
-relationship that exists natively on macOS, just without a VM layer.
+*is* Claude.ai&rsquo;s desktop client) to spawn the official Claude Code <abbr title="Command-Line Interface">CLI</abbr> on Linux &mdash; the same
+relationship that exists natively on macOS, just without a <abbr title="Virtual Machine">VM</abbr> layer.
 
-**Caveat**: Anthropic's Linux support posture is not formally documented. Users relying on
-this compatibility layer should monitor Anthropic's policies and accept that this falls
-outside Anthropic's officially supported configurations.
+**Caveat**: Anthropic&rsquo;s Linux support posture is not formally documented. Users relying on
+this compatibility layer should monitor Anthropic&rsquo;s policies and accept that this falls
+outside Anthropic&rsquo;s officially supported configurations.
 
 ---
 
 ## Detailed Code Audit
 
-### 1. `addApprovedOauthToken` — Token Deliberately Discarded
+### 1. `addApprovedOauthToken` &mdash; Token Deliberately Discarded
 
-**File**: `stubs/@ant/claude-swift/js/index.js` (lines 1011-1035)
+**File**: `stubs/@ant/claude-swift/js/index.js` (lines 1011&ndash;1035)
 
-**What the official macOS version does**: Stores the OAuth token inside the sandboxed VM so Claude Code can use the consumer plan's credentials.
+**What the official macOS version does**: Stores the <abbr title="Open Authorization">OAuth</abbr> token inside the sandboxed <abbr title="Virtual Machine">VM</abbr> so Claude Code can use the consumer plan&rsquo;s credentials.
 
-**What our stub does**: Accepts the IPC call (required by the contract), immediately returns `{ success: true }`, and **never reads, stores, or forwards the token**.
+**What our stub does**: Accepts the <abbr title="Inter-Process Communication">IPC</abbr> call (required by the contract), immediately returns `{ success: true }`, and **never reads, stores, or forwards the token**.
 
 ```javascript
 addApprovedOauthToken: async (_token) => {
@@ -96,22 +101,29 @@ addApprovedOauthToken: async (_token) => {
 ```
 
 **How this meets expectations**:
-- The `_token` parameter uses JavaScript's underscore convention to signal "unused"
-- The token is never assigned to any variable, written to disk, or passed to any function
-- The trace log records that the call happened, but the token value is never logged
-- Claude Code CLI authenticates independently — it does not receive this token
+
+<dl>
+  <dt>Underscore prefix convention</dt>
+  <dd>The <code>_token</code> parameter uses JavaScript&rsquo;s underscore convention to signal &ldquo;unused&rdquo;</dd>
+  <dt>No storage path</dt>
+  <dd>The token is never assigned to any variable, written to disk, or passed to any function</dd>
+  <dt>Trace without value</dt>
+  <dd>The trace log records that the call happened, but the token value is never logged</dd>
+  <dt>Independent <abbr title="Command-Line Interface">CLI</abbr> auth</dt>
+  <dd>Claude Code <abbr title="Command-Line Interface">CLI</abbr> authenticates independently &mdash; it does not receive this token</dd>
+</dl>
 
 ---
 
-### 2. `filterEnv` — Credential-Bearing Env Vars Filtered, With Explicit Exemption
+### 2. `filterEnv` &mdash; Credential-Bearing Env Vars Filtered, With Explicit Exemption
 
-**File**: `stubs/@ant/claude-swift/js/index.js` (lines 99-132)
+**File**: `stubs/@ant/claude-swift/js/index.js` (lines 99&ndash;132)
 
 **Risk**: The Claude Desktop renderer passes `additionalEnv` vars when spawning processes.
-If any of these contain OAuth tokens, naive code would forward them blindly.
+If any of these contain <abbr title="Open Authorization">OAuth</abbr> tokens, naive code would forward them blindly.
 
 **Implementation**: A regex pattern blocks env var keys matching credential-related names,
-with an explicit exemption for keys the CLI legitimately requires:
+with an explicit exemption for keys the <abbr title="Command-Line Interface">CLI</abbr> legitimately requires:
 
 ```javascript
 const BLOCKED_ENV_KEY_PATTERN = /oauth[_.]?token|bearer[_.]?token|session_?cookie|ANTHROPIC_AUTH_TOKEN/i;
@@ -122,31 +134,28 @@ const CREDENTIAL_EXEMPT_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
 ```
 
 **What this means in practice**:
-- `CLAUDE_CODE_OAUTH_TOKEN` **IS forwarded** to the Claude Code CLI subprocess. This is
-  intentional and required: it is how Claude Desktop passes authentication to the CLI on
-  macOS as well. The token goes from one Anthropic application (Claude Desktop) to another
-  (Claude Code CLI), which is exactly the use case the token is designed for.
-- `ANTHROPIC_API_KEY` may also be forwarded via the env allowlist to Anthropic-maintained
-  subprocesses that explicitly require it (e.g. SDK bridge / stub code). It is not intended
-  to be propagated to arbitrary third-party tools.
-- All other credential-pattern env vars (e.g. `ANTHROPIC_AUTH_TOKEN`, generic
-  `bearer_token`, `session_cookie`) are blocked and logged, preventing token leakage to
-  the subprocess environment.
-- The allowlist (`ENV_ALLOWLIST`) includes system and Claude configuration variables, plus
-  a small, explicit set of auth-related keys (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`);
-  arbitrary renderer env vars outside this set never reach the subprocess.
+
+<dl>
+  <dt><kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd> &mdash; forwarded</dt>
+  <dd>Intentional and required: it is how Claude Desktop passes authentication to the <abbr title="Command-Line Interface">CLI</abbr> on macOS as well. The token goes from one Anthropic application (Claude Desktop) to another (Claude Code <abbr title="Command-Line Interface">CLI</abbr>), which is exactly the use case the token is designed for.</dd>
+  <dt><kbd>ANTHROPIC_API_KEY</kbd> &mdash; conditionally forwarded</dt>
+  <dd>May be forwarded via the env allowlist to Anthropic-maintained subprocesses that explicitly require it (e.g. SDK bridge / stub code). It is not intended to be propagated to arbitrary third-party tools.</dd>
+  <dt>Other credential-pattern env vars &mdash; blocked</dt>
+  <dd>Keys matching <kbd>ANTHROPIC_AUTH_TOKEN</kbd>, generic <code>bearer_token</code>, <code>session_cookie</code>, etc. are blocked and logged, preventing token leakage to the subprocess environment.</dd>
+  <dt>ENV_ALLOWLIST</dt>
+  <dd>Includes system and Claude configuration variables, plus a small explicit set of auth-related keys; arbitrary renderer env vars outside this set never reach the subprocess.</dd>
+</dl>
 
 **How this meets the policy**:
-- The token is forwarded only to the official, unmodified Claude Code CLI binary
-- No third-party application receives the OAuth token
-- `ANTHROPIC_AUTH_TOKEN` injection is explicitly blocked (it bypasses OAuth handling and
-  causes 401 errors — see CLAUDE.md)
+- The token is forwarded only to the official, unmodified Claude Code <abbr title="Command-Line Interface">CLI</abbr> binary
+- No third-party application receives the <abbr title="Open Authorization">OAuth</abbr> token
+- <kbd>ANTHROPIC_AUTH_TOKEN</kbd> injection is explicitly blocked (it bypasses <abbr title="Open Authorization">OAuth</abbr> handling and causes 401 errors &mdash; see CLAUDE.md)
 
 ---
 
-### 3. SDK Bridge Environment — Allowlist Replaces Full Spread
+### 3. SDK Bridge Environment &mdash; Allowlist Replaces Full Spread
 
-**File**: `cowork/sdk_bridge.js` (lines 19-54, 318-323)
+**File**: `cowork/sdk_bridge.js` (lines 19&ndash;54, 318&ndash;323)
 
 **Risk**: The SDK bridge previously copied the entire `process.env` to subprocesses:
 ```javascript
@@ -154,7 +163,7 @@ const CREDENTIAL_EXEMPT_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
 const env = { ...process.env, CLAUDE_CODE_SESSION_ID: sessionId };
 ```
 
-If the Electron main process had OAuth tokens in its environment (which is possible after auth), they would leak to Claude Code.
+If the Electron main process had <abbr title="Open Authorization">OAuth</abbr> tokens in its environment (which is possible after auth), they would leak to Claude Code.
 
 **Mitigation**: Replaced with an explicit allowlist:
 
@@ -165,24 +174,24 @@ const env = filterEnvForSubprocess(process.env, {
 });
 ```
 
-The `SDK_ENV_ALLOWLIST` contains only system variables, display variables, and Claude configuration keys. OAuth tokens, session cookies, and other credentials are structurally excluded.
+The `SDK_ENV_ALLOWLIST` contains only system variables, display variables, and Claude configuration keys. <abbr title="Open Authorization">OAuth</abbr> tokens, session cookies, and other credentials are structurally excluded.
 
 **How this meets expectations**:
 - Claude Code receives only the minimum environment it needs to function
-- No path exists for OAuth tokens to flow from the Electron process to Claude Code through our code
-- The allowlist is easy to audit — every allowed variable is explicitly named
+- No path exists for <abbr title="Open Authorization">OAuth</abbr> tokens to flow from the Electron process to Claude Code through our code
+- The allowlist is easy to audit &mdash; every allowed variable is explicitly named
 
 ---
 
-### 4. `AuthRequest` — Browser-Only, No Callback Handling
+### 4. `AuthRequest` &mdash; Browser-Only, No Callback Handling
 
-**File**: `stubs/@ant/claude-native/index.js` (lines 154-199)
+**File**: `stubs/@ant/claude-native/index.js` (lines 154&ndash;199)
 
 **What it does**:
-- `start(url)` → Opens `url` in the system browser via `xdg-open`
-- `isAvailable()` → Returns `false`
+- `start(url)` &rarr; Opens `url` in the system browser via `xdg-open`
+- `isAvailable()` &rarr; Returns `false`
 - Never registers a protocol handler (no `claude://` deep link)
-- Never processes, parses, or intercepts the OAuth callback
+- Never processes, parses, or intercepts the <abbr title="Open Authorization">OAuth</abbr> callback
 
 **What it does NOT do**:
 - Capture the callback URL or token
@@ -190,20 +199,20 @@ The `SDK_ENV_ALLOWLIST` contains only system variables, display variables, and C
 - Communicate with any server
 - Store any authentication state
 
-`isAvailable() → false` tells the renderer that no native auth window exists, so the renderer handles the entire OAuth flow (including the callback) through its own built-in logic — code we do not modify.
+`isAvailable() → false` tells the renderer that no native auth window exists, so the renderer handles the entire <abbr title="Open Authorization">OAuth</abbr> flow (including the callback) through its own built-in logic &mdash; code we do not modify.
 
 **How this meets expectations**:
 - Our code is functionally equivalent to the user clicking a link in their browser
-- The OAuth callback goes directly to the unmodified Claude Desktop renderer
+- The <abbr title="Open Authorization">OAuth</abbr> callback goes directly to the unmodified Claude Desktop renderer
 - This stub is purely a browser-opener; it cannot intercept any credentials
 
 ---
 
-### 5. `Auth_$_doAuthInBrowser` — Origin-Validated Browser Open
+### 5. `Auth_$_doAuthInBrowser` &mdash; Origin-Validated Browser Open
 
-**File**: `linux-loader.js` (lines 927-957)
+**File**: `linux-loader.js` (lines 927&ndash;957)
 
-**What it does**: Opens the OAuth URL in the user's default browser. The URL is validated against an allowlist of Anthropic domains before being opened.
+**What it does**: Opens the <abbr title="Open Authorization">OAuth</abbr> URL in the user&rsquo;s default browser. The URL is validated against an allowlist of Anthropic domains before being opened.
 
 ```javascript
 const ALLOWED_AUTH_ORIGINS = [
@@ -217,23 +226,23 @@ const ALLOWED_AUTH_ORIGINS = [
 **How this meets expectations**:
 - Only Anthropic-owned domains can be opened through this handler
 - Uses `execFile` (not `exec`) to prevent command injection
-- The handler returns `{ success: true }` after opening the browser — it never receives or processes any token
-- Even if a malicious script tried to abuse this IPC channel, it could only open Anthropic URLs
+- The handler returns `{ success: true }` after opening the browser &mdash; it never receives or processes any token
+- Even if a malicious script tried to abuse this <abbr title="Inter-Process Communication">IPC</abbr> channel, it could only open Anthropic URLs
 
 ---
 
-### 6. `redactForLogs` — Defense-in-Depth Log Sanitization
+### 6. `redactForLogs` &mdash; Defense-in-Depth Log Sanitization
 
-**File**: `stubs/@ant/claude-swift/js/index.js` (lines 54-74)
+**File**: `stubs/@ant/claude-swift/js/index.js` (lines 54&ndash;74)
 
-Even though our stubs don't handle tokens, trace logs could theoretically capture tokens from subprocess output. The `redactForLogs` function strips:
+Even though our stubs don&rsquo;t handle tokens, trace logs could theoretically capture tokens from subprocess output. The `redactForLogs` function strips:
 
 | Pattern | Example | Replacement |
 |---------|---------|-------------|
 | `Authorization: Bearer <token>` | HTTP headers | `[REDACTED]` |
 | `"access_token": "<value>"` | JSON responses | `[REDACTED]` |
-| `"refresh_token": "<value>"` | OAuth refresh | `[REDACTED]` |
-| `"api_key": "<value>"` | API keys | `[REDACTED]` |
+| `"refresh_token": "<value>"` | <abbr title="Open Authorization">OAuth</abbr> refresh | `[REDACTED]` |
+| `"api_key": "<value>"` | <abbr title="Application Programming Interface">API</abbr> keys | `[REDACTED]` |
 | `ANTHROPIC_API_KEY=<value>` | Env var leaks | `[REDACTED]` |
 | `cookie: <value>` | Session cookies | `[REDACTED]` |
 
@@ -247,14 +256,14 @@ Even though our stubs don't handle tokens, trace logs could theoretically captur
 
 | Action | Status | Enforcement |
 |--------|--------|-------------|
-| Store OAuth tokens | **Never** | `addApprovedOauthToken` is a documented no-op |
-| Forward `CLAUDE_CODE_OAUTH_TOKEN` to Claude Code CLI | **Yes — intentional** | Required for CLI auth; token flows from Claude Desktop (Anthropic) → Claude Code CLI (Anthropic) only |
-| Forward additional OAuth/credential env vars from `additionalEnv` / `envVars` to subprocesses (e.g., `ANTHROPIC_AUTH_TOKEN`, bearer tokens, session cookies) | **Never** | `filterEnv` + `BLOCKED_ENV_KEY_PATTERN` drop credential-like keys from extra env; base `process.env` forwarding is constrained to a small allowlist (including `ANTHROPIC_API_KEY` as an intentional exception for API/CLI auth) |
-| Intercept OAuth callbacks | **Never** | `AuthRequest.isAvailable()` returns `false`; no protocol handler registered |
-| Process authentication credentials in this layer | **Never** | All auth handling is in unmodified Anthropic code (renderer + CLI) |
-| Log token values | **Never** | `redactForLogs` strips all credential patterns before any log write |
-| Open non-Anthropic auth URLs | **Never** | `ALLOWED_AUTH_ORIGINS` allowlist enforced |
-| Use OAuth tokens to call Anthropic API directly | **Never** | This layer makes no API calls; the CLI does, using its own internal OAuth path |
+| Store <abbr title="Open Authorization">OAuth</abbr> tokens | <mark>Never</mark> | `addApprovedOauthToken` is a documented no-op |
+| Forward <kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd> to Claude Code <abbr title="Command-Line Interface">CLI</abbr> | <mark>Yes &mdash; intentional</mark> | Required for <abbr title="Command-Line Interface">CLI</abbr> auth; token flows from Claude Desktop (Anthropic) &rarr; Claude Code <abbr title="Command-Line Interface">CLI</abbr> (Anthropic) only |
+| Forward additional <abbr title="Open Authorization">OAuth</abbr>/credential env vars from `additionalEnv` / `envVars` to subprocesses | <mark>Never</mark> | `filterEnv` + `BLOCKED_ENV_KEY_PATTERN` drop credential-like keys; base `process.env` forwarding is constrained to a small allowlist |
+| Intercept <abbr title="Open Authorization">OAuth</abbr> callbacks | <mark>Never</mark> | `AuthRequest.isAvailable()` returns `false`; no protocol handler registered |
+| Process authentication credentials in this layer | <mark>Never</mark> | All auth handling is in unmodified Anthropic code (renderer + <abbr title="Command-Line Interface">CLI</abbr>) |
+| Log token values | <mark>Never</mark> | `redactForLogs` strips all credential patterns before any log write |
+| Open non-Anthropic auth URLs | <mark>Never</mark> | `ALLOWED_AUTH_ORIGINS` allowlist enforced |
+| Use <abbr title="Open Authorization">OAuth</abbr> tokens to call Anthropic <abbr title="Application Programming Interface">API</abbr> directly | <mark>Never</mark> | This layer makes no <abbr title="Application Programming Interface">API</abbr> calls; the <abbr title="Command-Line Interface">CLI</abbr> does, using its own internal <abbr title="Open Authorization">OAuth</abbr> path |
 
 ---
 
@@ -262,12 +271,12 @@ Even though our stubs don't handle tokens, trace logs could theoretically captur
 
 | Component | Modified? | Purpose |
 |-----------|-----------|---------|
-| `stubs/@ant/claude-swift/js/index.js` | **Our code** | VM emulation for Linux (process spawn, path translation) |
+| `stubs/@ant/claude-swift/js/index.js` | **Our code** | <abbr title="Virtual Machine">VM</abbr> emulation for Linux (process spawn, path translation) |
 | `stubs/@ant/claude-native/index.js` | **Our code** | Platform shims (notifications, keyboard, etc.) |
-| `cowork/sdk_bridge.js` | **Our code** | CLI bridge for SDK-mode sessions |
-| `linux-loader.js` | **Our code** | Electron main process bootstrap + IPC handlers |
-| `app/.vite/build/index.js` | **Anthropic's code** (3 one-line patches) | Platform gate bypass only |
-| Claude Desktop renderer | **Unmodified** | Handles all OAuth, UI, API communication |
+| `cowork/sdk_bridge.js` | **Our code** | <abbr title="Command-Line Interface">CLI</abbr> bridge for SDK-mode sessions |
+| `linux-loader.js` | **Our code** | Electron main process bootstrap + <abbr title="Inter-Process Communication">IPC</abbr> handlers |
+| `app/.vite/build/index.js` | **Anthropic&rsquo;s code** (3 one-line patches) | Platform gate bypass only |
+| Claude Desktop renderer | **Unmodified** | Handles all <abbr title="Open Authorization">OAuth</abbr>, UI, <abbr title="Application Programming Interface">API</abbr> communication |
 | Claude Code binary | **Unmodified** | Handles its own authentication |
 
 ---

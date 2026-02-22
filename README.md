@@ -3,7 +3,7 @@
 <img src="https://github.com/user-attachments/assets/b50a50bb-2404-4153-a312-aa5784a16928" alt="Claude Cowork for Linux (Unofficial)" width="800">
 
  # Claude Cowork on Linux
- ### No macOS, no VM required.
+### No macOS, no VM required.
 
 <br>
 
@@ -12,23 +12,30 @@
 ![Status](https://img.shields.io/badge/status-Working-success?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
-**[Quick Start](#-quick-start)** · **[How It Works](#-how-it-works)** · **[Manual Setup](#-manual-setup)** · **[Troubleshooting](#-troubleshooting)**
+**[Quick Start](#-quick-start)** &middot; **[How It Works](#-how-it-works)** &middot; **[Manual Setup](#-manual-setup)** &middot; **[Troubleshooting](#-troubleshooting)**
 
 </div>
+
+[download]: https://claude.ai/download
+[mcp-servers]: https://github.com/modelcontextprotocol/servers
+[mcp-docs]: https://modelcontextprotocol.io/
+[license]: LICENSE
+[oauth-compliance]: OAUTH-COMPLIANCE.md
+[claude-md]: CLAUDE.md
 
 ---
 
 ## ![](.github/assets/icons/info-24x24.png) Overview
 
-Claude Cowork is a special Claude Desktop build that works inside a folder you point it at—it reads, writes, and organizes files there while it runs a plan. Cowork is currently a **macOS-only preview** backed by a sandboxed Linux VM; this repo reverse-engineers and stubs the macOS-native pieces so Cowork can run directly on Linux (x86_64 + X11)—no VM and no macOS required. The stub translates VM paths to host paths so Cowork points at the right files on Linux.
+Claude Cowork is a special Claude Desktop build that works inside a folder you point it at&mdash;it reads, writes, and organizes files there while it runs a plan. Cowork is currently a **macOS-only preview** backed by a sandboxed Linux <abbr title="Virtual Machine">VM</abbr>; this repo reverse-engineers and stubs the macOS-native pieces so Cowork can run directly on Linux (x86_64 + X11)&mdash;no <abbr title="Virtual Machine">VM</abbr> and no macOS required. The stub translates <abbr title="Virtual Machine">VM</abbr> paths to host paths so Cowork points at the right files on Linux.
 
 **How it works:**
 
 | Step | Description |
 |:-----|:------------|
 | ![](.github/assets/icons/script-24x24.png) **Stubbing** | Replace macOS-only native modules (`@ant/claude-swift`, `@ant/claude-native`) with JavaScript |
-| ![](.github/assets/icons/console-24x24.png) **Direct Execution** | Run the Claude Code binary directly (no VM needed—we're already on Linux!) |
-| ![](.github/assets/icons/translation-24x24.png) **Path Translation** | Convert VM paths to host paths transparently |
+| ![](.github/assets/icons/console-24x24.png) **Direct Execution** | Run the Claude Code binary directly (no <abbr title="Virtual Machine">VM</abbr> needed&mdash;we&rsquo;re already on Linux!) |
+| ![](.github/assets/icons/translation-24x24.png) **Path Translation** | Convert <abbr title="Virtual Machine">VM</abbr> paths to host paths transparently |
 | ![](.github/assets/icons/platform-24x24.png) **Platform Spoofing** | Send macOS headers so the server enables the feature |
 
 ---
@@ -37,7 +44,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 
 - **Unofficial research preview**: This is reverse-engineered and may break when Claude Desktop updates.
 - **Linux support**: Currently targets **Linux x86_64**. Wayland: auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Ozone backend).
-- **Access**: Requires your own Claude Desktop DMG and an account with Cowork enabled.
+- **Access**: Requires your own Claude Desktop <abbr title="Disk Image">DMG</abbr> and an account with Cowork enabled.
 
 ---
 
@@ -45,8 +52,8 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 
 - **Linux x86_64** (tested on Arch Linux, kernel 6.17.9)
 - **Node.js / npm** (for Electron)
-- **p7zip** (to extract the macOS DMG)
-- **Claude Desktop DMG** (download from [claude.ai/download](https://claude.ai/download))
+- **p7zip** (to extract the macOS <abbr title="Disk Image">DMG</abbr>)
+- **Claude Desktop <abbr title="Disk Image">DMG</abbr>** (download from [claude.ai/download][download])
 - **Claude Max subscription** for Cowork access
 - **One-time sudo** (recommended) to create the `/sessions` symlink
 
@@ -67,7 +74,7 @@ cd claude-cowork-linux
 ```
 
 The installer will:
-- Extract the Claude Desktop app from the DMG
+- Extract the Claude Desktop app from the <abbr title="Disk Image">DMG</abbr>
 - Apply Linux compatibility patches
 - Install our stub modules
 - Create required directories
@@ -75,11 +82,13 @@ The installer will:
 - Prompt once for `sudo` to create `/sessions` as a symlink into user space (required by the Claude Code binary)
 
 > [!IMPORTANT]
-> You must provide your own Claude Desktop DMG file. This repo does not include Anthropic's proprietary code.
+> You must provide your own Claude Desktop <abbr title="Disk Image">DMG</abbr> file. This repo does not include Anthropic&rsquo;s proprietary code.
 
 ---
 
 ## ![](.github/assets/icons/architecture-24x24.png) Architecture
+
+<figure>
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -92,23 +101,26 @@ The installer will:
 ├─────────────────────────────────────────────────────────────────┤
 │  @ant/claude-swift (STUBBED)                                    │
 │  ├── vm.setEventCallbacks() → Register process event handlers   │
-│  ├── vm.startVM() → No-op (we're already on Linux)              │
-│  ├── vm.spawn() → Creates mount symlinks, spawns processes      │
-│  ├── vm.kill() → Kills spawned processes                        │
-│  └── vm.writeStdin() → Writes to process stdin                  │
+│  ├── vm.startVM()           → No-op (we're already on Linux)    │
+│  ├── vm.spawn()             → Creates mount symlinks, spawns    │
+│  ├── vm.kill()              → Kills spawned processes           │
+│  └── vm.writeStdin()        → Writes to process stdin          │
 ├─────────────────────────────────────────────────────────────────┤
 │  @ant/claude-native (STUBBED)                                   │
-│  ├── AuthRequest → Opens system browser (xdg-open)              │
-│  └── Platform helpers → Minimal compatibility shims             │
+│  ├── AuthRequest            → Opens system browser (xdg-open)   │
+│  └── Platform helpers       → Minimal compatibility shims       │
 ├─────────────────────────────────────────────────────────────────┤
 │  Claude Code Binary                                             │
 │  └── ~/.config/Claude/claude-code-vm/2.1.5/claude (ELF x86_64) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+<figcaption>Figure 1: Component stack &mdash; each layer replaced by our stubs where macOS&ndash;specific</figcaption>
+</figure>
+
 ### Path Translation
 
-The stub translates VM paths to host paths:
+The stub translates <abbr title="Virtual Machine">VM</abbr> paths to host paths:
 
 | VM Path | Host Path |
 |:--------|:----------|
@@ -117,7 +129,7 @@ The stub translates VM paths to host paths:
 
 ### Mount Symlinks
 
-When you select a folder in Cowork, the stub creates symlinks to make it accessible at the expected VM path:
+When you select a folder in Cowork, the stub creates symlinks to make it accessible at the expected <abbr title="Virtual Machine">VM</abbr> path:
 
 ```
 ~/.local/share/claude-cowork/sessions/<session-name>/mnt/
@@ -130,7 +142,7 @@ When you select a folder in Cowork, the stub creates symlinks to make it accessi
 The `additionalMounts` parameter from Claude Desktop provides the mapping between mount names and host paths.
 
 > [!NOTE]
-> The Claude Code binary expects `/sessions` to exist. `install.sh` creates `/sessions` as a symlink into `~/.local/share/claude-cowork/sessions` (requires `sudo` once) so you don't need a world-writable root directory.
+> The Claude Code binary expects `/sessions` to exist. `install.sh` creates `/sessions` as a symlink into `~/.local/share/claude-cowork/sessions` (requires `sudo` once) so you don&rsquo;t need a world-writable root directory.
 
 ---
 
@@ -139,33 +151,33 @@ The `additionalMounts` parameter from Claude Desktop provides the mapping betwee
 <details>
 <summary><strong>1. Platform Spoofing</strong></summary>
 
-The app sends these headers to Anthropic's servers:
+The app sends these headers to Anthropic&rsquo;s servers:
 
 ```javascript
 'Anthropic-Client-OS-Platform': 'darwin'
 'Anthropic-Client-OS-Version': '14.0'
 ```
 
-This makes the server think we're on macOS 14 (Sonoma), enabling Cowork features.
+This makes the server think we&rsquo;re on macOS 14 (Sonoma), enabling Cowork features.
 
 </details>
 
 <details>
 <summary><strong>2. Platform Gate Bypass</strong></summary>
 
-The platform-gate function (minified name changes per build — `xPt()` in v1.1.3963, `wj()` in older builds) checks if Cowork is supported. `patches/enable-cowork.py` finds it automatically and replaces it to unconditionally return `{status: "supported"}`.
+The platform-gate function (minified name changes per build &mdash; `xPt()` in v1.1.3963, `wj()` in older builds) checks if Cowork is supported. `patches/enable-cowork.py` finds it automatically and replaces it to unconditionally return `{status: "supported"}`.
 
 </details>
 
 <details>
 <summary><strong>3. Swift Addon Stub</strong></summary>
 
-The original `@ant/claude-swift` uses Apple's Virtualization Framework. Our stub:
+The original `@ant/claude-swift` uses Apple&rsquo;s Virtualization Framework. Our stub:
 
-- Implements the same API surface
+- Implements the same <abbr title="Application Programming Interface">API</abbr> surface
 - Uses Node.js `child_process` to spawn real processes
 - Line-buffers JSON output for proper stream parsing
-- Translates VM paths to host paths
+- Translates <abbr title="Virtual Machine">VM</abbr> paths to host paths
 
 Key insight: The app calls `Si()` which returns `module.default.vm`, so methods must be on the `vm` object.
 
@@ -181,7 +193,7 @@ The app also expects `@ant/claude-native` (a macOS-specific native module). Our 
 <details>
 <summary><strong>5. Direct Execution</strong></summary>
 
-On macOS, Cowork runs a Linux VM. On Linux, we skip the VM entirely and run the Claude Code binary directly on the host. This is actually simpler and faster!
+On macOS, Cowork runs a Linux <abbr title="Virtual Machine">VM</abbr>. On Linux, we skip the <abbr title="Virtual Machine">VM</abbr> entirely and run the Claude Code binary directly on the host. This is actually simpler and faster!
 
 The binary is a Bun-compiled executable at:
 ```
@@ -207,11 +219,8 @@ claude-cowork-linux/
 │   └── sdk_bridge.js                   # SDK bridge (spawn dead code, kept for session state)
 ├── docs/
 │   ├── extensions.md                   # MCP and Chrome Extension integration overview
-│   ├── extensions-connectors-fix.md    # Fix for greyed-out connectors ($n variable patch)
-│   ├── fix-origin-validation.md        # IPC origin validation errors on Linux
 │   ├── known-issues.md                 # Safe Storage encryption, keyring setup
-│   ├── safestorage-tokens.md           # How to persist tokens across restarts
-│   └── security-review-installer.md   # Security audit of install.sh
+│   └── safestorage-tokens.md           # How to persist tokens across restarts
 ├── config/
 │   └── hyprland/claude.conf            # Optional: Hyprland window rules
 ├── patches/
@@ -232,13 +241,13 @@ claude-cowork-linux/
 After running `install.sh`, the `linux-app-extracted/` directory will contain the extracted Claude Desktop.
 
 > [!NOTE]
-> The installer automatically detects and extracts both `app.asar` (newer versions) and unpacked `app/` directories (older versions) from the DMG.
+> The installer automatically detects and extracts both `app.asar` (newer versions) and unpacked `app/` directories (older versions) from the <abbr title="Disk Image">DMG</abbr>.
 
 ---
 
 ## ![](.github/assets/icons/console-24x24.png) Manual Setup
 
-If the automated installer doesn't work, follow these steps:
+If the automated installer doesn&rsquo;t work, follow these steps:
 
 <details>
 <summary><strong>1. Extract Claude Desktop from DMG</strong></summary>
@@ -360,7 +369,7 @@ cat ~/.local/share/claude-cowork/logs/claude-swift-trace.log
 </details>
 
 <details>
-<summary><strong>Failed to start Claude's workspace</strong></summary>
+<summary><strong>Failed to start Claude&rsquo;s workspace</strong></summary>
 
 Check that:
 
@@ -389,8 +398,8 @@ Common issues:
 <details>
 <summary><strong>t.setEventCallbacks is not a function</strong></summary>
 
-This means the stub isn't exporting methods correctly. The app expects:
-- `module.default.vm.setEventCallbacks()` — NOT on the class directly
+This means the stub isn&rsquo;t exporting methods correctly. The app expects:
+- `module.default.vm.setEventCallbacks()` &mdash; NOT on the class directly
 
 Ensure the stub has methods on the `this.vm` object, not just the class.
 
@@ -448,13 +457,22 @@ The stub writes to `~/.local/share/claude-cowork/logs/claude-swift-trace.log`:
 
 This project includes security hardening:
 
-- **Command injection prevention** - Uses `execFile()` instead of `exec()`
-- **Path traversal protection** - Validates session paths
-- **Environment filtering** - Allowlist of safe environment variables
-- **Secure permissions** - Session directory uses 700, not 777
-- **Symlink for /sessions** - No world-writable directories
-- **URL origin validation** - `Auth_$_doAuthInBrowser` and `AuthRequest.start()` enforce Anthropic-only domains
-- **OAuth compliance** - `BLOCKED_ENV_KEY_PATTERN` + `CREDENTIAL_EXEMPT_KEYS` prevent token leakage to subprocesses
+<dl>
+  <dt>Command injection prevention</dt>
+  <dd>Uses <code>execFile()</code> instead of <code>exec()</code> &mdash; arguments are never passed through a shell</dd>
+  <dt>Path traversal protection</dt>
+  <dd>Validates session paths with <code>isPathSafe()</code> before any filesystem operation</dd>
+  <dt>Environment filtering</dt>
+  <dd>Allowlist of safe environment variables; credential-pattern keys blocked via <kbd>BLOCKED_ENV_KEY_PATTERN</kbd></dd>
+  <dt>Secure permissions</dt>
+  <dd>Session directory uses mode <code>700</code>, not <code>777</code></dd>
+  <dt>Symlink for /sessions</dt>
+  <dd>No world-writable root directories; <code>/sessions</code> points into user-owned space</dd>
+  <dt>URL origin validation</dt>
+  <dd><code>Auth_$_doAuthInBrowser</code> and <code>AuthRequest.start()</code> enforce Anthropic-only domains</dd>
+  <dt>OAuth compliance</dt>
+  <dd><kbd>BLOCKED_ENV_KEY_PATTERN</kbd> + <kbd>CREDENTIAL_EXEMPT_KEYS</kbd> prevent token leakage to subprocesses &mdash; see <a href="OAUTH-COMPLIANCE.md">OAUTH-COMPLIANCE.md</a></dd>
+</dl>
 
 ---
 
@@ -463,9 +481,9 @@ This project includes security hardening:
 > [!CAUTION]
 > This project is for **educational and research purposes**. Claude Desktop is proprietary software owned by Anthropic PBC. Use of Cowork requires a valid Claude Max subscription.
 >
-> This repository contains only stub implementations and patches—**not** the Claude Desktop application itself. You must obtain Claude Desktop directly from Anthropic.
+> This repository contains only stub implementations and patches&mdash;**not** the Claude Desktop application itself. You must obtain Claude Desktop directly from Anthropic.
 >
-> This project is **not affiliated with, endorsed by, or sponsored by** Anthropic. "Claude" is a trademark of Anthropic PBC.
+> This project is **not affiliated with, endorsed by, or sponsored by** Anthropic. &ldquo;Claude&rdquo; is a trademark of Anthropic PBC.
 
 ---
 
@@ -477,6 +495,6 @@ Reverse engineered and implemented by examining the Claude Desktop Electron app 
 
 <div align="center">
 
-**MIT License** · See [LICENSE](LICENSE) for details
+**MIT License** &middot; See [LICENSE][license] for details
 
 </div>

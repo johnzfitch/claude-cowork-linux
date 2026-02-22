@@ -80,6 +80,11 @@ ARCHITECTURE.md
 auth_code_reference.txt
 auth_findings_summary.md
 
+# Historical fix notes (already integrated into install.sh — not relevant to current version)
+docs/extensions-connectors-fix.md
+docs/fix-origin-validation.md
+docs/security-review-installer.md
+
 # Local Claude Code config (session notes, local settings)
 .claude/session-resume.md
 .claude/settings.local.json

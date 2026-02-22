@@ -1,9 +1,11 @@
 # Claude Cowork Linux
 
-Reverse-engineered Linux port of Claude Desktop's Cowork (Local Agent Mode).
-Replaces macOS VM + Swift addon with direct process spawning on Linux.
+Reverse-engineered Linux port of Claude Desktop&rsquo;s Cowork (Local Agent Mode).
+Replaces macOS <abbr title="Virtual Machine">VM</abbr> + Swift addon with direct process spawning on Linux.
 
 ## Architecture Overview
+
+<figure>
 
 ```
                         ┌─────────────────────────────────┐
@@ -34,15 +36,18 @@ Replaces macOS VM + Swift addon with direct process spawning on Linux.
                                                     └─────────────────────┘
 ```
 
-**Critical**: The asar's own `LocalAgentModeSessionManager` drives the spawn lifecycle.
+<figcaption>Figure 1: Module map &mdash; <code>linux-loader.js</code> intercepts <abbr title="Inter-Process Communication">IPC</abbr>, the Swift stub drives <abbr title="Virtual Machine">VM</abbr> emulation and process spawn</figcaption>
+</figure>
+
+**Critical**: The asar&rsquo;s own `LocalAgentModeSessionManager` drives the spawn lifecycle.
 It calls `vm.spawn()` on the Swift stub directly. `sdk_bridge.js` initializes but is NOT
 used for spawning. Do not add spawn logic to `sdk_bridge.js` expecting it to run.
 
 ## Current Status
 
-- Regular Claude chat: WORKING
-- Cowork (Local Agent Mode): WORKING (auth fixed 2026-02-13)
-- Session persistence between restarts: IMPLEMENTED (env var path fix 2026-02-13)
+- Regular Claude chat: <mark>WORKING</mark>
+- Cowork (Local Agent Mode): <mark>WORKING</mark> (auth fixed 2026-02-13)
+- Session persistence between restarts: <mark>IMPLEMENTED</mark> (env var path fix 2026-02-13)
 
 ## Key Files
 
@@ -172,7 +177,7 @@ Send message:
 **DO NOT** inject `ANTHROPIC_AUTH_TOKEN` — it bypasses the CLI's OAuth handler and causes 401.
 See "Critical: Auth Flow" section below for full details.
 
-### Chain 5: IPC Handler Registration (EIPC)
+### Chain 5: <abbr title="Inter-Process Communication">IPC</abbr> Handler Registration (<abbr title="Electron IPC">EIPC</abbr>)
 
 ```
 Asar registers handlers via ipcMain.handle():
@@ -199,22 +204,22 @@ Key handlers we intercept:
 The auth flow is fragile. The following behavior is correct and intentional:
 
 1. The asar performs OAuth token exchange using session cookies from claude.ai
-2. The asar passes env vars to the CLI via `vm.spawn()`:
-   - `CLAUDE_CODE_OAUTH_TOKEN=<token>` -- the real auth token
-   - `ANTHROPIC_API_KEY=""` -- intentionally empty
-   - `ANTHROPIC_BASE_URL=https://api.anthropic.com`
-3. Our stub's `filterEnv()` merges these into the spawned process env
-4. The CLI handles `CLAUDE_CODE_OAUTH_TOKEN` through its own internal OAuth code path
+2. The asar passes env vars to the <abbr title="Command-Line Interface">CLI</abbr> via `vm.spawn()`:
+   - <kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd>`=<token>` &mdash; the real auth token
+   - <kbd>ANTHROPIC_API_KEY</kbd>`=""` &mdash; intentionally empty
+   - <kbd>ANTHROPIC_BASE_URL</kbd>`=https://api.anthropic.com`
+3. Our stub&rsquo;s `filterEnv()` merges these into the spawned process env
+4. The <abbr title="Command-Line Interface">CLI</abbr> handles <kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd> through its own internal OAuth code path
 
 ### DO NOT:
-- Inject `ANTHROPIC_AUTH_TOKEN` from the OAuth token. This bypasses the CLI's
-  OAuth handling and sends the token as a raw Bearer header, which the API
-  rejects with 401: "OAuth authentication is currently not supported."
-- Store the token from `addApprovedOauthToken()`. On macOS the VM's MITM proxy
-  uses it; on Linux we don't need it because the asar already passes
-  `CLAUDE_CODE_OAUTH_TOKEN` in the spawn env vars.
-- Override or delete `CLAUDE_CODE_OAUTH_TOKEN` from the env vars.
-- Set `ANTHROPIC_API_KEY` to the OAuth token (different token type).
+- Inject <kbd>ANTHROPIC_AUTH_TOKEN</kbd> from the OAuth token. This bypasses the <abbr title="Command-Line Interface">CLI</abbr>&rsquo;s
+  OAuth handling and sends the token as a raw Bearer header, which the <abbr title="Application Programming Interface">API</abbr>
+  rejects with 401: &ldquo;OAuth authentication is currently not supported.&rdquo;
+- Store the token from `addApprovedOauthToken()`. On macOS the <abbr title="Virtual Machine">VM</abbr>&rsquo;s <abbr title="Man-in-the-Middle">MITM</abbr> proxy
+  uses it; on Linux we don&rsquo;t need it because the asar already passes
+  <kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd> in the spawn env vars.
+- Override or delete <kbd>CLAUDE_CODE_OAUTH_TOKEN</kbd> from the env vars.
+- Set <kbd>ANTHROPIC_API_KEY</kbd> to the OAuth token (different token type).
 
 ### Why macOS is different:
 On macOS, the CLI runs inside a VM with a MITM proxy that intercepts ALL
@@ -226,16 +231,24 @@ and must authenticate via its own `CLAUDE_CODE_OAUTH_TOKEN` code path.
 
 ### Log sources
 
-| Log prefix | Source | Where |
-|------------|--------|-------|
-| `[TRACE]` | Swift stub `trace()` | `~/Library/Application Support/Claude/logs/claude-swift-trace.log` |
-| `[claude-swift]` | Swift stub `console.log()` | stdout (captured by test-launch.sh) |
-| `[Cowork]` | linux-loader.js | stdout |
-| `[ipc-setup]` | ipc-handler-setup.js | stdout |
-| `[sdk-bridge]` | sdk_bridge.js | stdout |
-| `[MAIN_LOG]` | Asar's main process logger | stdout |
-| `[COWORK_VM]` | Asar's VM manager | stdout |
-| `[CONSOLE:N]` | Chromium renderer (webapp) | stdout (line N in source) |
+<dl>
+  <dt><code>[TRACE]</code></dt>
+  <dd>Swift stub <code>trace()</code> &mdash; <samp>~/Library/Application Support/Claude/logs/claude-swift-trace.log</samp></dd>
+  <dt><code>[claude-swift]</code></dt>
+  <dd>Swift stub <code>console.log()</code> &mdash; stdout (captured by test-launch.sh)</dd>
+  <dt><code>[Cowork]</code></dt>
+  <dd><code>linux-loader.js</code> &mdash; stdout</dd>
+  <dt><code>[ipc-setup]</code></dt>
+  <dd><code>ipc-handler-setup.js</code> &mdash; stdout</dd>
+  <dt><code>[sdk-bridge]</code></dt>
+  <dd><code>sdk_bridge.js</code> &mdash; stdout</dd>
+  <dt><code>[MAIN_LOG]</code></dt>
+  <dd>Asar&rsquo;s main process logger &mdash; stdout</dd>
+  <dt><code>[COWORK_VM]</code></dt>
+  <dd>Asar&rsquo;s <abbr title="Virtual Machine">VM</abbr> manager &mdash; stdout</dd>
+  <dt><code>[CONSOLE:N]</code></dt>
+  <dd>Chromium renderer (webapp) &mdash; stdout (line N in source)</dd>
+</dl>
 
 ### Common issues and what to grep for
 
@@ -249,10 +262,10 @@ This is the regular LocalSessions manager, not the Cowork one. Cosmetic for our 
 **"conversation_uuid: Input should be a valid UUID...found 'l'"** → webapp tries to
 use `local_<uuid>` as an API parameter. Cosmetic — local sessions use IPC, not the API.
 
-**401 auth errors** → likely ANTHROPIC_AUTH_TOKEN injection. Check filterEnv() hasn't been
-modified to inject auth headers. See "Critical: Auth Flow" above.
+**401 auth errors** &rarr; likely <kbd>ANTHROPIC_AUTH_TOKEN</kbd> injection. Check `filterEnv()` hasn&rsquo;t been
+modified to inject auth headers. See &ldquo;Critical: Auth Flow&rdquo; above.
 
-**Empty transcript after restart** → `CLAUDE_CONFIG_DIR` path mismatch. Check:
+**Empty transcript after restart** &rarr; <kbd>CLAUDE_CONFIG_DIR</kbd> path mismatch. Check:
 1. `grep "Translated envVar CLAUDE_CONFIG_DIR" ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log`
 2. The translated path should go through SESSIONS_BASE, not through /sessions/ symlink
 3. The .claude symlink in mnt/ should resolve to the asar session storage dir
