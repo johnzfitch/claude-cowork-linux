@@ -290,24 +290,48 @@ download_dmg() {
     # The download page is Cloudflare-protected and can't be curl'd directly.
     local dl_dir
     dl_dir=$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")
-    local marker
-    marker=$(mktemp)
+    local marker="$WORK_DIR/.download-marker"
+    touch "$marker"
 
     log_info "Opening claude.ai/download in your browser..."
     log_info "Download the macOS (Universal) DMG — the installer will continue automatically."
     echo ""
-    xdg-open "$CLAUDE_DOWNLOAD_PAGE" 2>/dev/null || true
+    if ! xdg-open "$CLAUDE_DOWNLOAD_PAGE" 2>/dev/null; then
+        log_warn "Could not open browser automatically."
+        log_info "Please open this URL manually: $CLAUDE_DOWNLOAD_PAGE"
+    fi
 
     # Watch the user's XDG download directory for a new Claude DMG
     log_info "Waiting for Claude*.dmg in $dl_dir ..."
     local found=""
+    local elapsed=0
+    local timeout=600  # 10 minutes
     while [[ -z "$found" ]]; do
         sleep 2
+        elapsed=$((elapsed + 2))
+        if [[ "$elapsed" -ge "$timeout" ]]; then
+            die "Timed out waiting for Claude DMG. Download manually and re-run with: CLAUDE_DMG=/path/to/Claude.dmg $0"
+        fi
         found=$(find "$dl_dir" -maxdepth 1 \( -name "Claude*.dmg" -o -name "claude*.dmg" \) \
             -newer "$marker" -type f -print -quit 2>/dev/null)
     done
-    rm -f "$marker"
-    log_success "Found: $found"
+    log_success "Detected: $found"
+
+    # Wait for the download to finish (file size must stabilize)
+    log_info "Waiting for download to complete..."
+    local prev_size=-1
+    local curr_size=0
+    while true; do
+        curr_size=$(stat -c%s "$found" 2>/dev/null || echo 0)
+        if [[ "$prev_size" -eq "$curr_size" && "$curr_size" -gt 0 \
+              && ! -f "${found}.crdownload" ]]; then
+            break
+        fi
+        prev_size=$curr_size
+        sleep 3
+    done
+
+    log_success "Download complete: $(format_size "$curr_size")"
     cp "$found" "$dmg_path"
 
     # Verify download size (minimum 100MB for valid DMG)
