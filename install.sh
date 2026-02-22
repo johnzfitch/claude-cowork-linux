@@ -26,9 +26,10 @@ set -euo pipefail
 VERSION="2.0.0"
 CLAUDE_VERSION="latest"
 
-# Official Anthropic download URLs
-DMG_URL_PRIMARY="https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect"
-DMG_URL_FALLBACK="https://storage.googleapis.com/osprey-downloads-c02f6a0d-347c-492b-a752-3e0651722e97/nest/Claude.dmg"
+# Direct download URL for the latest Claude Desktop DMG.
+# The claude.ai/download page is CF-protected; this versioned URL works with curl.
+# Update CLAUDE_DMG_URL when a new release ships (or set CLAUDE_DMG to a local path).
+CLAUDE_DMG_URL="https://downloads.claude.ai/releases/darwin/universal/1.1.3963/Claude-71a7aee7e4c1ab9eb313dc3051d72cf09be28d70.dmg"
 
 # Stub download URLs (from GitHub repo)
 REPO_BASE="https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master"
@@ -120,7 +121,7 @@ verify_checksum() {
     if [[ -z "$expected_sha256" ]]; then
         log_warn "No SHA256 checksum provided (set CLAUDE_DMG_SHA256=<hash> to verify)"
         log_info "Anthropic does not publish official checksums for Claude Desktop DMG"
-        log_info "Download source: $DMG_URL_PRIMARY"
+        log_info "Download URL: $CLAUDE_DMG_URL"
         return 0
     fi
     
@@ -287,23 +288,35 @@ download_dmg() {
         fi
     fi
 
-    log_info "Downloading Claude Desktop from Anthropic's official CDN..."
-    log_info "Source: $DMG_URL_PRIMARY"
+    log_info "Downloading Claude Desktop..."
+    log_info "URL: $CLAUDE_DMG_URL"
     echo ""
 
-    # Try primary URL first
-    if curl -fSL --progress-bar -o "$dmg_path" "$DMG_URL_PRIMARY" 2>/dev/null; then
-        log_success "Downloaded latest release (followed redirect)"
-    elif curl -fSL --progress-bar -o "$dmg_path" "$DMG_URL_FALLBACK" 2>/dev/null; then
-        log_success "Downloaded from fallback CDN"
+    # Try direct versioned URL
+    if curl -fSL --progress-bar -o "$dmg_path" "$CLAUDE_DMG_URL" 2>/dev/null; then
+        log_success "Downloaded successfully"
     else
-        log_error "Failed to download Claude DMG"
-        log_info ""
-        log_info "Manual download instructions:"
-        log_info "  1. Visit https://claude.ai/download"
-        log_info "  2. Download the macOS version"
-        log_info "  3. Re-run with: CLAUDE_DMG=/path/to/Claude.dmg $0"
-        exit 1
+        # Direct URL failed — open browser and wait for user to download
+        log_warn "Automatic download failed. Opening claude.ai/download in your browser..."
+        log_info "Please download the macOS (Universal) DMG, then come back here."
+        echo ""
+        xdg-open "https://claude.ai/download" 2>/dev/null || true
+
+        # Watch the user's download directory for a Claude DMG (created after this point)
+        local marker
+        marker=$(mktemp)
+        local dl_dir
+        dl_dir=$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")
+        log_info "Watching $dl_dir for Claude*.dmg ..."
+        local found=""
+        while [[ -z "$found" ]]; do
+            sleep 2
+            found=$(find "$dl_dir" -maxdepth 1 \( -name "Claude*.dmg" -o -name "claude*.dmg" \) \
+                -newer "$marker" -type f -print -quit 2>/dev/null)
+        done
+        rm -f "$marker"
+        log_success "Found: $found"
+        cp "$found" "$dmg_path"
     fi
 
     # Verify download size (minimum 100MB for valid DMG)
@@ -747,7 +760,7 @@ EOF
 # ============================================================
 
 main() {
-    # Allow positional arg as DMG path (./install.sh ~/Downloads/Claude.dmg)
+    # Allow positional arg as DMG path (e.g. ./install.sh /path/to/Claude.dmg)
     if [[ -n "${1:-}" && -z "${CLAUDE_DMG:-}" ]]; then
         export CLAUDE_DMG="$1"
     fi
