@@ -28,6 +28,7 @@ VERSION="3.0.0"
 REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
 INSTALL_DIR="$HOME/.local/share/claude-desktop"
 CLAUDE_DOWNLOAD_PAGE="https://claude.ai/download"
+RNET_WHEEL_URL="https://github.com/johnzfitch/claude-cowork-linux/releases/download/v${VERSION}/rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
 
 # Minimum expected DMG size (100MB)
 MIN_DMG_SIZE=100000000
@@ -164,10 +165,63 @@ setup_repo() {
 # Step 3: Get the Claude Desktop DMG
 # ============================================================
 
+fetch_dmg_via_rnet() {
+    # Auto-download DMG using rnet to bypass Cloudflare on the API endpoint.
+    # The CDN URL (downloads.claude.ai) works fine with plain curl.
+    local dmg_path="$1"
+    local venv_dir="$WORK_DIR/rnet-venv"
+    local fetch_script
+
+    # Locate fetch-dmg.py (repo clone or running from source)
+    if [[ -f "$INSTALL_DIR/tools/fetch-dmg.py" ]]; then
+        fetch_script="$INSTALL_DIR/tools/fetch-dmg.py"
+    elif [[ -f "$(dirname "$0")/tools/fetch-dmg.py" ]]; then
+        fetch_script="$(dirname "$0")/tools/fetch-dmg.py"
+    else
+        log_warn "tools/fetch-dmg.py not found, skipping auto-download"
+        return 1
+    fi
+
+    log_info "Setting up rnet for auto-download..."
+    python3 -m venv "$venv_dir" 2>/dev/null || { log_warn "Failed to create venv"; return 1; }
+
+    # Install rnet wheel from GitHub release
+    if ! "$venv_dir/bin/pip" install --quiet "$RNET_WHEEL_URL" 2>/dev/null; then
+        log_warn "Failed to install rnet wheel"
+        rm -rf "$venv_dir"
+        return 1
+    fi
+
+    log_info "Fetching latest DMG URL..."
+    local dmg_url
+    dmg_url=$("$venv_dir/bin/python3" "$fetch_script" --url 2>/dev/null) || {
+        log_warn "Failed to fetch DMG URL"
+        rm -rf "$venv_dir"
+        return 1
+    }
+
+    rm -rf "$venv_dir"
+
+    log_info "Downloading DMG from CDN..."
+    if curl -fSL --progress-bar -o "$dmg_path" "$dmg_url"; then
+        local size
+        size=$(stat -c%s "$dmg_path" 2>/dev/null || echo 0)
+        if [[ "$size" -ge "$MIN_DMG_SIZE" ]]; then
+            log_success "Downloaded DMG: $(format_size "$size")"
+            return 0
+        fi
+        log_warn "Downloaded file too small ($(format_size "$size")), may be corrupt"
+        rm -f "$dmg_path"
+    fi
+
+    log_warn "CDN download failed"
+    return 1
+}
+
 get_dmg() {
     local dmg_path="$1"
 
-    # User-provided DMG path
+    # 1. User-provided DMG path
     if [[ -n "${CLAUDE_DMG:-}" ]]; then
         local resolved_path
         resolved_path=$(realpath -e "$CLAUDE_DMG" 2>/dev/null) || die "DMG not found: $CLAUDE_DMG"
@@ -177,7 +231,7 @@ get_dmg() {
         return 0
     fi
 
-    # Check install dir for existing DMG
+    # 2. Check install dir for existing DMG
     local existing_dmg=""
     existing_dmg=$(find "$INSTALL_DIR" -maxdepth 1 \( -name "Claude*.dmg" -o -name "claude*.dmg" \) -type f -print -quit 2>/dev/null)
     if [[ -n "$existing_dmg" ]]; then
@@ -186,7 +240,15 @@ get_dmg() {
         return 0
     fi
 
-    # Open browser and watch for download
+    # 3. Auto-download via rnet (bypasses Cloudflare)
+    if command_exists python3; then
+        if fetch_dmg_via_rnet "$dmg_path"; then
+            return 0
+        fi
+        log_warn "Auto-download failed, falling back to browser download"
+    fi
+
+    # 4. Browser download fallback
     local dl_dir
     dl_dir=$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")
     local marker="$WORK_DIR/.download-marker"
@@ -222,7 +284,6 @@ get_dmg() {
               && ! -f "${found}.crdownload" ]]; then
             break
         fi
-        # Reset stall timer when file is still growing
         if [[ "$curr_size" -gt "$prev_size" ]]; then
             stall_elapsed=0
         else

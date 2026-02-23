@@ -43,39 +43,47 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 
 ## ![](.github/assets/icons/checkbox-24x24.png) Requirements
 
-- **Linux x86_64** (tested on Arch Linux, kernel 6.17.9)
+- **Linux x86_64** (tested on Arch Linux, kernel 6.18.7)
 - **Node.js / npm** (for Electron)
 - **p7zip** (to extract the macOS DMG)
-- **Claude Desktop DMG** (download from [claude.ai/download](https://claude.ai/download))
+- **Python 3.11+** (for auto-download and patches)
 - **Claude Max subscription** for Cowork access
-- **One-time sudo** (recommended) to create the `/sessions` symlink
 
 ---
 
 ## ![](.github/assets/icons/rocket-24x24.png) Quick Start
 
+### Method 1: install.sh (recommended)
+
 ```bash
-# 1. Clone the repo
 git clone https://github.com/johnzfitch/claude-cowork-linux.git
 cd claude-cowork-linux
-
-# 2. Run the installer (provide path to Claude Desktop DMG)
-./install.sh ~/Downloads/Claude-*.dmg
-
-# 3. Launch
-./test-launch.sh
+./install.sh          # auto-downloads the latest DMG
+claude-desktop
 ```
 
-The installer will:
-- Extract the Claude Desktop app from the DMG
-- Apply Linux compatibility patches
-- Install our stub modules
-- Create required directories
-- Install Electron
-- Prompt once for `sudo` to create `/sessions` as a symlink into user space (required by the Claude Code binary)
+### Method 2: AUR (Arch Linux)
+
+```bash
+yay -S claude-cowork-linux       # auto-downloads the latest DMG
+```
+
+### Method 3: curl pipe
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh)
+```
+
+The installer automatically downloads the latest Claude Desktop DMG (using [rnet](https://github.com/nicholasgasior/rnet) to bypass Cloudflare on the API endpoint, then curl for the CDN download). You can also provide a DMG manually:
+
+```bash
+./install.sh ~/Downloads/Claude-*.dmg
+# or
+CLAUDE_DMG=~/Downloads/Claude-1.1.4010.dmg ./install.sh
+```
 
 > [!IMPORTANT]
-> You must provide your own Claude Desktop DMG file. This repo does not include Anthropic's proprietary code.
+> This repo does not include Anthropic's proprietary code. The installer downloads it directly from Anthropic's CDN.
 
 ---
 
