@@ -334,6 +334,22 @@ extract_dmg() {
         cp -r "$unpacked"/* "$target_dir/" 2>/dev/null || true
     fi
 
+    # Copy app resources (i18n, tray icons) that live alongside app.asar in
+    # Contents/Resources/ but are not packed inside it. The app reads these at
+    # runtime via a path relative to the asar (e.g. resources/i18n/en-US.json),
+    # so they must be present inside linux-app-extracted/ before repacking.
+    local resources_dir="$claude_app/Contents/Resources"
+    mkdir -p "$target_dir/resources"
+    for item in "$resources_dir"/*; do
+        local name
+        name=$(basename "$item")
+        # Skip the asar files themselves — only copy static assets
+        case "$name" in
+            app.asar|app.asar.unpacked) continue ;;
+        esac
+        cp -r "$item" "$target_dir/resources/$name" 2>/dev/null || true
+    done
+
     log_success "Extracted app to linux-app-extracted/"
 }
 
