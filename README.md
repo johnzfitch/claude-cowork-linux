@@ -18,6 +18,23 @@
 
 ---
 
+## Fork Changes
+
+This fork adds **Linux UI fixes** to `test-launch.sh` that the upstream installer misses. These are applied automatically before every asar repack and work on **any x86_64 Linux distro** (tested on Nobara/Fedora KDE, should work on Ubuntu, Arch, Debian, etc.):
+
+| Fix | Problem | Solution |
+|:----|:--------|:---------|
+| **i18n paths** | DMG extracts locale files to `resources/*.json`, but the app expects `resources/i18n/*.json` | Copies JSON files into the expected subdirectory |
+| **Entry point** | `package.json` points to `index.pre.js`, bypassing the frame-fix wrapper entirely | Redirects to `frame-fix-entry.js` so the BrowserWindow patch loads |
+| **Window decorations** | macOS-specific `titleBarStyle:"hidden"`, `titleBarOverlay`, `trafficLightPosition` produce a frameless window on Linux | Patches the Vite bundle directly via `sed` to remove these options |
+| **App icon** | Desktop entry references `icon.icns` (macOS format), which Linux can't display | Extracts PNGs from `electron.icns` via Python/Pillow into XDG icon dirs |
+
+All fixes are idempotent — they check whether they're needed before applying.
+
+> Upstream repo: [johnzfitch/claude-cowork-linux](https://github.com/johnzfitch/claude-cowork-linux)
+
+---
+
 ## ![](.github/assets/icons/info-24x24.png) Overview
 
 Claude Cowork is a special Claude Desktop build that works inside a folder you point it at—it reads, writes, and organizes files there while it runs a plan. Cowork is currently a **macOS-only preview** backed by a sandboxed Linux VM; this repo reverse-engineers and stubs the macOS-native pieces so Cowork can run directly on Linux (x86_64)—no VM and no macOS required. The stub translates VM paths to host paths so Cowork points at the right files on Linux.
