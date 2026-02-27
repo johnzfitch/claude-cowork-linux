@@ -24,11 +24,11 @@ set -euo pipefail
 # Configuration
 # ============================================================
 
-VERSION="3.0.1"
+VERSION="3.0.2"
 REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
 INSTALL_DIR="$HOME/.local/share/claude-desktop"
 CLAUDE_DOWNLOAD_PAGE="https://claude.ai/download"
-RNET_WHEEL_URL="https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.1/rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
+RNET_WHEEL_URL="https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
 
 # Minimum expected DMG size (100MB)
 MIN_DMG_SIZE=100000000
