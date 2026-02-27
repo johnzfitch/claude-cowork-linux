@@ -284,6 +284,13 @@ function createMountSymlinks(sessionName, additionalMounts) {
 
     const mountPoint = path.join(mntDir, mountName);
 
+    // Skip asar mounts: on macOS the app path is a directory inside the .app bundle,
+    // but on Linux it's a packed .asar file which Claude Code can't use as a project dir.
+    if (mountName.endsWith('.asar')) {
+      trace('  SKIP: ' + mountName + ' is an asar archive, not a directory (Linux)');
+      continue;
+    }
+
     // Handle special cases
     if (mountName === 'uploads') {
       // On macOS, uploads is a VM shared mount. On Linux (no VM),
@@ -874,6 +881,18 @@ class SwiftAddonStub extends EventEmitter {
           }
           return arg;
         });
+
+        // Filter out --add-dir args pointing to .asar files (not valid project dirs on Linux)
+        let filteredArgs = [];
+        for (let i = 0; i < hostArgs.length; i++) {
+          if (hostArgs[i] === '--add-dir' && i + 1 < hostArgs.length && hostArgs[i + 1].endsWith('.asar')) {
+            trace('Filtered out --add-dir for asar: ' + hostArgs[i + 1]);
+            i++; // skip the next arg too
+            continue;
+          }
+          filteredArgs.push(hostArgs[i]);
+        }
+        hostArgs = filteredArgs;
 
         // Ensure sessions directory exists with secure permissions
         try {
