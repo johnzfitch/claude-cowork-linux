@@ -37,7 +37,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 
 - **Unofficial research preview**: This is reverse-engineered and may break when Claude Desktop updates.
 - **Linux support**: Currently targets **Linux x86_64**. Wayland: auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Ozone backend).
-- **Access**: Requires a Claude account with Cowork enabled (Max subscription). The installer auto-downloads the Claude Desktop DMG; no macOS machine needed.
+- **Access**: Requires a Claude account. The installer auto-downloads the Claude Desktop DMG; no macOS machine needed.
 
 ---
 
@@ -72,7 +72,7 @@ Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to vali
 - **p7zip** (to extract the macOS DMG)
 - **bubblewrap** (sandbox isolation)
 - **Python 3.11+** (for auto-download and patches)
-- **Claude Max subscription** for Cowork access
+- **Claude account** for Cowork access
 - **Secret service provider** (optional) -- gnome-keyring, KDE Wallet, or KeePassXC for secure credential storage. Without one, the launcher falls back to `--password-store=basic`.
 
 ---
@@ -399,7 +399,7 @@ Run `claude-desktop --doctor` first to check your environment. Then verify:
 
 1. The swift stub is properly loaded (check for `[claude-swift-stub] LOADING MODULE` in logs)
 2. The Claude binary exists at one of the resolved paths (`~/.local/bin/claude`, `~/.config/Claude/claude-code-vm/{version}/claude`, etc.)
-3. You have Cowork enabled on your account (Max subscription)
+3. You have a valid Claude account
 
 </details>
 
@@ -505,7 +505,7 @@ This project includes security hardening:
 ## Legal Notice
 
 > [!CAUTION]
-> This project is for **educational and research purposes**. Claude Desktop is proprietary software owned by Anthropic PBC. Use of Cowork requires a valid Claude Max subscription.
+> This project is for **educational and research purposes**. Claude Desktop is proprietary software owned by Anthropic PBC. Use of Cowork requires a valid Claude account.
 >
 > This repository contains only stub implementations and patches—**not** the Claude Desktop application itself. You must obtain Claude Desktop directly from Anthropic.
 >
