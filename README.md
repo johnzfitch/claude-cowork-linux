@@ -52,7 +52,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 | **Fedora 39+** | GNOME / KDE | Expected | May need `p7zip-plugins` for DMG extraction |
 | **Debian 12+** | Any | Expected | `p7zip-full` in apt |
 | **NixOS** | Any | Untested | Electron + bwrap sandboxing may need extra config |
-| **openSUSE** | Any | Untested | zypper path supported by installer |
+| **openSUSE Tumbleweed** | KDE Plasma | Tested | `7zip` package (not p7zip), KDE Wallet via SecretService |
 
 **Known caveats:**
 - Wayland compositors that don't implement the `GlobalShortcuts` portal (GNOME) won't have global hotkey support -- set a custom shortcut in your DE settings instead.
@@ -65,11 +65,11 @@ Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to vali
 
 ## ![](.github/assets/icons/checkbox-24x24.png) Requirements
 
-- **Linux x86_64** (tested on Arch Linux, kernel 6.18.7)
+- **Linux x86_64** (tested on Arch Linux kernel 6.18.7, openSUSE Tumbleweed kernel 6.19.2)
 - **Node.js 18+** / npm
 - **Electron** (system package or npm global)
 - **asar** (`npm install -g @electron/asar`)
-- **p7zip** (to extract the macOS DMG)
+- **7-Zip** (`p7zip` on Arch/Debian/Fedora, `7zip` on openSUSE — provides the `7z` command to extract the macOS DMG)
 - **bubblewrap** (sandbox isolation)
 - **Python 3.11+** (for auto-download and patches)
 - **Claude account** for Cowork access
@@ -223,8 +223,12 @@ The stub resolves the binary in priority order:
 $CLAUDE_CODE_PATH                                    (explicit override)
 ~/.local/bin/claude                                  (npm/bun global)
 ~/.npm-global/bin/claude
+/home/linuxbrew/.linuxbrew/bin/claude                (Linuxbrew system-wide)
+~/.linuxbrew/bin/claude                              (Linuxbrew user-local)
 /usr/local/bin/claude
 /usr/bin/claude
+/snap/bin/claude                                     (snap)
+which claude                                         (PATH: mise, asdf, nvm, volta, etc.)
 ```
 
 </details>
@@ -387,7 +391,7 @@ sudo ln -s ~/.local/share/claude-cowork/sessions /sessions
 JSON parsing issue. The stub uses line buffering to send complete JSON objects. If this persists, check the trace log:
 
 ```bash
-cat ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+cat ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log
 ```
 
 </details>
@@ -409,7 +413,7 @@ Run `claude-desktop --doctor` first to check your environment. Then verify:
 Check stderr in the trace log for the actual error:
 
 ```bash
-tail -50 ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+tail -50 ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log
 ```
 
 Common issues:
@@ -462,18 +466,18 @@ export CLAUDE_COWORK_DEBUG=1
 export ELECTRON_ENABLE_LOGGING=1
 
 # Clear old logs
-rm -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+rm -f ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log
 
 # Run with output capture
 ./test-launch.sh 2>&1 | tee /tmp/claude-full.log
 
 # In another terminal, watch the trace
-tail -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+tail -f ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log
 ```
 
 ### Trace Log Format
 
-The stub writes to `~/.local/share/claude-cowork/logs/claude-swift-trace.log`:
+The stub writes to `~/Library/Application\ Support/Claude/logs/claude-swift-trace.log`:
 
 ```
 [timestamp] === MODULE LOADING ===

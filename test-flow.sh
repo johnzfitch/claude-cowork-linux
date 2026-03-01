@@ -16,7 +16,8 @@ info() { echo -e "${BLUE}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 step() { echo -e "\n${YELLOW}=== $* ===${NC}"; }
 
-cd /home/zack/dev/claude-cowork-linux
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 step "1. Environment Check"
 

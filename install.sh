@@ -100,7 +100,14 @@ install_dependencies() {
             apt) sudo apt-get update -qq && sudo apt-get install -y git p7zip-full nodejs npm bubblewrap ;;
             pacman) sudo pacman -S --noconfirm --needed git p7zip nodejs npm bubblewrap ;;
             dnf) sudo dnf install -y git p7zip nodejs npm bubblewrap ;;
-            zypper) sudo zypper install -y git p7zip nodejs npm bubblewrap ;;
+            zypper)
+                # 7zip (Tumbleweed/Slowroll) vs p7zip (Leap)
+                local sevenzip_pkg="7zip"
+                if ! zypper search -x 7zip >/dev/null 2>&1; then
+                    sevenzip_pkg="p7zip"
+                fi
+                sudo zypper install -y git "$sevenzip_pkg" nodejs-default npm bubblewrap python3-venv
+                ;;
             nix) nix-env -iA nixpkgs.git nixpkgs.p7zip nixpkgs.nodejs nixpkgs.bubblewrap ;;
             *) die "Unknown package manager. Install manually: git p7zip nodejs npm bubblewrap" ;;
         esac
@@ -134,6 +141,13 @@ install_dependencies() {
     local node_version
     node_version=$(node --version | sed 's/v//' | cut -d. -f1)
     if [[ "$node_version" -lt 18 ]]; then
+        if [[ "$(detect_pkg_manager)" == "zypper" ]]; then
+            log_error "Node.js 18+ required, found v$node_version"
+            log_info "On openSUSE Leap, add the NodeJS community repository:"
+            log_info "  sudo zypper ar https://download.opensuse.org/repositories/devel:/languages:/nodejs/openSUSE_Leap_\$(. /etc/os-release && echo \$VERSION_ID)/ nodejs-community"
+            log_info "  sudo zypper refresh && sudo zypper install nodejs20 npm20"
+            die "Then re-run this installer."
+        fi
         die "Node.js 18+ required, found v$node_version"
     fi
     log_success "Node.js version OK (v$node_version)"
@@ -448,6 +462,19 @@ EOF
 # ============================================================
 
 setup_environment() {
+    # Sessions directory + /sessions symlink (required for Cowork path translation)
+    local sessions_dir="$HOME/.local/share/claude-cowork/sessions"
+    mkdir -p "$sessions_dir"
+    if [[ ! -e /sessions ]]; then
+        log_info "Creating /sessions symlink (requires sudo)..."
+        sudo ln -s "$sessions_dir" /sessions && log_success "/sessions -> $sessions_dir" \
+            || log_warn "Failed to create /sessions symlink. Run manually: sudo ln -s $sessions_dir /sessions"
+    elif [[ -L /sessions ]]; then
+        log_success "/sessions symlink already exists"
+    else
+        log_warn "/sessions exists but is not a symlink — check manually"
+    fi
+
     # User data dirs (macOS-style paths that Claude Desktop expects)
     local data_dir="$HOME/Library/Application Support/Claude"
     mkdir -p "$data_dir"/{Projects,Conversations}
@@ -545,8 +572,11 @@ doctor() {
     for p in \
         "$HOME/.local/bin/claude" \
         "$HOME/.npm-global/bin/claude" \
+        "/home/linuxbrew/.linuxbrew/bin/claude" \
+        "$HOME/.linuxbrew/bin/claude" \
         "/usr/local/bin/claude" \
-        "/usr/bin/claude"; do
+        "/usr/bin/claude" \
+        "/snap/bin/claude"; do
         if [[ -x "$p" ]]; then
             claude_found="$p"
             break
@@ -556,6 +586,10 @@ doctor() {
     local vm_root="$HOME/Library/Application Support/Claude/claude-code-vm"
     if [[ -z "$claude_found" && -d "$vm_root" ]]; then
         claude_found=$(find "$vm_root" -name claude -type f -executable 2>/dev/null | head -1)
+    fi
+    # Fall back to PATH lookup (covers mise, asdf, nvm, volta, and other version managers)
+    if [[ -z "$claude_found" ]] && command_exists claude; then
+        claude_found="$(command -v claude)"
     fi
     if [[ -n "$claude_found" ]]; then
         log_success "Claude binary: $claude_found"
@@ -624,6 +658,38 @@ doctor() {
         ok=$((ok + 1))
     else
         log_warn "Python 3: not found (needed for auto-download and patches)"
+        warn=$((warn + 1))
+    fi
+
+    # --- Optional: notify-send ---
+    if command_exists notify-send; then
+        log_success "notify-send: $(command -v notify-send)"
+        ok=$((ok + 1))
+    else
+        log_warn "notify-send: not found (desktop notifications won't work)"
+        log_info "  Install: sudo $(detect_pkg_manager) install $(
+            case "$(detect_pkg_manager)" in
+                apt) echo "libnotify-bin" ;;
+                zypper) echo "libnotify-tools" ;;
+                *) echo "libnotify" ;;
+            esac
+        )"
+        warn=$((warn + 1))
+    fi
+
+    # --- Optional: python3-Pillow (icon extraction) ---
+    if command_exists python3 && python3 -c "from PIL import Image" 2>/dev/null; then
+        log_success "Python Pillow: available (icon extraction)"
+        ok=$((ok + 1))
+    else
+        log_warn "Python Pillow: not found (icon extraction will use fallback)"
+        log_info "  Install: sudo $(detect_pkg_manager) install $(
+            case "$(detect_pkg_manager)" in
+                apt) echo "python3-pil" ;;
+                zypper) echo "python3-Pillow" ;;
+                *) echo "python-pillow" ;;
+            esac
+        )"
         warn=$((warn + 1))
     fi
 

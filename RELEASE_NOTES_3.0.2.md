@@ -78,7 +78,7 @@
 | **Fedora 39+** | GNOME / KDE | Expected |
 | **Debian 12+** | Any | Expected |
 | **NixOS** | Any | Untested |
-| **openSUSE** | Any | Untested |
+| **openSUSE Tumbleweed** | KDE Plasma | Tested |
 
 <details>
 <summary><strong>Known caveats</strong></summary>

@@ -203,8 +203,11 @@ function resolveClaudeBinaryPath() {
   const linuxCandidates = [
     path.join(home, '.local/bin/claude'),
     path.join(home, '.npm-global/bin/claude'),
+    '/home/linuxbrew/.linuxbrew/bin/claude',
+    path.join(home, '.linuxbrew/bin/claude'),
     '/usr/local/bin/claude',
     '/usr/bin/claude',
+    '/snap/bin/claude',
   ];
   for (const candidate of linuxCandidates) {
     try {
@@ -215,8 +218,16 @@ function resolveClaudeBinaryPath() {
     } catch (_) { /* skip */ }
   }
 
-  // Last resort: let PATH resolve it
-  trace('No Claude binary found at known paths, falling back to PATH lookup');
+  // Fall back to PATH lookup (covers mise, asdf, nvm, volta, and other version managers)
+  try {
+    const resolved = execFileSync('which', ['claude'], { encoding: 'utf8', timeout: 3000 }).trim();
+    if (resolved) {
+      trace('Resolved Claude binary (PATH): ' + resolved);
+      return resolved;
+    }
+  } catch (_) { /* not in PATH */ }
+
+  trace('No Claude binary found at known paths or in PATH');
   return 'claude';
 }
 
@@ -578,8 +589,13 @@ class SwiftAddonStub extends EventEmitter {
         try {
           const { execFile } = require('child_process');
           const dir = path.dirname(hostPath);
-          // Try nautilus first (GNOME), fall back to xdg-open
-          execFile('nautilus', ['--select', hostPath], (err) => {
+          // Try freedesktop D-Bus interface first (works with Dolphin, Nautilus, Thunar, etc.)
+          execFile('dbus-send', [
+            '--session', '--dest=org.freedesktop.FileManager1',
+            '--type=method_call', '/org/freedesktop/FileManager1',
+            'org.freedesktop.FileManager1.ShowItems',
+            'array:string:file://' + hostPath, 'string:'
+          ], (err) => {
             if (err) {
               // Fall back to opening the directory
               execFile('xdg-open', [dir], () => {});
@@ -601,10 +617,14 @@ class SwiftAddonStub extends EventEmitter {
         }
         try {
           const { execFile } = require('child_process');
-          // Try gnome-sushi (GNOME Quick Look), fall back to xdg-open
+          // Try gnome-sushi (GNOME Quick Look), then kioclient (KDE), fall back to xdg-open
           execFile('gnome-sushi', [hostPath], (err) => {
             if (err) {
-              execFile('xdg-open', [hostPath], () => {});
+              execFile('kioclient', ['exec', hostPath], (err2) => {
+                if (err2) {
+                  execFile('xdg-open', [hostPath], () => {});
+                }
+              });
             }
           });
           return Promise.resolve(true);

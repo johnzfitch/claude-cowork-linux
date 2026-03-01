@@ -128,6 +128,9 @@ The rules provide:
 
    # Debian/Ubuntu
    sudo apt install libnotify-bin
+
+   # openSUSE
+   sudo zypper install libnotify-tools
    ```
 
 2. Ensure a notification daemon is running (e.g., `dunst`, `mako`, or your DE's built-in)
@@ -144,6 +147,35 @@ The rules provide:
 - Close and reopen for long-running sessions
 - Limit conversation history length
 - Ensure swap is configured if RAM is limited
+
+---
+
+## openSUSE-Specific Notes
+
+**Package names differ from other distros:**
+- **7-Zip**: Called `7zip` on Tumbleweed/Slowroll, but `p7zip` on Leap 15.6. The installer auto-detects which is available.
+- **Node.js**: Provided by `nodejs-default` (meta package). On Leap 15.6 this ships Node 16, which is too old (18+ required). See below for the fix.
+- **npm**: Must be installed explicitly on openSUSE (`npm` package) — it is NOT pulled automatically by `nodejs-default` on all versions.
+- Electron is available as `nodejs-electron` from the main OSS repository, or install via npm
+- Notifications require `libnotify-tools` (not `libnotify-bin`)
+- **Icon extraction** (optional): `python3-Pillow` is needed for `.icns` to `.png` icon conversion in `test-launch.sh`. Install with `sudo zypper install python3-Pillow`.
+
+**Node.js on Leap 15.6:**
+Leap 15.6 ships Node.js 16 by default, but Claude Desktop requires Node.js 18+. To get a newer version, add the NodeJS community repository:
+```bash
+sudo zypper ar https://download.opensuse.org/repositories/devel:/languages:/nodejs/openSUSE_Leap_$(. /etc/os-release && echo $VERSION_ID)/ nodejs-community
+sudo zypper refresh
+sudo zypper install nodejs20 npm20
+```
+
+**KDE Wallet integration:**
+openSUSE with KDE Plasma typically has `kwalletd6` running, which exposes the `org.freedesktop.secrets` D-Bus interface. The launcher auto-detects this and uses `--password-store=gnome-libsecret` (which works with any SecretService provider, not just gnome-keyring).
+
+**File manager integration:**
+The `revealFile()` function uses the `org.freedesktop.FileManager1` D-Bus interface, which works with Dolphin (KDE), Nautilus (GNOME), Thunar (Xfce), and other compliant file managers. Falls back to `xdg-open` if D-Bus is unavailable.
+
+**User namespaces:**
+Modern openSUSE Tumbleweed kernels (6.x) have unprivileged user namespaces enabled by default. The `/proc/sys/kernel/unprivileged_userns_clone` sysctl does not exist on these kernels because the feature is always available. bubblewrap works out of the box.
 
 ---
 
