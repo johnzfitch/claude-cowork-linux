@@ -420,6 +420,22 @@ app.whenReady().then(() => {
       defaultSession.setUserAgent(spoofedUA);
       console.log('[UserAgent] Spoofed session User-Agent');
 
+      // Fix CSP: add a-api.anthropic.com to connect-src so analytics doesn't throw errors
+      defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        const headers = { ...details.responseHeaders };
+        const cspKey = Object.keys(headers).find(k => k.toLowerCase() === 'content-security-policy');
+        if (cspKey && Array.isArray(headers[cspKey])) {
+          headers[cspKey] = headers[cspKey].map(v =>
+            v.replace(
+              /connect-src\s+([^;]+)/,
+              'connect-src $1 https://a-api.anthropic.com'
+            )
+          );
+        }
+        callback({ responseHeaders: headers });
+      });
+      console.log('[CSP] Patched connect-src to allow a-api.anthropic.com');
+
       if (process.env.CLAUDE_CLEAR_CACHE_ON_CLOSE === '1') {
         app.on('before-quit', async () => {
           try {
@@ -446,6 +462,96 @@ app.whenReady().then(() => {
 // ============================================================
 
 const { ipcMain, dialog, BrowserWindow } = electron;
+
+// ============================================================
+// 4b. LINUX: CONFIRM-BEFORE-QUIT ON WINDOW CLOSE
+// ============================================================
+// On macOS, closing the window hides it to the dock/tray. On Linux
+// (especially KDE Plasma Wayland) the tray restore doesn't work, so
+// we intercept the close event and ask the user whether they really
+// want to quit. Minimize stays as normal minimize.
+{
+  // Load button labels from the app's own i18n JSON files.
+  // Keys: dKX0bpR+a2 = "Quit", 0GT0SIETlE = "Cancel"
+  // Title/message have no existing i18n key, so we use a small
+  // lookup that mirrors the app's supported locales.
+  const _quitMessages = {
+    de: { title: 'Claude beenden', message: 'Möchten Sie Claude wirklich beenden?' },
+    en: { title: 'Quit Claude', message: 'Do you really want to quit Claude?' },
+    fr: { title: 'Quitter Claude', message: 'Voulez-vous vraiment quitter Claude ?' },
+    es: { title: 'Salir de Claude', message: '¿Realmente quiere salir de Claude?' },
+    it: { title: 'Esci da Claude', message: 'Vuoi davvero uscire da Claude?' },
+    pt: { title: 'Sair do Claude', message: 'Deseja realmente sair do Claude?' },
+    ja: { title: 'Claude を終了', message: 'Claude を本当に終了しますか？' },
+    ko: { title: 'Claude 종료', message: 'Claude를 정말 종료하시겠습니까?' },
+    hi: { title: 'Claude बंद करें', message: 'क्या आप वाकई Claude बंद करना चाहते हैं?' },
+    id: { title: 'Keluar dari Claude', message: 'Apakah Anda yakin ingin keluar dari Claude?' },
+  };
+  let _i18nCache = null;
+  function _getCloseStrings() {
+    if (!_i18nCache) {
+      const locale = app.getLocale() || process.env.LANG || 'en-US';
+      const lang = locale.split(/[-_]/)[0].toLowerCase();
+
+      const candidates = [locale.replace('_', '-')];
+      const variants = {
+        de: 'de-DE', en: 'en-US', fr: 'fr-FR', es: 'es-ES', it: 'it-IT',
+        pt: 'pt-BR', ja: 'ja-JP', ko: 'ko-KR', hi: 'hi-IN', id: 'id-ID',
+      };
+      if (variants[lang]) candidates.push(variants[lang]);
+      candidates.push('en-US');
+
+      let strings = null;
+      for (const tag of candidates) {
+        try {
+          const i18nPath = path.join(RESOURCES_DIR, 'resources', 'i18n', tag + '.json');
+          strings = JSON.parse(fs.readFileSync(i18nPath, 'utf8'));
+          break;
+        } catch (_) { /* try next */ }
+      }
+
+      const msg = _quitMessages[lang] || _quitMessages.en;
+      _i18nCache = {
+        quit: (strings && strings['dKX0bpR+a2']) || 'Quit',
+        cancel: (strings && strings['0GT0SIETlE']) || 'Cancel',
+        title: msg.title,
+        message: msg.message,
+      };
+    }
+    return _i18nCache;
+  }
+
+  let _quitting = false;
+  app.on('before-quit', () => { _quitting = true; });
+
+  const _origEmit = BrowserWindow.prototype.emit;
+  BrowserWindow.prototype.emit = function(event, ev, ...args) {
+    if (event === 'close' && !_quitting && !this.isDestroyed()) {
+      const [w, h] = this.getSize();
+      if (w >= 400 && h >= 300) {
+        ev.preventDefault();
+        const s = _getCloseStrings();
+        dialog.showMessageBox(this, {
+          type: 'question',
+          buttons: [s.quit, s.cancel],
+          defaultId: 1,
+          cancelId: 1,
+          title: s.title,
+          message: s.message,
+        }).then(({ response }) => {
+          if (response === 0) {
+            _quitting = true;
+            app.quit();
+          }
+        });
+        return false;
+      }
+    }
+    return _origEmit.call(this, event, ev, ...args);
+  };
+
+  console.log('[Linux] Close confirmation dialog enabled');
+}
 
 // Log ALL IPC handle registrations to find cowork-related ones
 // ============================================================

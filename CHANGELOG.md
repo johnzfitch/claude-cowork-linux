@@ -16,9 +16,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - openSUSE-specific section in `docs/known-issues.md` covering package names,
   KDE Wallet integration, and user namespace status
 - openSUSE `libnotify-tools` package in notification troubleshooting docs
+- Confirm-before-quit dialog when closing the main window. On macOS the close
+  button hides the window to the dock/tray; on Linux (especially KDE Plasma 6
+  Wayland) restoring from the system tray is unreliable, so closing now asks
+  "Do you really want to quit Claude?" with localized button labels (10 languages).
+  This prevents accidental data loss from unintentionally quitting the app
+- Swift stub additions: `api.setCredentials()`, `quickAccess.overlay.*`, and
+  `quickAccess.dictation.*` stubs to prevent errors from newer asar versions
 
 ### Changed
 
+- Window close behavior: closing the window now minimizes to the taskbar instead
+  of hiding to the system tray. On KDE Plasma 6 Wayland, Electron's system tray
+  integration is broken — KDE calls `ProvideXdgActivationToken` on the
+  `StatusNotifierItem` D-Bus interface before `Activate`, but Electron does not
+  implement this method. Without an activation token the Wayland compositor
+  silently blocks `BrowserWindow.focus()`, making it impossible to restore the
+  window from the tray. The previous KWin scripting workaround
+  (`org.kde.kwin.Scripting`) was fragile and had race conditions, so it was
+  replaced with the simpler confirm-before-quit approach
 - openSUSE compatibility status updated from "Untested" to "Tested" (openSUSE
   Tumbleweed with KDE Plasma, kernel 6.19.2)
 - Requirements section now lists distro-specific 7-Zip package names

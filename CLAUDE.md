@@ -292,6 +292,9 @@ python3 -c "import json; d=json.load(open('$HOME/.config/Claude/LocalAgentModeSe
   our sessions.
 - `ipc-handler-setup.js` is an untracked build artifact from asar extraction. Changes
   there must be kept in sync with `linux-loader.js` manually.
+- The D-Bus warning `Unknown method: ProvideXdgActivationToken` still appears in logs
+  on KDE Wayland (Electron doesn't implement it). The tray activation itself works via
+  the KWin scripting workaround, but the warning can't be suppressed from JS.
 
 ## Build / Test
 
@@ -327,3 +330,11 @@ grep "Translated envVar CLAUDE_CONFIG_DIR" ~/Library/Application\ Support/Claude
    instead of the asar-expected `~/.config/Claude/...` path. Fix: translate `/sessions/` paths
    in envVars (not just args) in the Swift stub's `spawn()`, so the path goes through SESSIONS_BASE
    and follows the `.claude` mount symlink to the asar-expected location.
+
+4. **Tray icon click does nothing on KDE Wayland** (2026-03-01): KDE Plasma calls
+   `ProvideXdgActivationToken` on `org.kde.StatusNotifierItem` before `Activate`.
+   Electron doesn't implement this D-Bus method, so the compositor never grants an
+   activation token and `BrowserWindow.focus()` silently fails on Wayland (the window
+   can't steal focus). Fix: monkey-patch `BrowserWindow.prototype.focus()` and `.show()`
+   on KDE Wayland to also activate the window via KWin's scripting D-Bus API
+   (`org.kde.kwin.Scripting.loadScript` → `start` → `unloadScript`).

@@ -731,8 +731,26 @@ class SwiftAddonStub extends EventEmitter {
       }
     };
 
-    // API object (general purpose)
-    this.api = {};
+    // API object (credential management for web views)
+    this.api = {
+      setCredentials: (cookies, headers, url) => {},
+    };
+
+    // Quick Access (Quick Entry overlay + dictation — macOS-only features)
+    this.quickAccess = {
+      overlay: {
+        setLoggedIn: (loggedIn) => {},
+        setRecentChats: (chats) => {},
+        setActiveChatId: (chatId) => {},
+        toggle: () => {},
+      },
+      dictation: {
+        setLanguage: (lang) => {},
+        show: () => {},
+        stop: () => {},
+        toggle: () => {},
+      },
+    };
 
     // Midnight Owl (scheduling/time-based features)
     this.midnightOwl = {
@@ -865,8 +883,11 @@ class SwiftAddonStub extends EventEmitter {
           path.join(home, '.local/bin/'),
           path.join(home, '.local/share/claude/'),
           path.join(home, '.npm-global/bin/'),
+          path.join(home, '.linuxbrew/bin/'),
+          '/home/linuxbrew/.linuxbrew/bin/',
           '/usr/local/bin/',
           '/usr/bin/',
+          '/snap/bin/',
         ];
 
         const normalizedCommand = (typeof command === 'string' || command instanceof String)

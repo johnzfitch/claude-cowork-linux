@@ -22,12 +22,17 @@ fi
 STUB_FILE="linux-app-extracted/node_modules/@ant/claude-swift/js/index.js"
 STUB_SRC_FILE="stubs/@ant/claude-swift/js/index.js"
 
-# Ensure the extracted app tree has the latest stub baked in before packing.
+# Ensure the extracted app tree has the latest stubs baked in before packing.
 # This avoids relying on runtime module interception (ESM import() bypasses Module._load).
 if [ -f "$STUB_SRC_FILE" ]; then
   mkdir -p "$(dirname "$STUB_FILE")"
   cp -f "$STUB_SRC_FILE" "$STUB_FILE"
 fi
+
+# Sync frame-fix files from stubs to extracted dir
+for ff in stubs/frame-fix/frame-fix-entry.js stubs/frame-fix/frame-fix-wrapper.js; do
+  [ -f "$ff" ] && cp -f "$ff" "linux-app-extracted/$(basename "$ff")"
+done
 
 # ============================================================
 # Linux UI Fixes (applied before every repack)
@@ -58,6 +63,13 @@ if [ -f "$INDEX_JS" ] && grep -q 'titleBarOverlay' "$INDEX_JS"; then
   sed -i 's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_]\+,trafficLightPosition:[A-Za-z0-9_]\+,//g' "$INDEX_JS"
   # About window: remove titleBarStyle:"hiddenInset" (keep other options)
   sed -i 's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g' "$INDEX_JS"
+fi
+
+# Fix getHostPlatform(): add Linux support before the throw statement
+# This handles ClaudeCode_$_getStatus and ClaudeCode_$_prepare errors
+if [ -f "$INDEX_JS" ] && grep -q '"win32-x64";throw new Error' "$INDEX_JS"; then
+  echo "Patching getHostPlatform() for Linux support..."
+  sed -i 's|"win32-x64";throw new Error|"win32-x64";return"linux-"+e;throw new Error|g' "$INDEX_JS"
 fi
 
 # Fix icon: extract PNG from macOS .icns for Linux desktop integration
@@ -94,7 +106,7 @@ if best_png:
 fi
 
 # Only repack if stub is newer than asar (or asar doesn't exist)
-if [ ! -f "$ASAR_FILE" ] || [ "$STUB_FILE" -nt "$ASAR_FILE" ] || [ "linux-app-extracted/frame-fix-wrapper.js" -nt "$ASAR_FILE" ]; then
+if [ ! -f "$ASAR_FILE" ] || [ "$STUB_FILE" -nt "$ASAR_FILE" ] || [ "linux-app-extracted/frame-fix-wrapper.js" -nt "$ASAR_FILE" ] || [ "linux-app-extracted/frame-fix-entry.js" -nt "$ASAR_FILE" ]; then
   echo "Repacking app.asar (stub changed)..."
   asar pack linux-app-extracted "$ASAR_FILE"
 else

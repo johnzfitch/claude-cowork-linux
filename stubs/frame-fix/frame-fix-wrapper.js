@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-console.log('[Frame Fix] Wrapper v2.5 loaded');
+console.log('[Frame Fix] Wrapper v3.0 loaded');
 
 // ============================================================
 // 0. TMPDIR FIX - MUST BE ABSOLUTELY FIRST
@@ -103,14 +103,25 @@ console.log('[fs.rename] Patched to handle EXDEV errors');
 // 1. PLATFORM SPOOFING - Immediate, before any app code
 // ============================================================
 
-// Helper to check if call is from system/electron internals
+// Helper to check if the IMMEDIATE caller is from system/electron internals.
+// We only check the first non-getter frame in the stack, NOT the entire stack.
+// This is critical because IPC handlers are dispatched through electron/js2c
+// (deep in the stack), but the handler code itself runs from app.asar and
+// must see the spoofed platform.
 function isSystemCall(stack) {
-  return stack.includes('node:internal') ||
-         stack.includes('internal/modules') ||
-         stack.includes('node:electron') ||
-         stack.includes('electron/js2c') ||
-         stack.includes('electron.asar') ||
-         stack.includes('frame-fix-wrapper');
+  const lines = stack.split('\n');
+  // Find the first frame that isn't our getter or the Error line itself
+  for (let i = 1; i < lines.length && i < 6; i++) {
+    const line = lines[i];
+    if (line.includes('frame-fix-wrapper')) continue;
+    // This is the actual caller - check if it's system code
+    return line.includes('node:internal') ||
+           line.includes('internal/modules') ||
+           line.includes('node:electron') ||
+           line.includes('electron/js2c') ||
+           line.includes('electron.asar');
+  }
+  return false;
 }
 
 Object.defineProperty(process, 'platform', {
@@ -240,51 +251,94 @@ Module.prototype.require = function(id) {
   if (id === 'electron') {
     console.log('[Frame Fix] Intercepting electron module');
 
-    // Intercept ipcMain.handle to inject our VM handlers
+    // Intercept IPC handler registration at the Map level.
+    // The asar registers handlers via ipcMain.handle() which stores them
+    // in ipcMain._invokeHandlers (an internal Map). By patching .set()
+    // on this Map, we catch ALL registrations regardless of timing or
+    // whether the asar captured ipcMain.handle before our patch.
     const { ipcMain } = module;
     if (ipcMain && !global.__coworkIPCPatched) {
       global.__coworkIPCPatched = true;
 
-      const originalHandle = ipcMain.handle.bind(ipcMain);
-      ipcMain.handle = function(channel, handler) {
-        // Intercept ClaudeVM handlers to inject our Linux implementation
-        if (channel.includes('ClaudeVM')) {
-          console.log(`[Cowork] Intercepting ClaudeVM handler: ${channel}`);
-
-          // Wrap the handler to override certain methods
-          const wrappedHandler = async (...args) => {
-            const method = channel.split('_$_').pop();
-            console.log(`[Cowork] ClaudeVM.${method} called`);
-
-            // Override specific methods for Linux
-            if (method === 'getRunningStatus') {
-              return { running: true, connected: true, ready: true, status: 'running' };
-            }
-            if (method === 'getDownloadStatus') {
-              return { status: 'ready', downloaded: true, installed: true, progress: 100 };
-            }
-            if (method === 'isSupported' || method === 'getSupportStatus') {
-              return 'supported';
-            }
-
-            // Call original handler for other methods
-            try {
-              return await handler(...args);
-            } catch(e) {
-              console.log(`[Cowork] ClaudeVM.${method} handler error:`, e.message);
-              return null;
-            }
-          };
-          return originalHandle(channel, wrappedHandler);
-        }
-        return originalHandle(channel, handler);
+      // Handlers we override with Linux-compatible stubs
+      const IPC_OVERRIDES = {
+        'ClaudeVM_$_getDownloadStatus': { status: 'ready', downloaded: true, installed: true, progress: 100, version: 'linux-native-1.0.0' },
+        'ClaudeVM_$_download': { status: 'ready', downloaded: true, progress: 100 },
+        'ClaudeVM_$_getRunningStatus': { running: true, connected: true, status: 'connected' },
+        'ClaudeVM_$_start': { started: true, status: 'running' },
+        'ClaudeVM_$_stop': { stopped: true },
+        'ClaudeVM_$_getSupportStatus': { status: 'supported' },
+        'ClaudeVM_$_setYukonSilverConfig': { success: true },
+        'ClaudeVM_$_deleteAndReinstall': { success: true },
       };
+
+      const overrideEntries = Object.entries(IPC_OVERRIDES);
+
+      // Check if a channel matches one of our overrides
+      function getOverrideResponse(channel) {
+        for (const [suffix, response] of overrideEntries) {
+          if (channel.endsWith('_$_' + suffix)) {
+            return response;
+          }
+        }
+        return null;
+      }
+
+      // Patch _invokeHandlers.set() to intercept handler registration
+      const invokeHandlers = ipcMain._invokeHandlers;
+      if (invokeHandlers && invokeHandlers instanceof Map) {
+        const origSet = invokeHandlers.set.bind(invokeHandlers);
+        invokeHandlers.set = function(channel, handler) {
+          const override = getOverrideResponse(channel);
+          if (override) {
+            console.log('[IPC-Intercept] Replacing handler: ' + channel.split('_$_').pop());
+            return origSet(channel, async () => override);
+          }
+          return origSet(channel, handler);
+        };
+        console.log('[IPC-Intercept] _invokeHandlers.set() patched');
+      } else {
+        console.warn('[IPC-Intercept] _invokeHandlers not available, falling back to ipcMain.handle patch');
+        // Fallback: patch ipcMain.handle directly
+        const originalHandle = ipcMain.handle.bind(ipcMain);
+        ipcMain.handle = function(channel, handler) {
+          const override = getOverrideResponse(channel);
+          if (override) {
+            console.log('[IPC-Intercept] Replacing handler (fallback): ' + channel.split('_$_').pop());
+            return originalHandle(channel, async () => override);
+          }
+          return originalHandle(channel, handler);
+        };
+      }
 
       console.log('[Cowork] IPC handler interception enabled');
     }
 
+    // Stub macOS-only systemPreferences methods that don't exist on Linux.
+    // Since we spoof platform as darwin, the app tries to call these.
+    if (REAL_PLATFORM === 'linux' && module.systemPreferences) {
+      const sp = module.systemPreferences;
+      if (typeof sp.getMediaAccessStatus !== 'function') {
+        sp.getMediaAccessStatus = function(mediaType) { return 'granted'; };
+      }
+      if (typeof sp.askForMediaAccess !== 'function') {
+        sp.askForMediaAccess = async function(mediaType) { return true; };
+      }
+      if (typeof sp.promptTouchID !== 'function') {
+        sp.promptTouchID = async function(reason) { /* no-op on Linux */ };
+      }
+      console.log('[Platform] Stubbed macOS systemPreferences methods');
+    }
+
     const OriginalBrowserWindow = module.BrowserWindow;
     const OriginalMenu = module.Menu;
+
+    // Stub macOS-only BrowserWindow methods that don't exist on Linux
+    if (REAL_PLATFORM === 'linux') {
+      if (!OriginalBrowserWindow.prototype.setWindowButtonPosition) {
+        OriginalBrowserWindow.prototype.setWindowButtonPosition = function() {};
+      }
+    }
 
     module.BrowserWindow = class BrowserWindowWithFrame extends OriginalBrowserWindow {
       constructor(options) {
@@ -349,6 +403,124 @@ Module.prototype.require = function(id) {
         }
       }
     };
+
+    // ============================================================
+    // Linux: prevent duplicate Tray D-Bus errors
+    // ============================================================
+    // The app creates two Tray instances. The second one's D-Bus handlers
+    // fail to register ("already exported"). Fix by destroying the previous
+    // Tray before creating a new one.
+    if (REAL_PLATFORM === 'linux' && !global.__coworkTrayPatched) {
+      global.__coworkTrayPatched = true;
+      const OrigTray = module.Tray;
+      let _previousTray = null;
+      module.Tray = class TrayDedup extends OrigTray {
+        constructor(...args) {
+          if (_previousTray && typeof _previousTray.isDestroyed === 'function' && !_previousTray.isDestroyed()) {
+            _previousTray.destroy();
+          }
+          super(...args);
+          _previousTray = this;
+        }
+      };
+    }
+
+    // ============================================================
+    // Linux: confirm-before-quit on window close
+    // ============================================================
+    // On macOS, closing the window hides it to the dock/tray. On Linux
+    // (especially KDE Plasma Wayland) the tray restore doesn't work, so
+    // we intercept the close event and ask the user whether they really
+    // want to quit. This runs for the main window only (not small helper
+    // windows like "About" or "Find in Page").
+    if (REAL_PLATFORM === 'linux' && !global.__coworkCloseDialogPatched) {
+      global.__coworkCloseDialogPatched = true;
+      const { dialog: _dialog, app: _app } = require('electron');
+
+      // Load button labels from the app's own i18n JSON files.
+      // Keys: dKX0bpR+a2 = "Quit", 0GT0SIETlE = "Cancel"
+      // Title/message have no existing i18n key, so we use a small
+      // lookup that mirrors the app's supported locales.
+      const _quitMessages = {
+        de: { title: 'Claude beenden', message: 'Möchten Sie Claude wirklich beenden?' },
+        en: { title: 'Quit Claude', message: 'Do you really want to quit Claude?' },
+        fr: { title: 'Quitter Claude', message: 'Voulez-vous vraiment quitter Claude ?' },
+        es: { title: 'Salir de Claude', message: '¿Realmente quiere salir de Claude?' },
+        it: { title: 'Esci da Claude', message: 'Vuoi davvero uscire da Claude?' },
+        pt: { title: 'Sair do Claude', message: 'Deseja realmente sair do Claude?' },
+        ja: { title: 'Claude を終了', message: 'Claude を本当に終了しますか？' },
+        ko: { title: 'Claude 종료', message: 'Claude를 정말 종료하시겠습니까?' },
+        hi: { title: 'Claude बंद करें', message: 'क्या आप वाकई Claude बंद करना चाहते हैं?' },
+        id: { title: 'Keluar dari Claude', message: 'Apakah Anda yakin ingin keluar dari Claude?' },
+      };
+      let _i18nCache = null;
+      function _getCloseStrings() {
+        if (!_i18nCache) {
+          const locale = _app.getLocale() || process.env.LANG || 'en-US';
+          const lang = locale.split(/[-_]/)[0].toLowerCase();
+
+          // Load button labels from i18n JSON
+          const candidates = [locale.replace('_', '-')];
+          const variants = {
+            de: 'de-DE', en: 'en-US', fr: 'fr-FR', es: 'es-ES', it: 'it-IT',
+            pt: 'pt-BR', ja: 'ja-JP', ko: 'ko-KR', hi: 'hi-IN', id: 'id-ID',
+          };
+          if (variants[lang]) candidates.push(variants[lang]);
+          candidates.push('en-US');
+
+          let strings = null;
+          for (const tag of candidates) {
+            try {
+              const i18nPath = path.join(__dirname, 'resources', 'i18n', tag + '.json');
+              strings = JSON.parse(fs.readFileSync(i18nPath, 'utf8'));
+              break;
+            } catch (_) { /* try next */ }
+          }
+
+          const msg = _quitMessages[lang] || _quitMessages.en;
+          _i18nCache = {
+            quit: (strings && strings['dKX0bpR+a2']) || 'Quit',
+            cancel: (strings && strings['0GT0SIETlE']) || 'Cancel',
+            title: msg.title,
+            message: msg.message,
+          };
+        }
+        return _i18nCache;
+      }
+
+      // Track whether the user already confirmed quit (or app.quit() was called)
+      let _quitting = false;
+      _app.on('before-quit', () => { _quitting = true; });
+
+      const _origEmit = OriginalBrowserWindow.prototype.emit;
+      OriginalBrowserWindow.prototype.emit = function(event, ev, ...args) {
+        if (event === 'close' && !_quitting && !this.isDestroyed()) {
+          // Only intercept "main-like" windows (have a reasonable size)
+          const [w, h] = this.getSize();
+          if (w >= 400 && h >= 300) {
+            ev.preventDefault();
+            const s = _getCloseStrings();
+            _dialog.showMessageBox(this, {
+              type: 'question',
+              buttons: [s.quit, s.cancel],
+              defaultId: 1,
+              cancelId: 1,
+              title: s.title,
+              message: s.message,
+            }).then(({ response }) => {
+              if (response === 0) {
+                _quitting = true;
+                _app.quit();
+              }
+            });
+            return false;
+          }
+        }
+        return _origEmit.call(this, event, ev, ...args);
+      };
+
+      console.log('[Linux] Close confirmation dialog enabled');
+    }
   }
 
   return module;
