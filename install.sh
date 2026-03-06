@@ -786,7 +786,7 @@ main() {
     echo "  claude-desktop --doctor     Run preflight diagnostics"
     echo ""
     echo "Update:"
-    echo "  bash $INSTALL_DIR/update.sh"
+    echo "  cd $INSTALL_DIR && git pull && bash install.sh"
     echo ""
     echo "Installed: $INSTALL_DIR"
     echo "Logs:      ~/.local/share/claude-cowork/logs/startup.log"

@@ -111,14 +111,6 @@ CLAUDE_DMG=~/Downloads/Claude-1.1.4010.dmg ./install.sh
 > [!IMPORTANT]
 > This repo does not include Anthropic's proprietary code. The installer downloads it directly from Anthropic's CDN.
 
-### Updating
-
-```bash
-bash ~/.local/share/claude-desktop/update.sh
-```
-
-Pulls the latest repo changes and re-runs the installer. Restart Claude Desktop afterward. AUR users should run `yay -Syu claude-cowork-linux` instead.
-
 ---
 
 ## ![](.github/assets/icons/architecture-24x24.png) Architecture
