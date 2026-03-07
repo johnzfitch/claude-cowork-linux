@@ -247,6 +247,17 @@ Module.prototype.require = function(id) {
 
       const originalHandle = ipcMain.handle.bind(ipcMain);
       ipcMain.handle = function(channel, handler) {
+        // Filter queue-operation messages from transcripts — unknown type in current webapp
+        if (channel.includes('getTranscript')) {
+          return originalHandle(channel, async (...args) => {
+            const result = await handler(...args);
+            if (Array.isArray(result)) {
+              return result.filter(msg => msg && msg.type !== 'queue-operation');
+            }
+            return result;
+          });
+        }
+
         // Intercept ClaudeVM handlers to inject our Linux implementation
         if (channel.includes('ClaudeVM')) {
           console.log(`[Cowork] Intercepting ClaudeVM handler: ${channel}`);
@@ -283,46 +294,7 @@ Module.prototype.require = function(id) {
       console.log('[Cowork] IPC handler interception enabled');
     }
 
-    const OriginalBrowserWindow = module.BrowserWindow;
     const OriginalMenu = module.Menu;
-
-    module.BrowserWindow = class BrowserWindowWithFrame extends OriginalBrowserWindow {
-      constructor(options) {
-        console.log('[Frame Fix] BrowserWindow constructor called');
-        if (REAL_PLATFORM === 'linux') {
-          options = options || {};
-          const originalFrame = options.frame;
-          // Force native frame
-          options.frame = true;
-          // Hide the menu bar by default (Alt key will toggle it)
-          options.autoHideMenuBar = true;
-          // Remove custom titlebar options
-          delete options.titleBarStyle;
-          delete options.titleBarOverlay;
-          console.log(`[Frame Fix] Modified frame from ${originalFrame} to true`);
-        }
-        super(options);
-        // Hide menu bar after window creation on Linux
-        if (REAL_PLATFORM === 'linux') {
-          this.setMenuBarVisibility(false);
-          console.log('[Frame Fix] Menu bar visibility set to false');
-        }
-      }
-    };
-
-    // Copy static methods and properties (but NOT prototype, that's already set by extends)
-    for (const key of Object.getOwnPropertyNames(OriginalBrowserWindow)) {
-      if (key !== 'prototype' && key !== 'length' && key !== 'name') {
-        try {
-          const descriptor = Object.getOwnPropertyDescriptor(OriginalBrowserWindow, key);
-          if (descriptor) {
-            Object.defineProperty(module.BrowserWindow, key, descriptor);
-          }
-        } catch (e) {
-          // Ignore errors for non-configurable properties
-        }
-      }
-    }
 
     // Intercept Menu.setApplicationMenu to hide menu bar on Linux
     // This catches the app's later calls to setApplicationMenu that would show the menu
