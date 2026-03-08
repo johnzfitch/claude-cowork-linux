@@ -212,6 +212,39 @@ Object.defineProperty = function(target, key, descriptor) {
 
 console.log('[Cowork] Linux support enabled - VM will be emulated');
 
+// ============================================================
+// GRACEFUL SHUTDOWN — on Linux, closing all windows must quit the
+// app. The asar's handler checks `process.platform === "darwin"`
+// and skips quit on macOS (dock convention). Since we spoof darwin,
+// we must register our own handler first to call app.quit().
+// Also handle SIGTERM/SIGHUP so WMs, systemd, and kill(1) work.
+// ============================================================
+let shuttingDown = false;
+function gracefulQuit(reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Shutdown] ${reason}, quitting gracefully`);
+  try {
+    const { app } = require('electron');
+    // app.quit() can be cancelled by before-quit handlers (the asar has one).
+    // app.exit() is uncancellable — closes all windows and exits immediately.
+    app.exit(0);
+  } catch (e) {
+    process.exit(0);
+  }
+}
+
+// window-all-closed: registered early so it fires before the asar's
+// handler (which short-circuits on "darwin" and never quits)
+const { app: _app } = require('electron');
+_app.on('window-all-closed', () => {
+  gracefulQuit('All windows closed');
+});
+
+for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+  process.on(sig, () => gracefulQuit(`Received ${sig}`));
+}
+
 Module.prototype.require = function(id) {
   // Intercept claude-swift to inject our Linux implementation
   if (id && id.includes('@ant/claude-swift')) {
@@ -293,6 +326,37 @@ Module.prototype.require = function(id) {
 
       console.log('[Cowork] IPC handler interception enabled');
     }
+
+    // Patch BrowserWindow so close events actually quit on Linux.
+    // The asar's close handler does `if (isMac()) return;` which swallows
+    // close events since we spoof darwin. We prepend a listener that forces
+    // app.quit() so killactive/WM close works on all Linux DEs.
+    let _closePatched = new WeakSet();
+
+    function patchWindowClose(win) {
+      if (_closePatched.has(win)) return;
+      _closePatched.add(win);
+      // Use prependListener so we fire before the asar's handler
+      win.prependListener('close', (event) => {
+        if (REAL_PLATFORM === 'linux' && !shuttingDown) {
+          console.log('[Shutdown] Window close on Linux — scheduling exit');
+          // Defer exit so the close event chain finishes without
+          // hitting "Object has been destroyed" in downstream handlers
+          setImmediate(() => gracefulQuit('Window closed'));
+        }
+      });
+    }
+
+    // Hook webContents creation to catch windows as they appear
+    _app.on('web-contents-created', (_event, contents) => {
+      const owner = contents.getOwnerBrowserWindow && contents.getOwnerBrowserWindow();
+      if (owner) patchWindowClose(owner);
+    });
+
+    // Also patch on browser-window-created for certainty
+    _app.on('browser-window-created', (_event, win) => {
+      patchWindowClose(win);
+    });
 
     const OriginalMenu = module.Menu;
 
