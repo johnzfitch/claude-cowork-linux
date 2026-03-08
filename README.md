@@ -253,7 +253,7 @@ claude-cowork-linux/
 │   ├── @ant/claude-swift/js/index.js   # Primary stub: vm.spawn(), filterEnv(), path translation
 │   ├── @ant/claude-native/index.js     # Auth (xdg-open), keyboard constants, platform helpers
 │   └── frame-fix/
-│       ├── frame-fix-wrapper.js        # Early bootstrap: TMPDIR fix, platform spoofing, VM markers
+│       ├── frame-fix-wrapper.js        # Early bootstrap: TMPDIR fix, platform spoofing, graceful shutdown
 │       └── frame-fix-entry.js          # Entry point: loads frame-fix-wrapper then main index.js
 ├── cowork/
 │   ├── event_dispatch.js               # EIPC event dispatch for LocalAgentModeSessions
@@ -440,6 +440,20 @@ This means the stub isn't exporting methods correctly. The app expects:
 - `module.default.vm.setEventCallbacks()` — NOT on the class directly
 
 Ensure the stub has methods on the `this.vm` object, not just the class.
+
+</details>
+
+<details>
+<summary><strong>App won't relaunch / appears to do nothing</strong></summary>
+
+A previous instance may not have shut down cleanly, leaving a stale lock file. Clear it and relaunch:
+
+```bash
+rm -f ~/.config/Claude/SingletonLock ~/.config/Claude/SingletonSocket ~/.config/Claude/SingletonCookie
+claude-desktop
+```
+
+This was fixed in v3.0.4 — the app now handles SIGTERM and window-close events gracefully. Update to the latest version to prevent it from recurring.
 
 </details>
 
