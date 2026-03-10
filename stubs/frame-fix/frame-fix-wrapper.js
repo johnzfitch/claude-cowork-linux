@@ -589,13 +589,24 @@ Module.prototype.require = function(id) {
         // Translate /sessions/... VM paths to host paths
         if (typeof fullPath === 'string' && fullPath.startsWith('/sessions/')) {
           const sessionPath = fullPath.substring('/sessions/'.length);
-          resolvedPath = path.join(LOCAL_AGENT_ROOT, 'sessions', sessionPath);
-          // Extract session root to bound fallback search
+          // Validate session name format before joining (no .. traversal)
           const sessionName = sessionPath.split('/')[0];
-          const sessionRoot = sessionName ? path.join(SESSIONS_BASE, sessionName) : null;
+          if (!sessionName || sessionName === '..' || sessionName.includes('/')) {
+            console.error('[Frame Fix] shell.showItemInFolder: invalid session name:', fullPath);
+            return false;
+          }
+          const sessionRoot = path.join(SESSIONS_BASE, sessionName);
+          resolvedPath = path.join(LOCAL_AGENT_ROOT, 'sessions', sessionPath);
           // Resolve symlinks to get canonical host path
           try {
             resolvedPath = fs.realpathSync(resolvedPath);
+            // Post-resolution check: ensure we haven't escaped via .. components
+            const realSessionRoot = fs.realpathSync(sessionRoot);
+            const relative = path.relative(realSessionRoot, resolvedPath);
+            if (relative.startsWith('..') || path.isAbsolute(relative)) {
+              console.error('[Frame Fix] shell.showItemInFolder: resolved path escapes session root:', fullPath, '->', resolvedPath);
+              return false;
+            }
           } catch (_) {
             // If realpath fails, walk up to find nearest existing ancestor
             // but only within the session root to prevent escaping
@@ -603,12 +614,10 @@ Module.prototype.require = function(id) {
             let foundAncestor = false;
             while (current !== path.dirname(current)) {
               // Stop if we'd escape the session root
-              if (sessionRoot) {
-                const relative = path.relative(sessionRoot, current);
-                if (relative.startsWith('..') || path.isAbsolute(relative)) {
-                  console.error('[Frame Fix] shell.showItemInFolder: path escapes session root:', fullPath);
-                  return false;
-                }
+              const relative = path.relative(sessionRoot, current);
+              if (relative.startsWith('..') || path.isAbsolute(relative)) {
+                console.error('[Frame Fix] shell.showItemInFolder: path escapes session root:', fullPath);
+                return false;
               }
               try {
                 resolvedPath = path.join(fs.realpathSync(current), path.basename(resolvedPath));

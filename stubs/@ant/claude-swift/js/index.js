@@ -1671,13 +1671,32 @@ class SwiftAddonStub extends EventEmitter {
     console.log('[claude-swift] writeToProcess(' + id + ')');
     const proc = this._processes.get(id);
     if (proc && proc.stdin) {
-      // Minimal path translation: replace /sessions/... VM paths with host paths
-      // This is simpler than full JSON parsing but handles tool/file-edit messages
+      // Targeted path translation for JSON string values only
+      // Avoids corrupting prose or double-translating already-translated paths
       let translatedData = data;
-      if (typeof data === 'string' && data.includes('/sessions/')) {
-        translatedData = data.replace(/\/sessions\//g, SESSIONS_BASE + '/');
-        if (translatedData !== data && TRACE_IO) {
-          trace('writeToProcess: translated /sessions/ paths in stdin');
+      if (typeof data === 'string' && !data.includes(SESSIONS_BASE)) {
+        const hasUnescaped = data.includes('/sessions/');
+        const hasEscaped = data.includes('\\/sessions\\/');
+        if (hasUnescaped || hasEscaped) {
+          // Replace unescaped JSON paths: "/sessions/
+          if (hasUnescaped) {
+            translatedData = translatedData.replace(
+              /"\/sessions\//g,
+              '"' + SESSIONS_BASE + '/'
+            );
+          }
+          // Replace escaped JSON paths: "\/sessions\/ (JSON-escaped slashes)
+          if (hasEscaped) {
+            translatedData = translatedData.replace(/"\\\//g, '\x00');
+            translatedData = translatedData.replace(
+              /\x00sessions\\\//g,
+              '"\\' + SESSIONS_BASE.replace(/\//g, '\\/') + '\\/'
+            );
+            translatedData = translatedData.replace(/\x00/g, '"\\/');
+          }
+          if (translatedData !== data && TRACE_IO) {
+            trace('writeToProcess: translated /sessions/ paths in JSON strings');
+          }
         }
       }
       proc.stdin.write(translatedData);
