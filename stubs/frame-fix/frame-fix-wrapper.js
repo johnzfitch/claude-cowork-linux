@@ -178,8 +178,8 @@ global.__cowork = {
   processes: new Map(),
 };
 
-// Create sessions directory
-const SESSIONS_BASE = path.join(os.homedir(), '.local/share/claude-cowork/sessions');
+// Create sessions directory (under the actual LocalAgentModeSessions root)
+const SESSIONS_BASE = path.join(os.homedir(), 'Library/Application Support/Claude/LocalAgentModeSessions/sessions');
 try { fs.mkdirSync(SESSIONS_BASE, { recursive: true, mode: 0o700 }); } catch(e) {}
 
 // Override getYukonSilverSupportStatus globally

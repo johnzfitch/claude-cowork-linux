@@ -148,6 +148,7 @@ function translateVmPathStrict(vmPath) {
   }
   const sessionPath = vmPath.substring('/sessions/'.length);
   if (sessionPath.includes('..') || !isPathSafe(SESSIONS_BASE, sessionPath)) {
+    trace('SECURITY: Path traversal blocked: ' + vmPath);
     throw new Error('Path traversal blocked: ' + vmPath);
   }
   return path.join(SESSIONS_BASE, sessionPath);
