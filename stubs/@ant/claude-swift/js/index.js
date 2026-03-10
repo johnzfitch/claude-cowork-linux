@@ -384,8 +384,13 @@ function createMountSymlinks(sessionName, additionalMounts) {
               } catch (moveErr) {
                 // renameSync fails across filesystems (EXDEV); fall back to copy+delete
                 if (moveErr.code === 'EXDEV') {
-                  fs.copyFileSync(sourcePath, destPath);
-                  fs.unlinkSync(sourcePath);
+                  const srcStat = fs.statSync(sourcePath);
+                  if (srcStat.isDirectory()) {
+                    fs.cpSync(sourcePath, destPath, { recursive: true });
+                  } else {
+                    fs.copyFileSync(sourcePath, destPath);
+                  }
+                  fs.rmSync(sourcePath, { recursive: true, force: true });
                 } else {
                   trace('  WARNING: Could not move upload entry ' + entry + ': ' + moveErr.message);
                 }
