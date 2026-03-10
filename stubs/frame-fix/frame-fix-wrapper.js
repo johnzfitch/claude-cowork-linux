@@ -590,19 +590,37 @@ Module.prototype.require = function(id) {
         if (typeof fullPath === 'string' && fullPath.startsWith('/sessions/')) {
           const sessionPath = fullPath.substring('/sessions/'.length);
           resolvedPath = path.join(LOCAL_AGENT_ROOT, 'sessions', sessionPath);
+          // Extract session root to bound fallback search
+          const sessionName = sessionPath.split('/')[0];
+          const sessionRoot = sessionName ? path.join(SESSIONS_BASE, sessionName) : null;
           // Resolve symlinks to get canonical host path
           try {
             resolvedPath = fs.realpathSync(resolvedPath);
           } catch (_) {
             // If realpath fails, walk up to find nearest existing ancestor
+            // but only within the session root to prevent escaping
             let current = path.dirname(resolvedPath);
+            let foundAncestor = false;
             while (current !== path.dirname(current)) {
+              // Stop if we'd escape the session root
+              if (sessionRoot) {
+                const relative = path.relative(sessionRoot, current);
+                if (relative.startsWith('..') || path.isAbsolute(relative)) {
+                  console.error('[Frame Fix] shell.showItemInFolder: path escapes session root:', fullPath);
+                  return false;
+                }
+              }
               try {
                 resolvedPath = path.join(fs.realpathSync(current), path.basename(resolvedPath));
+                foundAncestor = true;
                 break;
               } catch (_) {
                 current = path.dirname(current);
               }
+            }
+            if (!foundAncestor) {
+              console.error('[Frame Fix] shell.showItemInFolder: no valid ancestor found:', fullPath);
+              return false;
             }
           }
           console.log('[Frame Fix] shell.showItemInFolder translated:', fullPath, '->', resolvedPath);

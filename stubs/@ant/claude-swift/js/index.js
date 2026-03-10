@@ -1671,7 +1671,16 @@ class SwiftAddonStub extends EventEmitter {
     console.log('[claude-swift] writeToProcess(' + id + ')');
     const proc = this._processes.get(id);
     if (proc && proc.stdin) {
-      proc.stdin.write(data);
+      // Minimal path translation: replace /sessions/... VM paths with host paths
+      // This is simpler than full JSON parsing but handles tool/file-edit messages
+      let translatedData = data;
+      if (typeof data === 'string' && data.includes('/sessions/')) {
+        translatedData = data.replace(/\/sessions\//g, SESSIONS_BASE + '/');
+        if (translatedData !== data && TRACE_IO) {
+          trace('writeToProcess: translated /sessions/ paths in stdin');
+        }
+      }
+      proc.stdin.write(translatedData);
     }
   }
 
