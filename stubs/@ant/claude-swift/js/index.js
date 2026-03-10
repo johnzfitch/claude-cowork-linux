@@ -1672,9 +1672,9 @@ class SwiftAddonStub extends EventEmitter {
     const proc = this._processes.get(id);
     if (proc && proc.stdin) {
       // Targeted path translation for JSON string values only
-      // Avoids corrupting prose or double-translating already-translated paths
+      // Patterns match "/sessions/ which won't match already-translated SESSIONS_BASE paths
       let translatedData = data;
-      if (typeof data === 'string' && !data.includes(SESSIONS_BASE)) {
+      if (typeof data === 'string') {
         const hasUnescaped = data.includes('/sessions/');
         const hasEscaped = data.includes('\\/sessions\\/');
         if (hasUnescaped || hasEscaped) {

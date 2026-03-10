@@ -589,9 +589,9 @@ Module.prototype.require = function(id) {
         // Translate /sessions/... VM paths to host paths
         if (typeof fullPath === 'string' && fullPath.startsWith('/sessions/')) {
           const sessionPath = fullPath.substring('/sessions/'.length);
-          // Validate session name format before joining (no .. traversal)
+          // Validate session name format before joining (no . or .. traversal)
           const sessionName = sessionPath.split('/')[0];
-          if (!sessionName || sessionName === '..' || sessionName.includes('/')) {
+          if (!sessionName || sessionName === '.' || sessionName === '..' || sessionName.includes('/')) {
             console.error('[Frame Fix] shell.showItemInFolder: invalid session name:', fullPath);
             return false;
           }
