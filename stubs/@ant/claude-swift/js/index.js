@@ -931,13 +931,42 @@ class SwiftAddonStub extends EventEmitter {
       console.log('[claude-swift] setThemeMode(' + mode + ')');
     };
 
-    // File system operations — canonicalize paths to resolve mount symlinks.
-    // Uses canonicalizePathForHostAccess so both /sessions/... VM paths and
-    // regular host paths are handled correctly.
+    // SECURITY: Allowed base directories for files.* API.
+    // Restricts filesystem access to Claude's own data directories.
+    // Validates BEFORE canonicalizePathForHostAccess resolves symlinks.
+    const FILES_ALLOWED_BASES = [
+      APP_SUPPORT_ROOT,                      // ~/Library/Application Support/Claude/
+      path.join(os.homedir(), 'Library', 'Logs', 'Claude'),
+      path.join(os.homedir(), 'Library', 'Caches', 'Claude'),
+    ];
+
+    function isFilesPathAllowed(targetPath) {
+      if (!targetPath || typeof targetPath !== 'string') return false;
+      // Allow /sessions/... paths — canonicalizePathForHostAccess validates these
+      if (targetPath.startsWith('/sessions/')) return true;
+      const resolved = path.resolve(targetPath);
+      // Block path traversal
+      if (targetPath.includes('..')) return false;
+      // Must be under one of the allowed base directories
+      return FILES_ALLOWED_BASES.some(function(base) {
+        const resolvedBase = path.resolve(base);
+        return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
+      });
+    }
+
+    function filesSecurityError(op, filePath) {
+      const msg = 'SECURITY: files.' + op + '() blocked — path outside allowed directories: ' + filePath;
+      trace(msg);
+      return Promise.reject(new Error('Access denied: path not allowed'));
+    }
+
+    // File system operations — restricted to allowed directories, then
+    // canonicalized via canonicalizePathForHostAccess to resolve mount symlinks.
     this.files = {
       // Read file contents
       read: (filePath) => {
         console.log('[claude-swift] files.read()', filePath);
+        if (!isFilesPathAllowed(filePath)) return filesSecurityError('read', filePath);
         try {
           const content = fs.readFileSync(canonicalizePathForHostAccess(filePath), 'utf-8');
           return Promise.resolve(content);
@@ -948,6 +977,7 @@ class SwiftAddonStub extends EventEmitter {
       // Write file contents
       write: (filePath, content) => {
         console.log('[claude-swift] files.write()', filePath);
+        if (!isFilesPathAllowed(filePath)) return filesSecurityError('write', filePath);
         try {
           fs.writeFileSync(canonicalizePathForHostAccess(filePath), content, 'utf-8');
           return Promise.resolve(true);
@@ -957,11 +987,13 @@ class SwiftAddonStub extends EventEmitter {
       },
       // Check if file exists
       exists: (filePath) => {
+        if (!isFilesPathAllowed(filePath)) return Promise.resolve(false);
         return Promise.resolve(fs.existsSync(canonicalizePathForHostAccess(filePath)));
       },
       // Get file stats
       stat: (filePath) => {
         console.log('[claude-swift] files.stat()', filePath);
+        if (!isFilesPathAllowed(filePath)) return filesSecurityError('stat', filePath);
         try {
           const stats = fs.statSync(canonicalizePathForHostAccess(filePath));
           return Promise.resolve({
@@ -979,6 +1011,7 @@ class SwiftAddonStub extends EventEmitter {
       // List directory contents
       list: (dirPath) => {
         console.log('[claude-swift] files.list()', dirPath);
+        if (!isFilesPathAllowed(dirPath)) return filesSecurityError('list', dirPath);
         try {
           const resolved = canonicalizePathForHostAccess(dirPath);
           const returnedBasePath = (typeof dirPath === 'string' && dirPath.length > 0) ? dirPath : resolved;
@@ -996,6 +1029,10 @@ class SwiftAddonStub extends EventEmitter {
       // Watch file for changes
       watch: (filePath, callback) => {
         console.log('[claude-swift] files.watch()', filePath);
+        if (!isFilesPathAllowed(filePath)) {
+          trace('SECURITY: files.watch() blocked — path outside allowed directories: ' + filePath);
+          return { close: () => {} };
+        }
         try {
           const watcher = fs.watch(canonicalizePathForHostAccess(filePath), (eventType, filename) => {
             callback({ type: eventType, filename });

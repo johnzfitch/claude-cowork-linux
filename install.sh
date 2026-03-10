@@ -28,7 +28,7 @@ VERSION="3.0.6"
 REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
 INSTALL_DIR="$HOME/.local/share/claude-desktop"
 CLAUDE_DOWNLOAD_PAGE="https://claude.ai/download"
-RNET_WHEEL_URL="https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
+RNET_PIP_SPEC="rnet>=3.0.0rc14"
 
 # Minimum expected DMG size (100MB)
 MIN_DMG_SIZE=100000000
@@ -66,6 +66,26 @@ format_size() {
         unit=$((unit + 1))
     done
     echo "${num}${units[$unit]}"
+}
+
+verify_checksum() {
+    # Verify SHA-256 checksum of a file.
+    # Usage: verify_checksum <file> <expected_sha256>
+    # Returns 0 on match, 1 on mismatch, 2 if no expected hash provided (skip).
+    local file="$1" expected="$2"
+    if [[ -z "$expected" ]]; then
+        return 2
+    fi
+    local actual
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    if [[ "$actual" != "$expected" ]]; then
+        log_error "Checksum mismatch for $(basename "$file")"
+        log_error "  Expected: $expected"
+        log_error "  Actual:   $actual"
+        return 1
+    fi
+    log_success "Checksum verified: $(basename "$file")"
+    return 0
 }
 
 detect_pkg_manager() {
@@ -185,14 +205,24 @@ fetch_dmg_via_rnet() {
     log_info "Setting up rnet for auto-download..."
     python3 -m venv "$venv_dir" 2>/dev/null || { log_warn "Failed to create venv"; return 1; }
 
-    # Install rnet wheel from GitHub release
-    if ! "$venv_dir/bin/pip" install --quiet "$RNET_WHEEL_URL" 2>/dev/null; then
-        log_warn "Failed to install rnet wheel"
+    # Install rnet from PyPI (verified package with checksums)
+    if ! "$venv_dir/bin/pip" install --quiet --pre "$RNET_PIP_SPEC" 2>/dev/null; then
+        log_warn "Failed to install rnet from PyPI"
         rm -rf "$venv_dir"
         return 1
     fi
 
-    log_info "Fetching latest DMG URL..."
+    log_info "Fetching latest DMG metadata..."
+    local fetch_output
+    fetch_output=$("$venv_dir/bin/python3" "$fetch_script" 2>/dev/null) || {
+        log_warn "Failed to fetch DMG metadata"
+        rm -rf "$venv_dir"
+        return 1
+    }
+
+    # Also try to get SHA-256 from API
+    local dmg_sha256
+    dmg_sha256=$("$venv_dir/bin/python3" "$fetch_script" --sha256 2>/dev/null) || dmg_sha256=""
     local dmg_url
     dmg_url=$("$venv_dir/bin/python3" "$fetch_script" --url 2>/dev/null) || {
         log_warn "Failed to fetch DMG URL"
@@ -208,6 +238,16 @@ fetch_dmg_via_rnet() {
         size=$(stat -c%s "$dmg_path" 2>/dev/null || echo 0)
         if [[ "$size" -ge "$MIN_DMG_SIZE" ]]; then
             log_success "Downloaded DMG: $(format_size "$size")"
+            # Verify checksum if API provided one
+            if [[ -n "$dmg_sha256" ]]; then
+                if ! verify_checksum "$dmg_path" "$dmg_sha256"; then
+                    log_error "DMG integrity check failed — file may be tampered"
+                    rm -f "$dmg_path"
+                    return 1
+                fi
+            else
+                log_warn "No SHA-256 from API — skipping checksum verification"
+            fi
             return 0
         fi
         log_warn "Downloaded file too small ($(format_size "$size")), may be corrupt"

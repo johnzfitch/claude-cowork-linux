@@ -17,6 +17,7 @@ makedepends=(
     'npm'
     'curl'
     'python'
+    'python-pip'
 )
 optdepends=(
     'xdg-utils: for opening URLs'
@@ -34,25 +35,22 @@ conflicts=(
 )
 options=('!strip')
 
-_rnet_wheel="rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
+_rnet_pip_spec="rnet>=3.0.0rc14"
 
 source=(
     "git+https://github.com/johnzfitch/claude-cowork-linux.git"
-    "https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/${_rnet_wheel}"
 )
 sha256sums=(
     'SKIP'
-    'SKIP'
 )
-noextract=("${_rnet_wheel}")
 
 pkgver() {
     cd "${srcdir}"
 
-    # Use rnet to query the DMG API (bypasses Cloudflare)
+    # Use rnet from PyPI to query the DMG API (bypasses Cloudflare)
     local venv_dir="${srcdir}/_rnet_venv"
     python -m venv "$venv_dir" 2>/dev/null
-    "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}" 2>/dev/null
+    "$venv_dir/bin/pip" install --quiet --pre "$_rnet_pip_spec" 2>/dev/null
 
     local version
     version=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" 2>/dev/null \
@@ -65,19 +63,36 @@ pkgver() {
 prepare() {
     cd "${srcdir}"
 
-    # Set up rnet venv for DMG URL fetch
+    # Set up rnet venv for DMG URL fetch (installed from PyPI)
     local venv_dir="${srcdir}/_rnet_venv"
     if [[ ! -d "$venv_dir" ]]; then
         python -m venv "$venv_dir"
-        "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}"
+        "$venv_dir/bin/pip" install --quiet --pre "$_rnet_pip_spec"
     fi
 
-    # Fetch latest DMG URL via rnet, download with curl
-    echo "Fetching latest Claude Desktop DMG URL..."
-    local dmg_url
+    # Fetch latest DMG URL and optional checksum via rnet
+    echo "Fetching latest Claude Desktop DMG metadata..."
+    local dmg_url dmg_sha256
     dmg_url=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" --url)
+    dmg_sha256=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" --sha256 2>/dev/null) || dmg_sha256=""
+
     echo "Downloading DMG from CDN..."
     curl -fSL --progress-bar -o "${srcdir}/Claude.dmg" "$dmg_url"
+
+    # Verify DMG checksum if API provided one
+    if [[ -n "$dmg_sha256" ]]; then
+        local actual_sha256
+        actual_sha256=$(sha256sum "${srcdir}/Claude.dmg" | awk '{print $1}')
+        if [[ "$actual_sha256" != "$dmg_sha256" ]]; then
+            echo "ERROR: DMG checksum mismatch!"
+            echo "  Expected: $dmg_sha256"
+            echo "  Actual:   $actual_sha256"
+            return 1
+        fi
+        echo "DMG checksum verified: $dmg_sha256"
+    else
+        echo "WARNING: No SHA-256 from API — skipping DMG checksum verification"
+    fi
 
     rm -rf "$venv_dir"
 

@@ -158,7 +158,7 @@ stage_2() {
 
     # Needs rnet — check if available
     if ! python3 -c "import rnet" 2>/dev/null; then
-        skip "rnet not installed (install rnet wheel to test fetch-dmg.py)"
+        skip "rnet not installed (pip install --pre 'rnet>=3.0.0rc14' to test fetch-dmg.py)"
         return
     fi
 

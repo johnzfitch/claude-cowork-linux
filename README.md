@@ -100,7 +100,7 @@ yay -S claude-cowork-linux       # auto-downloads the latest DMG
 bash <(curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh)
 ```
 
-The installer automatically downloads the latest Claude Desktop DMG (using [rnet](https://github.com/nicholasgasior/rnet) to bypass Cloudflare on the API endpoint, then curl for the CDN download). You can also provide a DMG manually:
+The installer automatically downloads the latest Claude Desktop DMG (using [rnet](https://github.com/0x676e67/rnet) from PyPI to bypass Cloudflare on the API endpoint, then curl for the CDN download). You can also provide a DMG manually:
 
 ```bash
 ./install.sh ~/Downloads/Claude-*.dmg
