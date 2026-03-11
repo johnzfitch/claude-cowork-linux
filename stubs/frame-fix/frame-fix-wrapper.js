@@ -597,41 +597,49 @@ Module.prototype.require = function(id) {
       const originalShowItemInFolder = module.shell.showItemInFolder.bind(module.shell);
       module.shell.showItemInFolder = function(fullPath) {
         let resolvedPath = fullPath;
-        // Translate /sessions/... VM paths to host paths
-        if (typeof fullPath === 'string' && fullPath.startsWith('/sessions/')) {
-          const sessionPath = fullPath.substring('/sessions/'.length);
-          // Validate session name format before joining (no . or .. traversal)
-          const sessionName = sessionPath.split('/')[0];
-          if (!sessionName || sessionName === '.' || sessionName === '..' || sessionName.includes('/')) {
-            console.error('[Frame Fix] shell.showItemInFolder: invalid session name:', fullPath);
-            return false;
-          }
-          const sessionRoot = path.join(SESSIONS_BASE, sessionName);
-          resolvedPath = path.join(LOCAL_AGENT_ROOT, 'sessions', sessionPath);
-          // Resolve symlinks to get canonical host path
-          try {
-            resolvedPath = fs.realpathSync(resolvedPath);
-            // Post-resolution check: ensure we haven't escaped via .. components
-            const realSessionRoot = fs.realpathSync(sessionRoot);
-            const relative = path.relative(realSessionRoot, resolvedPath);
-            if (relative.startsWith('..') || path.isAbsolute(relative)) {
-              console.error('[Frame Fix] shell.showItemInFolder: resolved path escapes session root:', fullPath, '->', resolvedPath);
+        let candidatePath = null;
+        let sessionRoot = null;
+        if (typeof fullPath === 'string') {
+          if (fullPath.startsWith('/sessions/')) {
+            const sessionPath = fullPath.substring('/sessions/'.length);
+            const sessionName = sessionPath.split('/')[0];
+            if (!sessionName || sessionName === '.' || sessionName === '..' || sessionName.includes('/')) {
+              console.error('[Frame Fix] shell.showItemInFolder: invalid session name:', fullPath);
               return false;
             }
+            sessionRoot = path.join(SESSIONS_BASE, sessionName);
+            candidatePath = path.resolve(path.join(SESSIONS_BASE, sessionPath));
+          } else if (fullPath === SESSIONS_BASE || fullPath.startsWith(SESSIONS_BASE + path.sep)) {
+            const sessionRelative = path.relative(SESSIONS_BASE, fullPath);
+            const sessionName = sessionRelative.split(path.sep)[0];
+            if (!sessionName || sessionName === '.' || sessionName === '..' || sessionName.includes('/')) {
+              console.error('[Frame Fix] shell.showItemInFolder: invalid host session path:', fullPath);
+              return false;
+            }
+            sessionRoot = path.join(SESSIONS_BASE, sessionName);
+            candidatePath = path.resolve(fullPath);
+          }
+        }
+        if (candidatePath && sessionRoot) {
+          // Validate containment lexically within the session tree, then canonicalize
+          // through mnt symlinks so the file manager lands on the real host location.
+          const relativeToRoot = path.relative(sessionRoot, candidatePath);
+          if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+            console.error('[Frame Fix] shell.showItemInFolder: path escapes session root:', fullPath, '->', candidatePath);
+            return false;
+          }
+          try {
+            resolvedPath = fs.realpathSync(candidatePath);
           } catch (_) {
-            // If realpath fails, walk up to find nearest existing ancestor directory
-            // but only within the session root to prevent escaping
-            let current = path.dirname(resolvedPath);
+            let current = path.dirname(candidatePath);
             let foundAncestor = false;
             while (current !== path.dirname(current)) {
-              // Stop if we'd escape the session root
               const relative = path.relative(sessionRoot, current);
               if (relative.startsWith('..') || path.isAbsolute(relative)) {
-                console.error('[Frame Fix] shell.showItemInFolder: path escapes session root:', fullPath);
+                console.error('[Frame Fix] shell.showItemInFolder: no valid ancestor inside session root:', fullPath);
                 return false;
               }
               try {
-                // Use the existing ancestor directory directly, don't append missing filename
                 resolvedPath = fs.realpathSync(current);
                 foundAncestor = true;
                 break;
