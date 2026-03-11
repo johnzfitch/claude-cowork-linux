@@ -408,10 +408,12 @@ function createMountSymlinks(sessionName, additionalMounts) {
         trace('  Created uploads symlink: ' + mountPoint + ' -> ' + hostUploadsPath);
       } catch (e) {
         trace('  ERROR creating uploads symlink: ' + e.message);
+        failedMounts.push(mountName);
         // Fallback: create directory so process doesn't crash
         try {
           if (!fs.existsSync(mountPoint)) {
             fs.mkdirSync(mountPoint, { recursive: true, mode: 0o700 });
+            trace('  Created fallback directory for uploads');
           }
         } catch (_) {}
       }
