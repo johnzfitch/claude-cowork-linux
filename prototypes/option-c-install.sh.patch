@@ -1,0 +1,93 @@
+--- a/install.sh
++++ b/install.sh
+@@ -27,9 +27,6 @@ VERSION="3.0.6"
+ REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
+ INSTALL_DIR="$HOME/.local/share/claude-desktop"
+ CLAUDE_DOWNLOAD_PAGE="https://claude.ai/download"
+-RNET_WHEEL_URL="https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
+
+ # Minimum expected DMG size (100MB)
+ MIN_DMG_SIZE=100000000
+@@ -163,56 +160,52 @@ setup_repo() {
+ # Step 3: Get the Claude Desktop DMG
+ # ============================================================
+
+-fetch_dmg_via_rnet() {
+-    # [entire rnet function removed]
+-    ...
+-}
++fetch_dmg_via_pinned_url() {
++    # Download DMG using the pinned URL from dmg-latest.env.
++    # No rnet or API call needed — plain curl to CDN.
++    local dmg_path="$1"
++    local env_file=""
++
++    # Locate dmg-latest.env
++    for candidate in "$INSTALL_DIR/dmg-latest.env" "$(dirname "$0")/dmg-latest.env"; do
++        if [[ -f "$candidate" ]]; then
++            env_file="$candidate"
++            break
++        fi
++    done
++    [[ -n "$env_file" ]] || { log_warn "dmg-latest.env not found"; return 1; }
++
++    # Source the env file (contains DMG_VERSION, DMG_URL, DMG_SHA256)
++    local DMG_VERSION="" DMG_URL="" DMG_SHA256=""
++    # shellcheck source=/dev/null
++    source "$env_file"
++
++    [[ -n "$DMG_URL" ]] || { log_warn "DMG_URL not set in dmg-latest.env"; return 1; }
++
++    log_info "Downloading Claude Desktop v${DMG_VERSION:-unknown} from CDN..."
++    if ! curl -fSL --progress-bar -o "$dmg_path" "$DMG_URL"; then
++        log_warn "CDN download failed"
++        return 1
++    fi
++
++    local size
++    size=$(stat -c%s "$dmg_path" 2>/dev/null || echo 0)
++    if [[ "$size" -lt "$MIN_DMG_SIZE" ]]; then
++        log_warn "Downloaded file too small ($(format_size "$size")), may be corrupt"
++        rm -f "$dmg_path"
++        return 1
++    fi
++
++    # Verify SHA-256 if available
++    if [[ -n "$DMG_SHA256" ]]; then
++        local actual
++        actual=$(sha256sum "$dmg_path" | awk '{print $1}')
++        if [[ "$actual" != "$DMG_SHA256" ]]; then
++            log_error "DMG checksum mismatch!"
++            log_error "  Expected: $DMG_SHA256"
++            log_error "  Actual:   $actual"
++            rm -f "$dmg_path"
++            return 1
++        fi
++        log_success "Checksum verified"
++    else
++        log_warn "No SHA-256 pinned — skipping checksum verification"
++    fi
++
++    log_success "Downloaded DMG: $(format_size "$size")"
++    return 0
++}
+
+ get_dmg() {
+     local dmg_path="$1"
+@@ -241,14 +234,11 @@ get_dmg() {
+         return 0
+     fi
+
+-    # 3. Auto-download via rnet (bypasses Cloudflare)
+-    if command_exists python3; then
+-        if fetch_dmg_via_rnet "$dmg_path"; then
+-            return 0
+-        fi
+-        log_warn "Auto-download failed, falling back to browser download"
++    # 3. Auto-download via pinned CDN URL (no rnet needed)
++    if fetch_dmg_via_pinned_url "$dmg_path"; then
++        return 0
+     fi
+
+     # 4. Browser download fallback
+     local dl_dir

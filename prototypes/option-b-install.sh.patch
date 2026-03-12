@@ -1,0 +1,39 @@
+--- a/install.sh
++++ b/install.sh
+@@ -27,9 +27,6 @@ VERSION="3.0.6"
+ REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
+ INSTALL_DIR="$HOME/.local/share/claude-desktop"
+ CLAUDE_DOWNLOAD_PAGE="https://claude.ai/download"
+-RNET_WHEEL_URL="https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
+
+ # Minimum expected DMG size (100MB)
+ MIN_DMG_SIZE=100000000
+@@ -163,56 +160,6 @@ setup_repo() {
+ # Step 3: Get the Claude Desktop DMG
+ # ============================================================
+
+-fetch_dmg_via_rnet() {
+-    # [entire function removed — rnet moved to tools/fetch-dmg.sh]
+-    ...
+-}
+-
+ get_dmg() {
+     local dmg_path="$1"
+
+@@ -241,14 +188,7 @@ get_dmg() {
+         return 0
+     fi
+
+-    # 3. Auto-download via rnet (bypasses Cloudflare)
+-    if command_exists python3; then
+-        if fetch_dmg_via_rnet "$dmg_path"; then
+-            return 0
+-        fi
+-        log_warn "Auto-download failed, falling back to browser download"
+-    fi
+-
+-    # 4. Browser download fallback
++    # 3. Browser download fallback
++    log_info "Tip: run 'tools/fetch-dmg.sh' first for automated download"
+     local dl_dir
+     dl_dir=$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")

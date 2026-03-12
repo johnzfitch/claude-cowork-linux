@@ -1,0 +1,87 @@
+--- a/PKGBUILD
++++ b/PKGBUILD
+@@ -14,9 +14,7 @@ makedepends=(
+     'p7zip'
+     'npm'
+     'curl'
+-    'python'
+ )
+
+-_rnet_wheel="rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
++# Pinned DMG metadata — sourced from dmg-latest.env in the repo.
++# Updated by maintainer via: tools/update-dmg-url.sh
+
+ source=(
+     "git+https://github.com/johnzfitch/claude-cowork-linux.git"
+-    "https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/${_rnet_wheel}"
+ )
+ sha256sums=(
+     'SKIP'
+-    'SKIP'
+ )
+-noextract=("${_rnet_wheel}")
+
+ pkgver() {
+-    cd "${srcdir}"
+-    local venv_dir="${srcdir}/_rnet_venv"
+-    python -m venv "$venv_dir" 2>/dev/null
+-    "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}" 2>/dev/null
+-    local version
+-    version=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" 2>/dev/null \
+-        | awk '{print $1}')
+-    rm -rf "$venv_dir"
+-    echo "${version:-1.1.4010}"
++    # Read pinned version from repo's dmg-latest.env
++    local env_file="${srcdir}/claude-cowork-linux/dmg-latest.env"
++    if [[ -f "$env_file" ]]; then
++        # shellcheck source=/dev/null
++        source "$env_file"
++        echo "${DMG_VERSION:-1.1.4010}"
++    else
++        echo "1.1.4010"
++    fi
+ }
+
+ prepare() {
+     cd "${srcdir}"
+
+-    local venv_dir="${srcdir}/_rnet_venv"
+-    if [[ ! -d "$venv_dir" ]]; then
+-        python -m venv "$venv_dir"
+-        "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}"
++    # Source pinned URL from repo
++    local env_file="${srcdir}/claude-cowork-linux/dmg-latest.env"
++    [[ -f "$env_file" ]] || { echo "ERROR: dmg-latest.env not found in repo"; return 1; }
++    # shellcheck source=/dev/null
++    source "$env_file"
++    [[ -n "$DMG_URL" ]] || { echo "ERROR: DMG_URL not set in dmg-latest.env"; return 1; }
++
++    # Download DMG from CDN (plain curl, no rnet)
++    echo "Downloading Claude Desktop v${DMG_VERSION} from CDN..."
++    curl -fSL --progress-bar -o "${srcdir}/Claude.dmg" "$DMG_URL"
++
++    # Verify checksum if pinned
++    if [[ -n "${DMG_SHA256:-}" ]]; then
++        local actual
++        actual=$(sha256sum "${srcdir}/Claude.dmg" | awk '{print $1}')
++        if [[ "$actual" != "$DMG_SHA256" ]]; then
++            echo "ERROR: DMG checksum mismatch!"
++            echo "  Expected: $DMG_SHA256"
++            echo "  Actual:   $actual"
++            return 1
++        fi
++        echo "DMG checksum verified."
++    else
++        echo "WARNING: No SHA-256 pinned — skipping checksum verification"
+     fi
+
+-    echo "Fetching latest Claude Desktop DMG URL..."
+-    local dmg_url
+-    dmg_url=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" --url)
+-    echo "Downloading DMG from CDN..."
+-    curl -fSL --progress-bar -o "${srcdir}/Claude.dmg" "$dmg_url"
+-
+-    rm -rf "$venv_dir"
+-
+     npm install --prefix "${srcdir}" @electron/asar >/dev/null 2>&1
+ }

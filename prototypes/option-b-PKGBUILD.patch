@@ -1,0 +1,71 @@
+--- a/PKGBUILD
++++ b/PKGBUILD
+@@ -14,9 +14,8 @@ makedepends=(
+     'p7zip'
+     'npm'
+     'curl'
+-    'python'
++    'python'        # for fetch-dmg.py and enable-cowork.py
++    'python-pip'    # for rnet install in prepare()
+ )
+
+-_rnet_wheel="rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
++_rnet_pip_spec="rnet>=3.0.0rc14"
+
+ source=(
+     "git+https://github.com/johnzfitch/claude-cowork-linux.git"
+-    "https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/${_rnet_wheel}"
+ )
+ sha256sums=(
+     'SKIP'
+-    'SKIP'
+ )
+-noextract=("${_rnet_wheel}")
+
+ pkgver() {
+     cd "${srcdir}"
+
+-    local venv_dir="${srcdir}/_rnet_venv"
+-    python -m venv "$venv_dir" 2>/dev/null
+-    "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}" 2>/dev/null
++    # Use the standalone fetch tool (installs rnet in temp venv)
++    local dmg_info
++    dmg_info=$("${srcdir}/claude-cowork-linux/tools/fetch-dmg.sh" --url-only 2>/dev/null) || true
+
+     local version
+-    version=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" 2>/dev/null \
+-        | awk '{print $1}')
+-    rm -rf "$venv_dir"
++    # fetch-dmg.sh --url-only just prints URL; use fetch-dmg.py for version
++    local venv_dir="${srcdir}/_rnet_venv"
++    python -m venv "$venv_dir" 2>/dev/null
++    "$venv_dir/bin/pip" install --quiet --pre "$_rnet_pip_spec" 2>/dev/null
++    version=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" 2>/dev/null | awk '{print $1}')
++    rm -rf "$venv_dir"
+
+     echo "${version:-1.1.4010}"
+ }
+
+ prepare() {
+     cd "${srcdir}"
+
+-    local venv_dir="${srcdir}/_rnet_venv"
+-    if [[ ! -d "$venv_dir" ]]; then
+-        python -m venv "$venv_dir"
+-        "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}"
+-    fi
+-
+-    echo "Fetching latest Claude Desktop DMG URL..."
+-    local dmg_url
+-    dmg_url=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" --url)
+-    echo "Downloading DMG from CDN..."
+-    curl -fSL --progress-bar -o "${srcdir}/Claude.dmg" "$dmg_url"
+-
+-    rm -rf "$venv_dir"
++    # Use the standalone fetch tool
++    bash "${srcdir}/claude-cowork-linux/tools/fetch-dmg.sh" "${srcdir}"
++    # Rename to expected path
++    mv "${srcdir}"/Claude-*.dmg "${srcdir}/Claude.dmg" 2>/dev/null || true
+
+     npm install --prefix "${srcdir}" @electron/asar >/dev/null 2>&1
+ }

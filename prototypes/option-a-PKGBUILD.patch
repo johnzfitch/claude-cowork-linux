@@ -1,0 +1,74 @@
+--- a/PKGBUILD
++++ b/PKGBUILD
+@@ -14,9 +14,7 @@ makedepends=(
+     'p7zip'
+     'npm'
+     'curl'
+-    'python'
+ )
+ optdepends=(
+     'xdg-utils: for opening URLs'
+@@ -34,44 +32,30 @@ conflicts=(
+ )
+ options=('!strip')
+
+-_rnet_wheel="rnet-3.0.0rc14-cp311-abi3-manylinux_2_34_x86_64.whl"
++# Pinned DMG version — updated with each release.
++# To find the latest: python3 tools/fetch-dmg.sh (requires rnet)
++_dmg_version="1.1.4010"
+
+ source=(
+     "git+https://github.com/johnzfitch/claude-cowork-linux.git"
+-    "https://github.com/johnzfitch/claude-cowork-linux/releases/download/v3.0.2/${_rnet_wheel}"
+ )
+ sha256sums=(
+     'SKIP'
+-    'SKIP'
+ )
+-noextract=("${_rnet_wheel}")
+
+ pkgver() {
+-    cd "${srcdir}"
+-
+-    # Use rnet to query the DMG API (bypasses Cloudflare)
+-    local venv_dir="${srcdir}/_rnet_venv"
+-    python -m venv "$venv_dir" 2>/dev/null
+-    "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}" 2>/dev/null
+-
+-    local version
+-    version=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" 2>/dev/null \
+-        | awk '{print $1}')
+-    rm -rf "$venv_dir"
+-
+-    echo "${version:-1.1.4010}"
++    echo "$_dmg_version"
+ }
+
+ prepare() {
+     cd "${srcdir}"
+
+-    # Set up rnet venv for DMG URL fetch
+-    local venv_dir="${srcdir}/_rnet_venv"
+-    if [[ ! -d "$venv_dir" ]]; then
+-        python -m venv "$venv_dir"
+-        "$venv_dir/bin/pip" install --quiet "${srcdir}/${_rnet_wheel}"
++    # User must provide the DMG. Check common locations.
++    if [[ ! -f "${srcdir}/Claude.dmg" ]]; then
++        echo "ERROR: Claude.dmg not found."
++        echo "Download from https://claude.ai/download and place in ${srcdir}/"
++        echo "  Or: cp ~/Downloads/Claude-*.dmg ${srcdir}/Claude.dmg"
++        return 1
+     fi
+
+-    # Fetch latest DMG URL via rnet, download with curl
+-    echo "Fetching latest Claude Desktop DMG URL..."
+-    local dmg_url
+-    dmg_url=$("$venv_dir/bin/python" "${srcdir}/claude-cowork-linux/fetch-dmg.py" --url)
+-    echo "Downloading DMG from CDN..."
+-    curl -fSL --progress-bar -o "${srcdir}/Claude.dmg" "$dmg_url"
+-
+-    rm -rf "$venv_dir"
+-
+     # Install asar tool locally
+     npm install --prefix "${srcdir}" @electron/asar >/dev/null 2>&1
+ }
