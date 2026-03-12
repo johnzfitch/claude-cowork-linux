@@ -582,6 +582,51 @@ doctor() {
 
     local ok=0 warn=0 fail=0
 
+    check_launcher_resolution() {
+        local cmd="$1"
+        local expected="$2"
+        local matches=""
+
+        matches=$(which -a "$cmd" 2>/dev/null | awk '!seen[$0]++') || matches=""
+        if [[ -z "$matches" ]]; then
+            log_warn "$cmd launcher: not found in PATH"
+            warn=$((warn + 1))
+            return
+        fi
+
+        local first expected_real first_real
+        first=$(printf '%s\n' "$matches" | head -1)
+        expected_real=$(readlink -f "$expected" 2>/dev/null || printf '%s' "$expected")
+        first_real=$(readlink -f "$first" 2>/dev/null || printf '%s' "$first")
+        if [[ "$first" == "$expected" || "$first_real" == "$expected_real" ]]; then
+            log_success "$cmd launcher: $first"
+            ok=$((ok + 1))
+        else
+            log_warn "$cmd launcher resolves to $first (expected $expected)"
+            warn=$((warn + 1))
+        fi
+
+        local extra
+        extra=$(printf '%s\n' "$matches" | sed -n '2,10p')
+        if [[ -n "$extra" ]]; then
+            local divergent=""
+            while IFS= read -r entry; do
+                [[ -n "$entry" ]] || continue
+                local entry_real
+                entry_real=$(readlink -f "$entry" 2>/dev/null || printf '%s' "$entry")
+                if [[ "$entry_real" != "$expected_real" ]]; then
+                    divergent=1
+                    break
+                fi
+            done <<< "$extra"
+
+            if [[ -n "$divergent" ]]; then
+                log_warn "$cmd has additional PATH entries: $(printf '%s' "$extra" | paste -sd ', ' -)"
+                warn=$((warn + 1))
+            fi
+        fi
+    }
+
     # --- Required binaries ---
     for cmd in git 7z node npm electron asar bwrap; do
         if command_exists "$cmd"; then
@@ -692,6 +737,10 @@ doctor() {
         log_warn "Python 3: not found (needed for auto-download and patches)"
         warn=$((warn + 1))
     fi
+
+    # --- Launcher resolution ---
+    check_launcher_resolution "claude-desktop" "$HOME/.local/bin/claude-desktop"
+    check_launcher_resolution "claude-cowork" "$HOME/.local/bin/claude-cowork"
 
     echo ""
     echo "=========================================="

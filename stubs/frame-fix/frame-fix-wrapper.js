@@ -682,7 +682,21 @@ Module.prototype.require = function(id) {
       console.log('[Cowork] IPC handler interception enabled');
     }
 
-    // Patch BrowserWindow so close events actually quit on Linux.
+    // Stub out macOS-only systemPreferences methods that cause crashes on Linux
+    if (module.systemPreferences && !global.__coworkSystemPreferencesPatched) {
+      global.__coworkSystemPreferencesPatched = true;
+      module.systemPreferences.getMediaAccessStatus = function() {
+        console.log('[Frame Fix] Stubbed systemPreferences.getMediaAccessStatus');
+        return 'granted';
+      };
+      module.systemPreferences.askForMediaAccess = async function() {
+        console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess');
+        return true;
+      };
+      console.log('[Frame Fix] systemPreferences patched for Linux');
+    }
+
+    // Patch BrowserWindow to stub macOS-only methods and handle close events
     // The asar's close handler does `if (isMac()) return;` which swallows
     // close events since we spoof darwin. We prepend a listener that forces
     // app.quit() so killactive/WM close works on all Linux DEs.
@@ -692,6 +706,13 @@ Module.prototype.require = function(id) {
     function patchWindowClose(win) {
       if (_closePatched.has(win)) return;
       _closePatched.add(win);
+
+      // Stub macOS-only BrowserWindow methods
+      if (!win.setWindowButtonPosition) {
+        win.setWindowButtonPosition = function() {
+          // no-op on Linux
+        };
+      }
       // Use prependListener so we fire before the asar's handler
       win.prependListener('close', (event) => {
         if (REAL_PLATFORM === 'linux' && !shuttingDown) {
