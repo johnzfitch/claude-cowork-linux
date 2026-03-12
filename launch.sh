@@ -56,9 +56,17 @@ if [ -f "$PKG_JSON" ] && grep -q '"main":.*index\.pre\.js"' "$PKG_JSON"; then
   sed -i 's|"main":.*"\.vite/build/index\.pre\.js"|"main": "frame-fix-entry.js"|' "$PKG_JSON"
 fi
 
-# Fix window decorations: remove macOS-specific titlebar options from main window
+# Fix window decorations and env-paths in the Vite bundle.
 # The Vite bundle bypasses the frame-fix-wrapper's require interception, so we patch directly.
 INDEX_JS="linux-app-extracted/.vite/build/index.js"
+
+# Fix env-paths: the bundled env-paths library checks process.platform to choose
+# between macOS ~/Library and Linux XDG paths. Since we spoof platform to "darwin",
+# it picks the wrong branch. Force the Linux/XDG branch (function o) unconditionally.
+if [ -f "$INDEX_JS" ] && grep -q 'process\.platform==="darwin"?s(l):process\.platform==="win32"?a(l):o(l)' "$INDEX_JS"; then
+  echo "Patching env-paths to use XDG Base Directory paths..."
+  sed -i 's/process\.platform==="darwin"?s(l):process\.platform==="win32"?a(l):o(l)/o(l)/g' "$INDEX_JS"
+fi
 if [ -f "$INDEX_JS" ] && grep -q 'titleBarOverlay' "$INDEX_JS"; then
   echo "Patching macOS titlebar options for Linux..."
   # Main window: remove titleBarStyle:"hidden",titleBarOverlay:VAR,trafficLightPosition:VAR,

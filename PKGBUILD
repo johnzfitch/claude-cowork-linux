@@ -155,6 +155,13 @@ build() {
     python "${_repo}/enable-cowork.py" \
         "${srcdir}/linux-app-extracted/.vite/build/index.js"
 
+    # Patch env-paths to use XDG Base Directory paths instead of macOS ~/Library
+    local _index_js="${srcdir}/linux-app-extracted/.vite/build/index.js"
+    if grep -q 'process\.platform==="darwin"?s(l):process\.platform==="win32"?a(l):o(l)' "$_index_js"; then
+        echo "Patching env-paths for XDG..."
+        sed -i 's/process\.platform==="darwin"?s(l):process\.platform==="win32"?a(l):o(l)/o(l)/g' "$_index_js"
+    fi
+
     # Repack into app.asar
     echo "Repacking app.asar..."
     "$_asar" pack "${srcdir}/linux-app-extracted" "${srcdir}/app.asar"

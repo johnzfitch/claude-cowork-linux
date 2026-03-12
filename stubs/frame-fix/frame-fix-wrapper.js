@@ -77,7 +77,9 @@ const REAL_ARCH = process.arch;
 const vmBundleDir = path.join(os.homedir(), '.config/Claude/vm_bundles');
 const vmTmpDir = path.join(vmBundleDir, 'tmp');
 const claudeVmBundle = path.join(vmBundleDir, 'claudevm.bundle');
-const APP_SUPPORT_ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'Claude');
+// XDG Base Directory paths — avoids macOS ~/Library on Linux
+const XDG_DATA_HOME = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+const APP_SUPPORT_ROOT = path.join(XDG_DATA_HOME, 'claude-cowork');
 const LOCAL_AGENT_ROOT = path.join(APP_SUPPORT_ROOT, 'LocalAgentModeSessions');
 
 try {

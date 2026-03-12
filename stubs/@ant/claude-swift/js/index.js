@@ -16,7 +16,7 @@
  *
  * Path translations performed:
  *   - /usr/local/bin/claude -> resolved via claude-code-vm (macOS) or ~/.local/bin/claude (Linux)
- *   - /sessions/... -> ~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/...
+ *   - /sessions/... -> $XDG_DATA_HOME/claude-cowork/LocalAgentModeSessions/sessions/...
  *
  * Security hardening applied:
  *   - Command injection prevention (execFile instead of exec)
@@ -37,7 +37,9 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 
-const APP_SUPPORT_ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'Claude');
+// XDG Base Directory paths — avoids macOS ~/Library on Linux
+const XDG_DATA_HOME = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+const APP_SUPPORT_ROOT = path.join(XDG_DATA_HOME, 'claude-cowork');
 const LOCAL_AGENT_ROOT = path.join(APP_SUPPORT_ROOT, 'LocalAgentModeSessions');
 
 // SECURITY: Log to user-writable location with restricted permissions
@@ -313,7 +315,7 @@ function resolveClaudeBinaryPath() {
  * }
  *
  * We create symlinks at:
- *   ~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/<session>/mnt/<mountName>
+ *   $XDG_DATA_HOME/claude-cowork/LocalAgentModeSessions/sessions/<session>/mnt/<mountName>
  * Pointing to:
  *   ~/<additionalMounts[mountName].path>
  *

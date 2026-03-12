@@ -423,9 +423,17 @@ apply_patches() {
     if [[ -n "$patch_script" && -f "$index_js" ]]; then
         log_info "Applying cowork patch..."
         python3 "$patch_script" "$index_js" || log_warn "Patch may have already been applied"
-        log_success "Patches applied"
+        log_success "Cowork patch applied"
     else
-        log_warn "Patch script or index.js not found, skipping patches"
+        log_warn "Patch script or index.js not found, skipping cowork patch"
+    fi
+
+    # Patch env-paths: the bundled library checks process.platform (spoofed to "darwin")
+    # and takes the macOS ~/Library branch. Force the Linux/XDG branch unconditionally.
+    if [[ -f "$index_js" ]] && grep -q 'process\.platform==="darwin"?s(l):process\.platform==="win32"?a(l):o(l)' "$index_js"; then
+        log_info "Patching env-paths for XDG Base Directory..."
+        sed -i 's/process\.platform==="darwin"?s(l):process\.platform==="win32"?a(l):o(l)/o(l)/g' "$index_js"
+        log_success "env-paths patch applied"
     fi
 }
 
@@ -471,17 +479,26 @@ EOF
 # ============================================================
 
 setup_environment() {
-    # User data dirs (macOS-style paths that Claude Desktop expects)
-    local data_dir="$HOME/Library/Application Support/Claude"
-    mkdir -p "$data_dir"/{Projects,Conversations}
-    mkdir -p "$HOME/Library/Logs/Claude"
-    mkdir -p "$HOME/Library/Caches/Claude"
-    mkdir -p "$HOME/Library/Preferences"
+    # XDG Base Directory paths
+    local xdg_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+    local xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+    local data_dir="$xdg_data/claude-cowork"
+    local config_dir="$xdg_config/Claude"
+    mkdir -p "$data_dir"/{sessions,logs}
     chmod 700 "$data_dir"
 
-    # Default configs if missing
-    if [[ ! -f "$data_dir/config.json" ]]; then
-        cat > "$data_dir/config.json" << 'CONF'
+    # Migrate legacy macOS-style paths if present
+    local legacy_dir="$HOME/Library/Application Support/Claude"
+    if [[ -d "$legacy_dir/LocalAgentModeSessions/sessions" && ! -d "$data_dir/LocalAgentModeSessions" ]]; then
+        log_info "Migrating session data from ~/Library/... to $data_dir/..."
+        mv "$legacy_dir/LocalAgentModeSessions" "$data_dir/LocalAgentModeSessions"
+        log_success "Session data migrated"
+    fi
+
+    # Default configs in Electron's userData dir (~/.config/Claude/)
+    mkdir -p "$config_dir"
+    if [[ ! -f "$config_dir/config.json" ]]; then
+        cat > "$config_dir/config.json" << 'CONF'
 {
   "scale": 0,
   "locale": "en-US",
@@ -491,8 +508,8 @@ setup_environment() {
 CONF
     fi
 
-    if [[ ! -f "$data_dir/claude_desktop_config.json" ]]; then
-        cat > "$data_dir/claude_desktop_config.json" << 'CONF'
+    if [[ ! -f "$config_dir/claude_desktop_config.json" ]]; then
+        cat > "$config_dir/claude_desktop_config.json" << 'CONF'
 {
   "preferences": {
     "chromeExtensionEnabled": true
@@ -664,7 +681,7 @@ doctor() {
         fi
     done
     # Also check claude-code-vm
-    local vm_root="$HOME/Library/Application Support/Claude/claude-code-vm"
+    local vm_root="${XDG_DATA_HOME:-$HOME/.local/share}/claude-cowork/claude-code-vm"
     if [[ -z "$claude_found" && -d "$vm_root" ]]; then
         claude_found=$(find "$vm_root" -name claude -type f -executable 2>/dev/null | head -1)
     fi
@@ -686,7 +703,7 @@ doctor() {
         log_warn "/sessions exists but is a directory (should be a symlink)"
         warn=$((warn + 1))
     else
-        log_error "/sessions: NOT FOUND -- run: sudo ln -s \"$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sessions\" /sessions"
+        log_error "/sessions: NOT FOUND -- run: sudo ln -s \"${XDG_DATA_HOME:-$HOME/.local/share}/claude-cowork/LocalAgentModeSessions/sessions\" /sessions"
         fail=$((fail + 1))
     fi
 
