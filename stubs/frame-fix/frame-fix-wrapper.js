@@ -8,6 +8,64 @@ const fs = require('fs');
 console.log('[Frame Fix] Wrapper v2.5 loaded');
 
 // ============================================================
+// CRITICAL: Patch ipcMain IMMEDIATELY before any asar code runs
+// ============================================================
+try {
+  const electron = require('electron');
+  const { ipcMain } = electron;
+  if (ipcMain && ipcMain._invokeHandlers && !global.__coworkIpcMainPatched) {
+    global.__coworkIpcMainPatched = true;
+    const invokeHandlers = ipcMain._invokeHandlers;
+    const originalGet = invokeHandlers.get.bind(invokeHandlers);
+    const originalSet = invokeHandlers.set.bind(invokeHandlers);
+    invokeHandlers.set = function(channel, handler) {
+      if (typeof channel === 'string' && channel.includes('ClaudeCode_$_')) {
+        if (channel.includes('ClaudeCode_$_getStatus')) {
+          console.log('[Cowork] Replacing ClaudeCode_$_getStatus during early registration');
+          return originalSet(channel, async () => ({
+            status: 'ready',
+            ready: true,
+            installed: true,
+            downloading: false,
+            progress: 100,
+            version: '2.1.72',
+          }));
+        }
+        if (channel.includes('ClaudeCode_$_prepare')) {
+          console.log('[Cowork] Replacing ClaudeCode_$_prepare during early registration');
+          return originalSet(channel, async () => ({ ready: true, success: true }));
+        }
+      }
+      return originalSet(channel, handler);
+    };
+    invokeHandlers.get = function(channel) {
+      // Override ClaudeCode handlers that throw "Unsupported platform: linux-x64"
+      if (typeof channel === 'string' && channel.includes('ClaudeCode_$_')) {
+        if (channel.includes('ClaudeCode_$_getStatus')) {
+          console.log('[Cowork] Overriding ClaudeCode_$_getStatus');
+          return async () => ({
+            status: 'ready',
+            ready: true,
+            installed: true,
+            downloading: false,
+            progress: 100,
+            version: '2.1.72',
+          });
+        }
+        if (channel.includes('ClaudeCode_$_prepare')) {
+          console.log('[Cowork] Overriding ClaudeCode_$_prepare');
+          return async () => ({ ready: true, success: true });
+        }
+      }
+      return originalGet(channel);
+    };
+    console.log('[Cowork] ipcMain._invokeHandlers patched for ClaudeCode');
+  }
+} catch (e) {
+  console.error('[Cowork] Failed to patch ipcMain:', e.message);
+}
+
+// ============================================================
 // 0. TMPDIR FIX - MUST BE ABSOLUTELY FIRST
 // ============================================================
 // Fix EXDEV error: App downloads VM to /tmp (tmpfs) then tries to
@@ -106,7 +164,17 @@ console.log('[fs.rename] Patched to handle EXDEV errors');
 // ============================================================
 
 // Helper to check if call is from system/electron internals
+function isAppCodeCall(stack) {
+  return stack.includes('/.vite/build/index.js') ||
+         stack.includes('/app.asar/.vite/build/index.js') ||
+         stack.includes('/app.asar/') ||
+         stack.includes('/linux-app-extracted/');
+}
+
 function isSystemCall(stack) {
+  if (isAppCodeCall(stack)) {
+    return false;
+  }
   return stack.includes('node:internal') ||
          stack.includes('internal/modules') ||
          stack.includes('node:electron') ||
@@ -477,10 +545,30 @@ Module.prototype.require = function(id) {
         global.__coworkInvokeHandlersPatched = true;
         const originalHas = invokeHandlers.has.bind(invokeHandlers);
         const originalGet = invokeHandlers.get.bind(invokeHandlers);
+        const originalSet = invokeHandlers.set.bind(invokeHandlers);
         invokeHandlers.has = function(channel) {
           return originalHas(channel) || !!getSyntheticIPCResponse(channel);
         };
+        invokeHandlers.set = function(channel, handler) {
+          if (typeof channel === 'string' && channel.includes('ClaudeCode_$_')) {
+            const synthetic = getSyntheticIPCResponse(channel);
+            if (synthetic) {
+              console.log('[Cowork] Replacing ClaudeCode handler during registration:', channel);
+              return originalSet(channel, synthetic);
+            }
+          }
+          return originalSet(channel, handler);
+        };
         invokeHandlers.get = function(channel) {
+          // For ClaudeCode handlers, ALWAYS return our synthetic handler
+          // because the asar's handler throws "Unsupported platform: linux-x64"
+          if (typeof channel === 'string' && channel.includes('ClaudeCode_$_')) {
+            const synthetic = getSyntheticIPCResponse(channel);
+            if (synthetic) {
+              console.log('[Cowork] Overriding ClaudeCode handler:', channel);
+              return synthetic;
+            }
+          }
           const existing = originalGet(channel);
           return existing || getSyntheticIPCResponse(channel);
         };
@@ -594,7 +682,21 @@ Module.prototype.require = function(id) {
       console.log('[Cowork] IPC handler interception enabled');
     }
 
-    // Patch BrowserWindow so close events actually quit on Linux.
+    // Stub out macOS-only systemPreferences methods that cause crashes on Linux
+    if (module.systemPreferences && !global.__coworkSystemPreferencesPatched) {
+      global.__coworkSystemPreferencesPatched = true;
+      module.systemPreferences.getMediaAccessStatus = function() {
+        console.log('[Frame Fix] Stubbed systemPreferences.getMediaAccessStatus');
+        return 'granted';
+      };
+      module.systemPreferences.askForMediaAccess = async function() {
+        console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess');
+        return true;
+      };
+      console.log('[Frame Fix] systemPreferences patched for Linux');
+    }
+
+    // Patch BrowserWindow to stub macOS-only methods and handle close events
     // The asar's close handler does `if (isMac()) return;` which swallows
     // close events since we spoof darwin. We prepend a listener that forces
     // app.quit() so killactive/WM close works on all Linux DEs.
@@ -604,6 +706,13 @@ Module.prototype.require = function(id) {
     function patchWindowClose(win) {
       if (_closePatched.has(win)) return;
       _closePatched.add(win);
+
+      // Stub macOS-only BrowserWindow methods
+      if (!win.setWindowButtonPosition) {
+        win.setWindowButtonPosition = function() {
+          // no-op on Linux
+        };
+      }
       // Use prependListener so we fire before the asar's handler
       win.prependListener('close', (event) => {
         if (REAL_PLATFORM === 'linux' && !shuttingDown) {

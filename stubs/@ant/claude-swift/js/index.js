@@ -196,6 +196,28 @@ function extractSessionNameFromVmPathStrict(vmPath) {
   return parts[0];
 }
 
+function getIgnoredSdkMessageType(line) {
+  if (typeof line !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(line);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    if (parsed.type === 'queue-operation' || parsed.type === 'rate_limit_event') {
+      return parsed.type;
+    }
+    if (parsed.type === 'message' && parsed.message && typeof parsed.message === 'object') {
+      const nestedType = parsed.message.type;
+      if (nestedType === 'queue-operation' || nestedType === 'rate_limit_event') {
+        return nestedType;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 function generateUUID() {
   if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -1561,6 +1583,13 @@ class SwiftAddonStub extends EventEmitter {
           stdoutBuffer = lines.pop();
           for (const line of lines) {
             if (line.trim() && self._onStdout) {
+              const ignoredSdkType = getIgnoredSdkMessageType(line);
+              if (ignoredSdkType) {
+                if (TRACE_IO) {
+                  trace('stdout ignored sdk message type: ' + ignoredSdkType);
+                }
+                continue;
+              }
               stdoutSeq++;
               // DEBUG: Log sequence and message type for ordering diagnosis
               let msgType = 'unknown';
