@@ -1,6 +1,6 @@
 {
   "name": "claude-cowork-linux",
-  "version": "1.0.0",
+  "version": "3.0.7",
   "description": "Linux port of Claude Desktop Cowork (Local Agent Mode)",
   "private": true,
   "devDependencies": {
