@@ -42,6 +42,9 @@ const XDG_DATA_HOME = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.loc
 const APP_SUPPORT_ROOT = path.join(XDG_DATA_HOME, 'claude-cowork');
 const LOCAL_AGENT_ROOT = path.join(APP_SUPPORT_ROOT, 'LocalAgentModeSessions');
 
+// Global Claude Code config directory (skills, commands, settings, etc.)
+const GLOBAL_CLAUDE_DIR = path.join(os.homedir(), '.claude');
+
 // SECURITY: Log to user-writable location with restricted permissions
 const LOG_DIR = path.join(APP_SUPPORT_ROOT, 'logs');
 const TRACE_FILE = path.join(LOG_DIR, 'claude-swift-trace.log');
@@ -548,6 +551,68 @@ function createMountSymlinks(sessionName, additionalMounts) {
 }
 
 /**
+ * Symlink global Claude Code config into a session's CLAUDE_CONFIG_DIR.
+ *
+ * The CLI uses CLAUDE_CONFIG_DIR as its config root, which points to the
+ * per-session .claude dir. Without these symlinks, the CLI can't find
+ * the user's global skills, commands, settings, hooks, or CLAUDE.md.
+ *
+ * Only read-mostly global config is symlinked. Session-specific dirs
+ * (projects, plans, session-env, backups, shell-snapshots) are left alone
+ * so transcript storage and session isolation work correctly.
+ *
+ * @param {string} sessionClaudeDir - Resolved host path to session .claude dir
+ */
+function symlinkGlobalConfig(sessionClaudeDir) {
+  if (!fs.existsSync(GLOBAL_CLAUDE_DIR)) {
+    trace('No global .claude dir found, skipping config symlinks');
+    return;
+  }
+
+  // Directories to symlink from ~/.claude/ into the session .claude dir
+  const GLOBAL_DIRS = ['commands', 'skills', 'agents', 'hooks', 'plugins'];
+  // Files to symlink
+  const GLOBAL_FILES = ['CLAUDE.md', 'settings.json', 'settings.local.json'];
+
+  trace('=== SYMLINK GLOBAL CONFIG ===');
+  trace('Global: ' + GLOBAL_CLAUDE_DIR);
+  trace('Session: ' + sessionClaudeDir);
+
+  for (const name of [...GLOBAL_DIRS, ...GLOBAL_FILES]) {
+    const globalPath = path.join(GLOBAL_CLAUDE_DIR, name);
+    const sessionPath = path.join(sessionClaudeDir, name);
+
+    if (!fs.existsSync(globalPath)) {
+      continue;
+    }
+
+    try {
+      if (fs.existsSync(sessionPath) || fs.lstatSync(sessionPath).isSymbolicLink()) {
+        // Already exists -- check if it's a symlink to the right place
+        const stat = fs.lstatSync(sessionPath);
+        if (stat.isSymbolicLink() && fs.readlinkSync(sessionPath) === globalPath) {
+          continue;
+        }
+        // Something else is there; don't overwrite session-specific content
+        trace('  SKIP ' + name + ': session already has its own copy');
+        continue;
+      }
+    } catch (e) {
+      // lstatSync throws if path doesn't exist at all -- that's fine, create the symlink
+    }
+
+    try {
+      fs.symlinkSync(globalPath, sessionPath);
+      trace('  LINKED ' + name + ' -> ' + globalPath);
+    } catch (e) {
+      trace('  ERROR linking ' + name + ': ' + e.message);
+    }
+  }
+
+  trace('=== END GLOBAL CONFIG ===');
+}
+
+/**
  * Extract session name only from validated VM paths supplied by the asar.
  * Never falls back to processName, which is human-readable metadata.
  */
@@ -697,11 +762,18 @@ class SwiftAddonStub extends EventEmitter {
       overlay: {
         show: () => { trace('quickAccess.overlay.show()'); },
         hide: () => { trace('quickAccess.overlay.hide()'); },
+        toggle: () => { trace('quickAccess.overlay.toggle()'); },
         isVisible: () => false,
+        setLoggedIn: () => {},
+        setRecentChats: () => {},
+        setActiveChatId: () => {},
       },
       dictation: {
         start: () => { trace('quickAccess.dictation.start()'); },
         stop: () => { trace('quickAccess.dictation.stop()'); },
+        show: () => { trace('quickAccess.dictation.show()'); },
+        toggle: () => { trace('quickAccess.dictation.toggle()'); },
+        setLanguage: () => {},
         isActive: () => false,
       },
     };
@@ -1550,6 +1622,12 @@ class SwiftAddonStub extends EventEmitter {
               }
             }
           }
+        }
+
+        // Symlink global config (skills, commands, etc.) into session .claude dir
+        if (envVars.CLAUDE_CONFIG_DIR) {
+          const resolvedConfigDir = fs.realpathSync(envVars.CLAUDE_CONFIG_DIR);
+          symlinkGlobalConfig(resolvedConfigDir);
         }
       }
 
