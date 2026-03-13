@@ -205,17 +205,53 @@ function getIgnoredSdkMessageType(line) {
     if (!parsed || typeof parsed !== 'object') {
       return null;
     }
-    if (parsed.type === 'queue-operation' || parsed.type === 'rate_limit_event') {
+    if (parsed.type === 'rate_limit_event') {
       return parsed.type;
     }
     if (parsed.type === 'message' && parsed.message && typeof parsed.message === 'object') {
       const nestedType = parsed.message.type;
-      if (nestedType === 'queue-operation' || nestedType === 'rate_limit_event') {
+      if (nestedType === 'rate_limit_event') {
         return nestedType;
       }
     }
   } catch (_) {}
   return null;
+}
+
+function extractMarketplaceAddName(command, args) {
+  if (!Array.isArray(args) || args.length < 3) {
+    return null;
+  }
+  const normalizedCommand = typeof command === 'string' ? path.basename(command) : '';
+  if (normalizedCommand !== 'claude') {
+    return null;
+  }
+
+  let marketplaceInput = null;
+  if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add' && typeof args[3] === 'string') {
+    marketplaceInput = args[3];
+  } else if (args[0] === 'plugin' && args[1] === 'add-marketplace' && typeof args[2] === 'string') {
+    marketplaceInput = args[2];
+  }
+
+  if (!marketplaceInput) {
+    return null;
+  }
+
+  const sanitizedInput = marketplaceInput
+    .replace(/\.git$/i, '')
+    .replace(/^git@github\.com:/i, '')
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\/+$/g, '');
+  const parts = sanitizedInput.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : sanitizedInput;
+}
+
+function shouldSynthesizeMarketplaceAddSuccess(line) {
+  if (typeof line !== 'string') {
+    return false;
+  }
+  return /already (?:on disk|exists|added|installed)|already have/i.test(line);
 }
 
 function generateUUID() {
@@ -322,6 +358,14 @@ function resolveClaudeBinaryPath() {
  *   - "uploads" is a directory, not a symlink
  *   - "outputs" is typically handled separately
  */
+function realpathOrResolvedPath(targetPath) {
+  try {
+    return fs.realpathSync(targetPath);
+  } catch (_) {
+    return path.resolve(targetPath);
+  }
+}
+
 function createMountSymlinks(sessionName, additionalMounts) {
   trace('=== CREATE MOUNT SYMLINKS ===');
   trace('Session name: ' + sessionName);
@@ -482,9 +526,31 @@ function createMountSymlinks(sessionName, additionalMounts) {
       }
     }
 
+    // Ensure the parent path exists for nested mounts such as
+    // ".claude/cowork_plugins". If the parent is a symlink, mkdirSync
+    // will treat the resolved target as existing and leave it intact.
+    try {
+      const mountParent = path.dirname(mountPoint);
+      if (!fs.existsSync(mountParent)) {
+        fs.mkdirSync(mountParent, { recursive: true, mode: 0o700 });
+        trace('  Created mount parent directory: ' + mountParent);
+      }
+    } catch (e) {
+      trace('  ERROR creating mount parent directory: ' + e.message);
+      failedMounts.push(mountName);
+      continue;
+    }
+
     // Create symlink (remove existing if present)
     try {
       if (fs.existsSync(mountPoint)) {
+        const resolvedMountPoint = realpathOrResolvedPath(mountPoint);
+        const resolvedHostPath = realpathOrResolvedPath(hostPath);
+        if (resolvedMountPoint === resolvedHostPath) {
+          trace('  Mount point already resolves to correct target');
+          continue;
+        }
+
         const stats = fs.lstatSync(mountPoint);
         if (stats.isSymbolicLink()) {
           const existingTarget = fs.readlinkSync(mountPoint);
@@ -533,6 +599,15 @@ function createMountSymlinks(sessionName, additionalMounts) {
   }
   trace('=== END MOUNT SYMLINKS ===');
 
+  const coworkRoot = getCoworkPluginsHostRoot(additionalMounts);
+  if (coworkRoot) {
+    try {
+      hydrateCoworkStateFromDisk(coworkRoot, getFallbackCoworkPluginsRoot());
+    } catch (e) {
+      trace('WARNING: Failed to hydrate cowork plugin state during mount creation: ' + e.message);
+    }
+  }
+
   // Fail if any required mounts failed
   const failedRequired = failedMounts.filter(m => REQUIRED_MOUNTS.has(m));
   if (failedRequired.length > 0) {
@@ -543,6 +618,480 @@ function createMountSymlinks(sessionName, additionalMounts) {
     trace('WARNING: Non-required mounts failed: ' + failedMounts.join(', '));
   }
   return true;
+}
+
+function getXdgDataHome() {
+  const xdgDataHome = process.env.XDG_DATA_HOME;
+  if (typeof xdgDataHome === 'string' && xdgDataHome.trim()) {
+    return xdgDataHome;
+  }
+  return path.join(os.homedir(), '.local', 'share');
+}
+
+function resolveHomeRelativePath(inputPath) {
+  if (typeof inputPath !== 'string' || inputPath.length === 0) {
+    return null;
+  }
+  return path.isAbsolute(inputPath) ? inputPath : path.join(os.homedir(), inputPath);
+}
+
+function getCoworkPluginsHostRoot(additionalMounts) {
+  const configuredPath = additionalMounts && additionalMounts['.claude/cowork_plugins'] && additionalMounts['.claude/cowork_plugins'].path;
+  const hostPath = resolveHomeRelativePath(configuredPath);
+  return hostPath ? canonicalizeHostPath(hostPath) : null;
+}
+
+function getFallbackCoworkPluginsRoot() {
+  return path.join(getXdgDataHome(), 'claude-desktop', 'mnt', '.claude', 'cowork_plugins');
+}
+
+function isCoworkPluginCommand(command, args) {
+  const normalizedCommand = typeof command === 'string' ? path.basename(command) : '';
+  return normalizedCommand === 'claude'
+    && Array.isArray(args)
+    && args[0] === 'plugin'
+    && args.includes('--cowork');
+}
+
+function parsePluginIdentifier(pluginId) {
+  if (typeof pluginId !== 'string' || pluginId.length === 0) {
+    return { name: 'unknown', marketplace: 'unknown' };
+  }
+  const atIndex = pluginId.lastIndexOf('@');
+  if (atIndex <= 0) {
+    return { name: pluginId, marketplace: 'unknown' };
+  }
+  return {
+    name: pluginId.slice(0, atIndex),
+    marketplace: pluginId.slice(atIndex + 1),
+  };
+}
+
+function extractJsonPayload(rawText) {
+  if (typeof rawText !== 'string') {
+    return null;
+  }
+  const text = rawText.trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_) {}
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char !== '{' && char !== '[') {
+      continue;
+    }
+    try {
+      return JSON.parse(text.slice(index));
+    } catch (_) {}
+  }
+  return null;
+}
+
+function normalizeCoworkInstallRelativePath(installPath, pluginName, marketplaceName, version) {
+  if (typeof installPath === 'string' && installPath.length > 0) {
+    const normalized = installPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const prefixes = [
+      'mnt/.claude/cowork_plugins/',
+      '.claude/cowork_plugins/',
+      'cowork_plugins/',
+    ];
+    for (const prefix of prefixes) {
+      if (normalized.startsWith(prefix)) {
+        return normalized.slice(prefix.length);
+      }
+    }
+    if (!path.isAbsolute(installPath)) {
+      return normalized;
+    }
+  }
+  return path.join('cache', marketplaceName || 'unknown', pluginName || 'unknown', version || 'current');
+}
+
+function ensureDirectorySync(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
+}
+
+function readJsonFileIfExists(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeJsonFileSync(filePath, data) {
+  ensureDirectorySync(path.dirname(filePath));
+  const tempPath = filePath + '.tmp';
+  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+  fs.renameSync(tempPath, filePath);
+}
+
+function copyFileIfExists(sourcePath, targetPath) {
+  if (!fs.existsSync(sourcePath)) {
+    return;
+  }
+  ensureDirectorySync(path.dirname(targetPath));
+  fs.copyFileSync(sourcePath, targetPath);
+}
+
+function ensureDirectorySymlink(linkPath, targetPath) {
+  if (!fs.existsSync(targetPath)) {
+    return false;
+  }
+  ensureDirectorySync(path.dirname(linkPath));
+  try {
+    const current = fs.lstatSync(linkPath);
+    if (current.isSymbolicLink() && realpathOrResolvedPath(linkPath) === realpathOrResolvedPath(targetPath)) {
+      return true;
+    }
+    if (current.isSymbolicLink()) {
+      fs.unlinkSync(linkPath);
+    } else if (current.isDirectory() && fs.readdirSync(linkPath).length === 0) {
+      fs.rmdirSync(linkPath);
+    } else {
+      return false;
+    }
+  } catch (_) {}
+  fs.symlinkSync(targetPath, linkPath, 'dir');
+  return true;
+}
+
+function mirrorDirectory(linkPath, sourcePath) {
+  if (!fs.existsSync(sourcePath)) {
+    return false;
+  }
+  ensureDirectorySync(path.dirname(linkPath));
+  const tempPath = `${linkPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.rmSync(tempPath, { recursive: true, force: true });
+    fs.cpSync(sourcePath, tempPath, { recursive: true, dereference: true });
+
+    try {
+      const current = fs.lstatSync(linkPath);
+      if (current.isSymbolicLink() || current.isFile()) {
+        fs.unlinkSync(linkPath);
+      } else {
+        fs.rmSync(linkPath, { recursive: true, force: true });
+      }
+    } catch (_) {}
+
+    fs.renameSync(tempPath, linkPath);
+    return true;
+  } catch (error) {
+    try {
+      fs.rmSync(tempPath, { recursive: true, force: true });
+    } catch (_) {}
+    trace('Failed to mirror directory ' + linkPath + ' from ' + sourcePath + ': ' + error.message);
+    return false;
+  }
+}
+
+function syncCoworkMarketplaceRoot(coworkRoot, fallbackRoot) {
+  if (!coworkRoot) {
+    return;
+  }
+  ensureDirectorySync(coworkRoot);
+  const coworkMarketplacesDir = path.join(coworkRoot, 'marketplaces');
+  ensureDirectorySync(coworkMarketplacesDir);
+  if (!fallbackRoot || !fs.existsSync(fallbackRoot)) {
+    return;
+  }
+
+  copyFileIfExists(
+    path.join(fallbackRoot, 'known_marketplaces.json'),
+    path.join(coworkRoot, 'known_marketplaces.json'),
+  );
+  copyFileIfExists(
+    path.join(fallbackRoot, 'install-counts-cache.json'),
+    path.join(coworkRoot, 'install-counts-cache.json'),
+  );
+
+  const fallbackMarketplacesDir = path.join(fallbackRoot, 'marketplaces');
+  if (!fs.existsSync(fallbackMarketplacesDir)) {
+    return;
+  }
+
+  for (const entry of fs.readdirSync(fallbackMarketplacesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const sourcePath = path.join(fallbackMarketplacesDir, entry.name);
+    const targetPath = path.join(coworkMarketplacesDir, entry.name);
+    if (ensureDirectorySymlink(targetPath, sourcePath)) {
+      trace('Synced cowork marketplace directory: ' + targetPath + ' -> ' + sourcePath);
+    }
+  }
+}
+
+function resolveInstalledPluginSourceDir(coworkRoot, fallbackRoot, pluginId, availablePlugin) {
+  const { name, marketplace } = parsePluginIdentifier(pluginId);
+  const sourceFragment = typeof (availablePlugin && availablePlugin.source) === 'string'
+    ? availablePlugin.source.replace(/^[.][\\/]/, '')
+    : name;
+  const candidateRoots = [
+    coworkRoot ? path.join(coworkRoot, 'marketplaces', marketplace) : null,
+    fallbackRoot ? path.join(fallbackRoot, 'marketplaces', marketplace) : null,
+  ].filter(Boolean);
+
+  for (const candidateRoot of candidateRoots) {
+    const candidatePath = path.join(candidateRoot, sourceFragment);
+    if (fs.existsSync(candidatePath)) {
+      return candidatePath;
+    }
+  }
+  return null;
+}
+
+function materializeInstalledPluginCache(coworkRoot, fallbackRoot, installedListPayload) {
+  if (!coworkRoot || !installedListPayload || !Array.isArray(installedListPayload.installed)) {
+    return null;
+  }
+
+  ensureDirectorySync(coworkRoot);
+  ensureDirectorySync(path.join(coworkRoot, 'cache'));
+  syncCoworkMarketplaceRoot(coworkRoot, fallbackRoot);
+
+  const availableById = new Map();
+  if (Array.isArray(installedListPayload.available)) {
+    for (const availablePlugin of installedListPayload.available) {
+      if (!availablePlugin || typeof availablePlugin !== 'object') {
+        continue;
+      }
+      const pluginId = typeof availablePlugin.pluginId === 'string'
+        ? availablePlugin.pluginId
+        : (typeof availablePlugin.name === 'string' && typeof availablePlugin.marketplaceName === 'string'
+          ? `${availablePlugin.name}@${availablePlugin.marketplaceName}`
+          : null);
+      if (pluginId) {
+        availableById.set(pluginId, availablePlugin);
+      }
+    }
+  }
+
+  const installedIndex = { version: 2, plugins: {} };
+  for (const installedPlugin of installedListPayload.installed) {
+    if (!installedPlugin || typeof installedPlugin !== 'object' || typeof installedPlugin.id !== 'string') {
+      continue;
+    }
+
+    const { name, marketplace } = parsePluginIdentifier(installedPlugin.id);
+    const relativeInstallPath = normalizeCoworkInstallRelativePath(
+      installedPlugin.installPath,
+      name,
+      marketplace,
+      installedPlugin.version,
+    );
+    const absoluteInstallPath = path.join(coworkRoot, relativeInstallPath);
+    const sourceDir = resolveInstalledPluginSourceDir(
+      coworkRoot,
+      fallbackRoot,
+      installedPlugin.id,
+      availableById.get(installedPlugin.id),
+    );
+
+    if (sourceDir) {
+      const mirrored = mirrorDirectory(absoluteInstallPath, sourceDir);
+      if (mirrored) {
+        trace('Mirrored cowork plugin install cache: ' + absoluteInstallPath + ' <- ' + sourceDir);
+      }
+    } else {
+      ensureDirectorySync(absoluteInstallPath);
+    }
+
+    installedIndex.plugins[installedPlugin.id] = [{
+      installPath: absoluteInstallPath,
+      version: installedPlugin.version,
+      scope: installedPlugin.scope,
+      enabled: installedPlugin.enabled !== false,
+      installedAt: installedPlugin.installedAt,
+      lastUpdated: installedPlugin.lastUpdated,
+      mcpServers: installedPlugin.mcpServers,
+    }];
+  }
+
+  const installedPluginsFile = path.join(coworkRoot, 'installed_plugins.json');
+  writeJsonFileSync(installedPluginsFile, installedIndex);
+  trace('Wrote cowork installed_plugins.json with ' + Object.keys(installedIndex.plugins).length + ' entries to ' + installedPluginsFile);
+  return installedIndex;
+}
+
+function buildInstalledListPayloadFromIndex(installedIndex) {
+  if (!installedIndex || typeof installedIndex !== 'object' || !installedIndex.plugins || typeof installedIndex.plugins !== 'object') {
+    return null;
+  }
+
+  const installed = [];
+  for (const [pluginId, entries] of Object.entries(installedIndex.plugins)) {
+    if (!Array.isArray(entries)) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      installed.push({
+        id: pluginId,
+        installPath: entry.installPath,
+        version: entry.version,
+        scope: entry.scope,
+        enabled: entry.enabled !== false,
+        installedAt: entry.installedAt,
+        lastUpdated: entry.lastUpdated,
+        mcpServers: entry.mcpServers,
+      });
+    }
+  }
+
+  return installed.length > 0 ? { installed } : null;
+}
+
+function syncCoworkEnabledPlugins(coworkRoot, installedListPayload) {
+  if (!coworkRoot || !installedListPayload || !Array.isArray(installedListPayload.installed)) {
+    return;
+  }
+
+  const settingsPath = path.join(path.dirname(coworkRoot), 'cowork_settings.json');
+  const currentSettings = readJsonFileIfExists(settingsPath);
+  const nextSettings = currentSettings && typeof currentSettings === 'object' ? { ...currentSettings } : {};
+  const enabledPlugins = nextSettings.enabledPlugins && typeof nextSettings.enabledPlugins === 'object'
+    ? { ...nextSettings.enabledPlugins }
+    : {};
+
+  const installedPluginIds = new Set();
+  for (const installedPlugin of installedListPayload.installed) {
+    if (!installedPlugin || typeof installedPlugin !== 'object' || typeof installedPlugin.id !== 'string') {
+      continue;
+    }
+    installedPluginIds.add(installedPlugin.id);
+    enabledPlugins[installedPlugin.id] = installedPlugin.enabled !== false;
+  }
+
+  for (const pluginId of Object.keys(enabledPlugins)) {
+    if (!installedPluginIds.has(pluginId)) {
+      delete enabledPlugins[pluginId];
+    }
+  }
+
+  nextSettings.enabledPlugins = enabledPlugins;
+  writeJsonFileSync(settingsPath, nextSettings);
+  trace('Wrote cowork_settings.json enabledPlugins with ' + Object.keys(enabledPlugins).length + ' entries to ' + settingsPath);
+}
+
+function hydrateCoworkStateFromDisk(coworkRoot, fallbackRoot) {
+  if (!coworkRoot) {
+    return;
+  }
+
+  const installedIndex = readJsonFileIfExists(path.join(coworkRoot, 'installed_plugins.json'));
+  const installedListPayload = buildInstalledListPayloadFromIndex(installedIndex);
+  if (!installedListPayload) {
+    return;
+  }
+
+  materializeInstalledPluginCache(coworkRoot, fallbackRoot, installedListPayload);
+  syncCoworkEnabledPlugins(coworkRoot, installedListPayload);
+  trace('Hydrated cowork plugin state from installed_plugins.json at ' + coworkRoot);
+}
+
+function syncKnownMarketplacesFromList(coworkRoot, marketplaceListPayload) {
+  if (!coworkRoot || !Array.isArray(marketplaceListPayload)) {
+    return;
+  }
+
+  const knownMarketplaces = {};
+  for (const marketplace of marketplaceListPayload) {
+    if (!marketplace || typeof marketplace !== 'object' || typeof marketplace.name !== 'string') {
+      continue;
+    }
+    knownMarketplaces[marketplace.name] = {
+      source: {
+        source: marketplace.source || 'github',
+        repo: marketplace.repo,
+        url: marketplace.url,
+        path: marketplace.path,
+      },
+      installLocation: path.posix.join('mnt/.claude/cowork_plugins/marketplaces', marketplace.name),
+      lastUpdated: marketplace.lastRefreshedAt || new Date().toISOString(),
+    };
+  }
+
+  writeJsonFileSync(path.join(coworkRoot, 'known_marketplaces.json'), knownMarketplaces);
+  trace('Wrote cowork known_marketplaces.json with ' + Object.keys(knownMarketplaces).length + ' entries');
+}
+
+function runCoworkPluginJsonCommand(command, args, cwd, env) {
+  try {
+    const result = nodeSpawnSync(command, args, {
+      cwd,
+      env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const combinedOutput = (result.stdout || '') + (result.stderr || '');
+    if (result.status !== 0) {
+      trace('Cowork reconciliation command failed: ' + JSON.stringify(args) + ' status=' + String(result.status));
+      return null;
+    }
+    return extractJsonPayload(combinedOutput);
+  } catch (error) {
+    trace('Cowork reconciliation command threw: ' + JSON.stringify(args) + ' error=' + error.message);
+    return null;
+  }
+}
+
+function reconcileCoworkPluginState(command, args, cwd, env, additionalMounts, stdoutText) {
+  if (!isCoworkPluginCommand(command, args)) {
+    return;
+  }
+
+  const coworkRoot = getCoworkPluginsHostRoot(additionalMounts);
+  if (!coworkRoot) {
+    trace('Cowork reconciliation skipped: no cowork plugin root available');
+    return;
+  }
+
+  const fallbackRoot = getFallbackCoworkPluginsRoot();
+  syncCoworkMarketplaceRoot(coworkRoot, fallbackRoot);
+
+  let installedListPayload = null;
+  if (args[1] === 'list') {
+    installedListPayload = extractJsonPayload(stdoutText);
+  }
+  if (!installedListPayload) {
+    installedListPayload = runCoworkPluginJsonCommand(
+      command,
+      ['plugin', 'list', '--json', '--available', '--cowork'],
+      cwd,
+      env,
+    );
+  }
+  materializeInstalledPluginCache(coworkRoot, fallbackRoot, installedListPayload);
+  syncCoworkEnabledPlugins(coworkRoot, installedListPayload);
+
+  let marketplaceListPayload = null;
+  if (args[1] === 'marketplace' && args[2] === 'list') {
+    marketplaceListPayload = extractJsonPayload(stdoutText);
+  }
+  if (!marketplaceListPayload) {
+    marketplaceListPayload = runCoworkPluginJsonCommand(
+      command,
+      ['plugin', 'marketplace', 'list', '--json', '--cowork'],
+      cwd,
+      env,
+    );
+  }
+  if (marketplaceListPayload) {
+    syncKnownMarketplacesFromList(coworkRoot, marketplaceListPayload);
+  } else if (readJsonFileIfExists(path.join(fallbackRoot, 'known_marketplaces.json'))) {
+    copyFileIfExists(
+      path.join(fallbackRoot, 'known_marketplaces.json'),
+      path.join(coworkRoot, 'known_marketplaces.json'),
+    );
+  }
 }
 
 /**
@@ -587,6 +1136,20 @@ function findSessionName(args, envVars, sharedCwdPath) {
     trace('SECURITY: Invalid VM path while extracting session name: ' + err.message);
     throw err;
   }
+}
+
+function deriveSyntheticSessionName(processName) {
+  if (typeof processName !== 'string') {
+    return null;
+  }
+  const normalized = processName.trim().toLowerCase();
+  if (!normalized || normalized.length > 128) {
+    return null;
+  }
+  if (!/^[a-z0-9-]+$/.test(normalized)) {
+    return null;
+  }
+  return normalized;
 }
 
 function canonicalizeVmPathStrict(vmPath) {
@@ -663,6 +1226,10 @@ class SwiftAddonStub extends EventEmitter {
     this._guestConnected = true;  // Linux: always "connected" since we run directly on host
     this._processes = new Map();
     this._processIdCounter = 0;
+    this._quickAccessRecentChats = [];
+    this._quickAccessActiveChatId = null;
+    this._quickAccessLoggedIn = false;
+    this._dictationLanguage = process.env.LANG?.split('.')[0] || 'en_US';
 
     // Event callbacks for VM processes
     this._onStdout = null;
@@ -696,11 +1263,34 @@ class SwiftAddonStub extends EventEmitter {
         show: () => { trace('quickAccess.overlay.show()'); },
         hide: () => { trace('quickAccess.overlay.hide()'); },
         isVisible: () => false,
+        setLoggedIn: (isLoggedIn) => {
+          this._quickAccessLoggedIn = !!isLoggedIn;
+          trace('quickAccess.overlay.setLoggedIn(' + this._quickAccessLoggedIn + ')');
+          return this._quickAccessLoggedIn;
+        },
+        setActiveChatId: (activeChatId) => {
+          this._quickAccessActiveChatId = activeChatId ?? null;
+          trace('quickAccess.overlay.setActiveChatId(' + (this._quickAccessActiveChatId || 'null') + ')');
+          return this._quickAccessActiveChatId;
+        },
+        setRecentChats: (chats, activeChatId) => {
+          this._quickAccessRecentChats = Array.isArray(chats) ? chats : [];
+          this._quickAccessActiveChatId = activeChatId ?? null;
+          trace('quickAccess.overlay.setRecentChats(count=' + this._quickAccessRecentChats.length + ', activeChatId=' + (this._quickAccessActiveChatId || 'null') + ')');
+          return { success: true };
+        },
       },
       dictation: {
         start: () => { trace('quickAccess.dictation.start()'); },
         stop: () => { trace('quickAccess.dictation.stop()'); },
         isActive: () => false,
+        setLanguage: (language) => {
+          if (typeof language === 'string' && language.trim()) {
+            this._dictationLanguage = language;
+          }
+          trace('quickAccess.dictation.setLanguage(' + this._dictationLanguage + ')');
+          return this._dictationLanguage;
+        },
       },
     };
 
@@ -1147,7 +1737,9 @@ class SwiftAddonStub extends EventEmitter {
         trace('vm.spawn() isResume=' + isResume);
         trace('vm.spawn() sharedCwdPath=' + sharedCwdPath);
 
-        // Derive the session slug only from validated /sessions/... paths.
+        // Prefer validated /sessions/... paths. When the asar omits them for
+        // Linux-only helper flows, fall back to a sanitized synthetic process
+        // slug so additional mounts still materialize under the local session tree.
         let sessionName = null;
         try {
           sessionName = findSessionName(args, envVars, sharedCwdPath);
@@ -1156,6 +1748,13 @@ class SwiftAddonStub extends EventEmitter {
           return { success: false, error: err.message };
         }
         if (additionalMounts) {
+          if (!sessionName) {
+            const syntheticSessionName = deriveSyntheticSessionName(processName);
+            if (syntheticSessionName) {
+              sessionName = syntheticSessionName;
+              trace('Using sanitized processName as synthetic session name: ' + sessionName);
+            }
+          }
           if (sessionName) {
             trace('Creating mount symlinks for session: ' + sessionName);
             if (!createMountSymlinks(sessionName, additionalMounts)) {
@@ -1165,7 +1764,7 @@ class SwiftAddonStub extends EventEmitter {
               return { success: false, error: msg };
             }
           } else {
-            trace('WARNING: additionalMounts provided but no session VM path found; skipping mount creation');
+            trace('WARNING: additionalMounts provided but no usable session identifier found; skipping mount creation');
           }
         } else {
           trace('Skipping mount symlink creation: no additionalMounts provided');
@@ -1574,11 +2173,34 @@ class SwiftAddonStub extends EventEmitter {
       const self = this;
       let stdoutBuffer = '';
       let stderrBuffer = '';
+      let fullStdout = '';
+      let fullStderr = '';
       let stdoutSeq = 0; // DEBUG: sequence counter for message ordering diagnosis
+      const marketplaceAddName = extractMarketplaceAddName(command, args || []);
+      let marketplaceAddSuccessInjected = false;
+
+      function maybeEmitMarketplaceAddSuccess(line, emitLine) {
+        if (!marketplaceAddName || marketplaceAddSuccessInjected || typeof emitLine !== 'function') {
+          return;
+        }
+        if (/Successfully added marketplace:/i.test(line)) {
+          marketplaceAddSuccessInjected = true;
+          return;
+        }
+        if (!shouldSynthesizeMarketplaceAddSuccess(line)) {
+          return;
+        }
+        marketplaceAddSuccessInjected = true;
+        const syntheticLine = 'Successfully added marketplace: ' + marketplaceAddName;
+        trace('Synthesizing marketplace add success line for ' + marketplaceAddName);
+        emitLine(syntheticLine);
+      }
 
       if (proc.stdout) {
         proc.stdout.on('data', function(data) {
-          stdoutBuffer += data.toString();
+          const chunk = data.toString();
+          fullStdout += chunk;
+          stdoutBuffer += chunk;
           const lines = stdoutBuffer.split('\n');
           stdoutBuffer = lines.pop();
           for (const line of lines) {
@@ -1602,13 +2224,16 @@ class SwiftAddonStub extends EventEmitter {
                 trace('stdout line: ' + line.substring(0, 500) + (line.length > 500 ? '...' : ''));
               }
               self._onStdout(id, line + '\n');
+              maybeEmitMarketplaceAddSuccess(line, syntheticLine => self._onStdout(id, syntheticLine + '\n'));
             }
           }
         });
       }
       if (proc.stderr) {
         proc.stderr.on('data', function(data) {
-          stderrBuffer += data.toString();
+          const chunk = data.toString();
+          fullStderr += chunk;
+          stderrBuffer += chunk;
           const lines = stderrBuffer.split('\n');
           stderrBuffer = lines.pop();
           for (const line of lines) {
@@ -1617,6 +2242,7 @@ class SwiftAddonStub extends EventEmitter {
                 trace('stderr line: ' + line.substring(0, 200) + (line.length > 200 ? '...' : ''));
               }
               self._onStderr(id, line + '\n');
+              maybeEmitMarketplaceAddSuccess(line, syntheticLine => self._onStderr(id, syntheticLine + '\n'));
             }
           }
         });
@@ -1624,9 +2250,25 @@ class SwiftAddonStub extends EventEmitter {
       proc.on('exit', function(code, signal) {
         if (stdoutBuffer.trim() && self._onStdout) {
           self._onStdout(id, stdoutBuffer);
+          maybeEmitMarketplaceAddSuccess(stdoutBuffer, syntheticLine => self._onStdout(id, syntheticLine + '\n'));
         }
         if (stderrBuffer.trim() && self._onStderr) {
           self._onStderr(id, stderrBuffer);
+          maybeEmitMarketplaceAddSuccess(stderrBuffer, syntheticLine => self._onStderr(id, syntheticLine + '\n'));
+        }
+        try {
+          if ((code === 0 || code === null) && signal == null) {
+            reconcileCoworkPluginState(
+              command,
+              args || [],
+              cwd,
+              env,
+              additionalMounts,
+              fullStdout + (fullStderr ? '\n' + fullStderr : ''),
+            );
+          }
+        } catch (reconcileError) {
+          trace('Cowork plugin reconciliation failed: ' + reconcileError.message);
         }
         console.log('[claude-swift] Process ' + id + ' exited: code=' + code + ' signal=' + signal);
         trace('Process ' + id + ' exited: code=' + code + ' signal=' + signal);

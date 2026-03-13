@@ -4,8 +4,369 @@ const originalRequire = Module.prototype.require;
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { execFile, execFileSync } = require('child_process');
 
-console.log('[Frame Fix] Wrapper v2.5 loaded');
+console.log('[Frame Fix] Wrapper v2.6 loaded');
+
+function ensureDisclaimerHelperShim() {
+  if (process.platform !== 'linux') {
+    return;
+  }
+
+  const helperPath = path.join(path.dirname(process.resourcesPath), 'Helpers', 'disclaimer');
+  const helperScript = [
+    '#!/usr/bin/env bash',
+    'if [ "$#" -eq 0 ]; then',
+    '  echo "disclaimer shim: missing target command" >&2',
+    '  exit 64',
+    'fi',
+    'exec "$@"',
+    ''
+  ].join('\n');
+
+  try {
+    fs.mkdirSync(path.dirname(helperPath), { recursive: true, mode: 0o755 });
+    let shouldWrite = true;
+
+    try {
+      const existing = fs.readFileSync(helperPath, 'utf8');
+      if (existing === helperScript) {
+        shouldWrite = false;
+      }
+    } catch (_) {}
+
+    if (shouldWrite) {
+      fs.writeFileSync(helperPath, helperScript, { mode: 0o755 });
+    }
+    fs.chmodSync(helperPath, 0o755);
+    console.log('[Frame Fix] disclaimer helper ready at ' + helperPath);
+  } catch (e) {
+    console.error('[Frame Fix] Failed to provision disclaimer helper:', e.message);
+  }
+}
+
+ensureDisclaimerHelperShim();
+
+function getDisclaimerHelperPath() {
+  return path.join(path.dirname(process.resourcesPath), 'Helpers', 'disclaimer');
+}
+
+function resolveHostClaudeBinary() {
+  if (process.env.CLAUDE_CODE_PATH && fs.existsSync(process.env.CLAUDE_CODE_PATH)) {
+    return process.env.CLAUDE_CODE_PATH;
+  }
+
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, '.local/bin/claude'),
+    path.join(home, '.npm-global/bin/claude'),
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+    '/home/linuxbrew/.linuxbrew/bin/claude',
+    path.join(home, '.linuxbrew/bin/claude'),
+    path.join(home, '.local/share/mise/shims/claude'),
+    path.join(home, '.asdf/shims/claude'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch (_) {}
+  }
+
+  return 'claude';
+}
+
+function registerLinuxClaudeProtocolHandler() {
+  if (process.platform !== 'linux') {
+    return false;
+  }
+
+  const home = os.homedir();
+  const desktopDir = path.join(os.homedir(), '.local', 'share', 'applications');
+  const desktopFile = path.join(desktopDir, 'claude.desktop');
+  const launcherCandidates = [
+    process.env.CLAUDE_DESKTOP_LAUNCHER,
+    path.join(home, '.local', 'bin', 'claude-desktop'),
+    path.join(process.cwd(), 'launch.sh'),
+    process.execPath,
+  ].filter(candidate => typeof candidate === 'string' && candidate.length > 0);
+  const execPath = launcherCandidates.find(candidate => {
+    try {
+      return fs.existsSync(candidate);
+    } catch (_) {
+      return false;
+    }
+  }) || process.execPath;
+  const desktopEntry = [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=Claude',
+    'Comment=AI assistant by Anthropic',
+    'Exec=' + execPath + ' %U',
+    'Icon=claude',
+    'Terminal=false',
+    'Categories=Utility;Development;Chat;',
+    'Keywords=AI;assistant;chat;anthropic;',
+    'StartupWMClass=Claude',
+    'MimeType=x-scheme-handler/claude;',
+    '',
+  ].join('\n');
+
+  try {
+    fs.mkdirSync(desktopDir, { recursive: true, mode: 0o755 });
+    let shouldWrite = true;
+    try {
+      if (fs.readFileSync(desktopFile, 'utf8') === desktopEntry) {
+        shouldWrite = false;
+      }
+    } catch (_) {}
+
+    if (shouldWrite) {
+      fs.writeFileSync(desktopFile, desktopEntry, { mode: 0o644 });
+    }
+
+    try {
+      execFileSync('xdg-mime', ['default', 'claude.desktop', 'x-scheme-handler/claude'], { stdio: 'ignore' });
+    } catch (_) {}
+    try {
+      execFileSync('update-desktop-database', [desktopDir], { stdio: 'ignore' });
+    } catch (_) {}
+
+    console.log('[Frame Fix] Registered claude:// handler using ' + execPath);
+    return true;
+  } catch (error) {
+    console.error('[Frame Fix] Failed to register claude:// handler:', error.message);
+    return false;
+  }
+}
+
+function isMachOBinary(binaryPath) {
+  try {
+    const header = fs.readFileSync(binaryPath);
+    if (header.length < 4) {
+      return false;
+    }
+    const magicBE = header.readUInt32BE(0);
+    const magicLE = header.readUInt32LE(0);
+    return magicBE === 0xfeedface ||
+      magicBE === 0xfeedfacf ||
+      magicBE === 0xcafebabe ||
+      magicLE === 0xfeedface ||
+      magicLE === 0xfeedfacf ||
+      magicLE === 0xcafebabe;
+  } catch (_) {
+    return false;
+  }
+}
+
+function rewriteClaudeCodeInvocation(command, args) {
+  if (process.platform !== 'linux' || typeof command !== 'string') {
+    return null;
+  }
+
+  const normalized = path.resolve(command);
+  const home = os.homedir();
+  const desktopCcdRoot = path.join(home, '.config', 'Claude', 'claude-code') + path.sep;
+  if (!normalized.startsWith(desktopCcdRoot)) {
+    return null;
+  }
+  if (path.basename(normalized) !== 'claude') {
+    return null;
+  }
+  if (!isMachOBinary(normalized)) {
+    return null;
+  }
+
+  return {
+    command: resolveHostClaudeBinary(),
+    args: Array.isArray(args) ? args : [],
+    originalCommand: normalized,
+  };
+}
+
+function rewriteDisclaimerInvocation(command, args) {
+  if (typeof command !== 'string') {
+    return null;
+  }
+  if (path.resolve(command) !== path.resolve(getDisclaimerHelperPath())) {
+    return null;
+  }
+  if (!Array.isArray(args) || args.length === 0 || typeof args[0] !== 'string' || args[0].length === 0) {
+    return null;
+  }
+  return {
+    command: args[0],
+    args: args.slice(1),
+  };
+}
+
+function normalizeIpcPathArgument(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const normalized = normalizeIpcPathArgument(entry);
+      if (normalized) {
+        return normalized;
+      }
+    }
+    return null;
+  }
+
+  const candidateKeys = ['folderPath', 'filePath', 'path'];
+  for (const key of candidateKeys) {
+    if (typeof value[key] === 'string') {
+      const trimmed = value[key].trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+  }
+
+  const listKeys = ['filePaths', 'paths'];
+  for (const key of listKeys) {
+    if (Array.isArray(value[key])) {
+      const normalized = normalizeIpcPathArgument(value[key]);
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
+}
+
+function patchDisclaimerSpawn() {
+  if (global.__coworkDisclaimerSpawnPatched) {
+    return;
+  }
+  global.__coworkDisclaimerSpawnPatched = true;
+
+  try {
+    const childProcess = require('child_process');
+    const originalSpawn = childProcess.spawn;
+    const originalSpawnSync = childProcess.spawnSync;
+    const originalExecFile = childProcess.execFile;
+    const originalExecFileSync = childProcess.execFileSync;
+
+    childProcess.spawn = function(command, args, options) {
+      const rewritten = rewriteDisclaimerInvocation(command, args);
+      const finalRewrite = rewriteClaudeCodeInvocation(
+        rewritten ? rewritten.command : command,
+        rewritten ? rewritten.args : args
+      );
+      if (rewritten) {
+        console.log('[Frame Fix] Rewriting disclaimer spawn to ' + rewritten.command);
+      }
+      if (finalRewrite) {
+        console.log('[Frame Fix] Rewriting Claude Code spawn from ' + finalRewrite.originalCommand + ' to ' + finalRewrite.command);
+        return originalSpawn.call(this, finalRewrite.command, finalRewrite.args, options);
+      }
+      if (rewritten) {
+        return originalSpawn.call(this, rewritten.command, rewritten.args, options);
+      }
+      return originalSpawn.call(this, command, args, options);
+    };
+
+    childProcess.spawnSync = function(command, args, options) {
+      const rewritten = rewriteDisclaimerInvocation(command, args);
+      const finalRewrite = rewriteClaudeCodeInvocation(
+        rewritten ? rewritten.command : command,
+        rewritten ? rewritten.args : args
+      );
+      if (rewritten) {
+        console.log('[Frame Fix] Rewriting disclaimer spawnSync to ' + rewritten.command);
+      }
+      if (finalRewrite) {
+        console.log('[Frame Fix] Rewriting Claude Code spawnSync from ' + finalRewrite.originalCommand + ' to ' + finalRewrite.command);
+        return originalSpawnSync.call(this, finalRewrite.command, finalRewrite.args, options);
+      }
+      if (rewritten) {
+        return originalSpawnSync.call(this, rewritten.command, rewritten.args, options);
+      }
+      return originalSpawnSync.call(this, command, args, options);
+    };
+
+    childProcess.execFile = function(command, args, options, callback) {
+      let actualArgs = args;
+      let actualOptions = options;
+      let actualCallback = callback;
+
+      if (typeof actualArgs === 'function') {
+        actualCallback = actualArgs;
+        actualArgs = undefined;
+        actualOptions = undefined;
+      } else if (!Array.isArray(actualArgs)) {
+        actualCallback = actualOptions;
+        actualOptions = actualArgs;
+        actualArgs = undefined;
+      } else if (typeof actualOptions === 'function') {
+        actualCallback = actualOptions;
+        actualOptions = undefined;
+      }
+
+      const rewritten = rewriteDisclaimerInvocation(command, actualArgs);
+      const finalRewrite = rewriteClaudeCodeInvocation(
+        rewritten ? rewritten.command : command,
+        rewritten ? rewritten.args : actualArgs
+      );
+      if (rewritten) {
+        console.log('[Frame Fix] Rewriting disclaimer execFile to ' + rewritten.command);
+      }
+      if (finalRewrite) {
+        console.log('[Frame Fix] Rewriting Claude Code execFile from ' + finalRewrite.originalCommand + ' to ' + finalRewrite.command);
+        return originalExecFile.call(this, finalRewrite.command, finalRewrite.args, actualOptions, actualCallback);
+      }
+      if (rewritten) {
+        return originalExecFile.call(this, rewritten.command, rewritten.args, actualOptions, actualCallback);
+      }
+      return originalExecFile.call(this, command, actualArgs, actualOptions, actualCallback);
+    };
+
+    childProcess.execFileSync = function(command, args, options) {
+      let actualArgs = args;
+      let actualOptions = options;
+
+      if (!Array.isArray(actualArgs)) {
+        actualOptions = actualArgs;
+        actualArgs = undefined;
+      }
+
+      const rewritten = rewriteDisclaimerInvocation(command, actualArgs);
+      const finalRewrite = rewriteClaudeCodeInvocation(
+        rewritten ? rewritten.command : command,
+        rewritten ? rewritten.args : actualArgs
+      );
+      if (rewritten) {
+        console.log('[Frame Fix] Rewriting disclaimer execFileSync to ' + rewritten.command);
+      }
+      if (finalRewrite) {
+        console.log('[Frame Fix] Rewriting Claude Code execFileSync from ' + finalRewrite.originalCommand + ' to ' + finalRewrite.command);
+        return originalExecFileSync.call(this, finalRewrite.command, finalRewrite.args, actualOptions);
+      }
+      if (rewritten) {
+        return originalExecFileSync.call(this, rewritten.command, rewritten.args, actualOptions);
+      }
+      return originalExecFileSync.call(this, command, actualArgs, actualOptions);
+    };
+
+    console.log('[Frame Fix] child_process spawn rewrite enabled');
+  } catch (e) {
+    console.error('[Frame Fix] Failed to patch disclaimer spawn path:', e.message);
+  }
+}
+
+patchDisclaimerSpawn();
 
 // ============================================================
 // CRITICAL: Patch ipcMain IMMEDIATELY before any asar code runs
@@ -282,7 +643,163 @@ Object.defineProperty = function(target, key, descriptor) {
 
 console.log('[Cowork] Linux support enabled - VM will be emulated');
 
-const IGNORED_LIVE_MESSAGE_TYPES = new Set(['queue-operation', 'rate_limit_event']);
+const IGNORED_LIVE_MESSAGE_TYPES = new Set(['rate_limit_event']);
+
+function isLocalSessionEventChannel(channel) {
+  return typeof channel === 'string' && (
+    channel.includes('LocalAgentModeSessions_$_onEvent') ||
+    channel.includes('LocalSessions_$_onEvent')
+  );
+}
+
+function isAssistantSdkMessage(message) {
+  return !!(
+    message &&
+    typeof message === 'object' &&
+    message.type === 'assistant' &&
+    message.message &&
+    typeof message.message === 'object' &&
+    message.message.type === 'message' &&
+    message.message.role === 'assistant' &&
+    Array.isArray(message.message.content)
+  );
+}
+
+function cloneMessageContent(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.map((block) => {
+    if (!block || typeof block !== 'object') {
+      return block;
+    }
+    return { ...block };
+  });
+}
+
+function mergeAssistantSdkMessages(previousMessage, nextMessage) {
+  if (!isAssistantSdkMessage(previousMessage) || !isAssistantSdkMessage(nextMessage)) {
+    return null;
+  }
+
+  const previousId = previousMessage.message && previousMessage.message.id;
+  const nextId = nextMessage.message && nextMessage.message.id;
+  if (!previousId || !nextId || previousId !== nextId) {
+    return null;
+  }
+
+  return {
+    ...previousMessage,
+    ...nextMessage,
+    uuid: previousMessage.uuid || nextMessage.uuid,
+    session_id: previousMessage.session_id || nextMessage.session_id,
+    parent_tool_use_id: previousMessage.parent_tool_use_id ?? nextMessage.parent_tool_use_id ?? null,
+    message: {
+      ...previousMessage.message,
+      ...nextMessage.message,
+      content: [
+        ...cloneMessageContent(previousMessage.message.content),
+        ...cloneMessageContent(nextMessage.message.content),
+      ],
+    },
+  };
+}
+
+function mergeConsecutiveAssistantMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return messages;
+  }
+
+  const mergedMessages = [];
+  for (const message of messages) {
+    const previousMessage = mergedMessages[mergedMessages.length - 1];
+    const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, message);
+    if (mergedAssistantMessage) {
+      mergedMessages[mergedMessages.length - 1] = mergedAssistantMessage;
+      continue;
+    }
+    mergedMessages.push(message);
+  }
+  return mergedMessages;
+}
+
+global.__coworkMergeConsecutiveAssistantMessages = mergeConsecutiveAssistantMessages;
+
+function flushBufferedAssistantPayload(sessionId, outputPayloads) {
+  if (!global.__coworkBufferedAssistantPayloads || !sessionId) {
+    return;
+  }
+
+  const pendingPayload = global.__coworkBufferedAssistantPayloads.get(sessionId);
+  if (!pendingPayload) {
+    return;
+  }
+
+  global.__coworkBufferedAssistantPayloads.delete(sessionId);
+  outputPayloads.push(pendingPayload);
+}
+
+function normalizeLiveSessionPayloads(channel, payload) {
+  if (!isLocalSessionEventChannel(channel) || !payload || typeof payload !== 'object') {
+    return [payload];
+  }
+
+  if (!global.__coworkBufferedAssistantPayloads) {
+    global.__coworkBufferedAssistantPayloads = new Map();
+  }
+
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : null;
+  if (!sessionId) {
+    return [payload];
+  }
+
+  const outputPayloads = [];
+
+  if (payload.type === 'start' || payload.type === 'close' || payload.type === 'stopped' || payload.type === 'deleted') {
+    flushBufferedAssistantPayload(sessionId, outputPayloads);
+    outputPayloads.push(payload);
+    return outputPayloads;
+  }
+
+  if (payload.type === 'transcript_loaded' && Array.isArray(payload.messages)) {
+    flushBufferedAssistantPayload(sessionId, outputPayloads);
+    outputPayloads.push({
+      ...payload,
+      messages: mergeConsecutiveAssistantMessages(payload.messages),
+    });
+    return outputPayloads;
+  }
+
+  if (payload.type !== 'message' || !payload.message || typeof payload.message !== 'object') {
+    flushBufferedAssistantPayload(sessionId, outputPayloads);
+    outputPayloads.push(payload);
+    return outputPayloads;
+  }
+
+  if (!isAssistantSdkMessage(payload.message)) {
+    flushBufferedAssistantPayload(sessionId, outputPayloads);
+    outputPayloads.push(payload);
+    return outputPayloads;
+  }
+
+  const pendingPayload = global.__coworkBufferedAssistantPayloads.get(sessionId);
+  if (pendingPayload && pendingPayload.message) {
+    const mergedAssistantMessage = mergeAssistantSdkMessages(pendingPayload.message, payload.message);
+    if (mergedAssistantMessage) {
+      global.__coworkBufferedAssistantPayloads.set(sessionId, {
+        ...pendingPayload,
+        ...payload,
+        message: mergedAssistantMessage,
+      });
+      return outputPayloads;
+    }
+
+    outputPayloads.push(pendingPayload);
+  }
+
+  global.__coworkBufferedAssistantPayloads.set(sessionId, payload);
+  return outputPayloads;
+}
 
 function parseRequestedProcessId(args) {
   for (const arg of args) {
@@ -335,10 +852,7 @@ async function getCoworkProcessRunningState(processId) {
 }
 
 function getIgnoredLiveMessageType(channel, payload) {
-  if (typeof channel !== 'string') {
-    return null;
-  }
-  if (!channel.includes('LocalAgentModeSessions_$_onEvent') && !channel.includes('LocalSessions_$_onEvent')) {
+  if (!isLocalSessionEventChannel(channel)) {
     return null;
   }
   if (!payload || typeof payload !== 'object') {
@@ -490,6 +1004,180 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
   process.on(sig, () => gracefulQuit(`Received ${sig}`));
 }
 
+function getRendererCompatibilityPatchSource() {
+  return [
+    '(() => {',
+    '  try {',
+    '    if (window.__coworkRendererCompatInstalled) return;',
+    '    const host = String(window.location && window.location.hostname || "");',
+    '    if (!(host === "claude.ai" || host === "claude.com" || host === "preview.claude.ai" || host === "preview.claude.com" || host === "localhost" || host.endsWith(".ant.dev"))) return;',
+    '    window.__coworkRendererCompatInstalled = true;',
+    '    const pluginListPathPattern = /^\\/api\\/organizations\\/[^/]+\\/plugins\\/list-plugins$/;',
+    '    const localSessionsPathPattern = /^\\/api\\/.*(?:local_sessions|sessions)(?:\\/|$)/;',
+    '    const originalFetch = typeof window.fetch === "function" ? window.fetch.bind(window) : null;',
+    '    const originalResponseJson = typeof Response !== "undefined" && Response.prototype && typeof Response.prototype.json === "function" ? Response.prototype.json : null;',
+    '    function parseRequestUrl(input) {',
+    '      try {',
+    '        const rawUrl = typeof input === "string" ? input : (input && typeof input.url === "string" ? input.url : "");',
+    '        return new URL(rawUrl, window.location.href);',
+    '      } catch (_) {',
+    '        return null;',
+    '      }',
+    '    }',
+    '    function shouldGuardApiJson(urlLike) {',
+    '      const parsedUrl = parseRequestUrl(urlLike);',
+    '      return !!(parsedUrl && parsedUrl.origin === window.location.origin && parsedUrl.pathname.startsWith("/api/"));',
+    '    }',
+    '    function isHtmlLikeBody(bodyText) {',
+    '      const trimmed = String(bodyText || "").trim();',
+    '      return trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html") || trimmed.startsWith("<");',
+    '    }',
+    '    function getFallbackJsonForApiPath(pathname) {',
+    '      if (pluginListPathPattern.test(pathname)) return { plugins: [], has_more: false };',
+    '      if (localSessionsPathPattern.test(pathname)) return [];',
+    '      return {};',
+    '    }',
+    '    function makeFallbackJsonResponse(parsedUrl) {',
+    '      const payload = getFallbackJsonForApiPath(parsedUrl.pathname);',
+    '      console.warn("[Frame Fix] Replacing HTML API response with JSON fallback for", parsedUrl.pathname);',
+    '      return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });',
+    '    }',
+    '    if (originalFetch) {',
+    '      window.fetch = async function(input, init) {',
+    '        const parsedUrl = parseRequestUrl(input);',
+    '        const response = await originalFetch(input, init);',
+    '        if (!(parsedUrl && shouldGuardApiJson(parsedUrl.href))) return response;',
+    '        try {',
+    '          const contentType = response.headers && typeof response.headers.get === "function" ? String(response.headers.get("content-type") || "") : "";',
+    '          if (/application\\/json/i.test(contentType)) return response;',
+    '          const bodyText = await response.clone().text();',
+    '          if (isHtmlLikeBody(bodyText)) {',
+    '            return makeFallbackJsonResponse(parsedUrl);',
+    '          }',
+    '        } catch (error) {',
+    '          console.warn("[Frame Fix] API response inspection failed", error);',
+    '        }',
+    '        return response;',
+    '      };',
+    '    }',
+    '    if (originalResponseJson) {',
+    '      Response.prototype.json = async function() {',
+    '        const cloned = shouldGuardApiJson(this && this.url) && typeof this.clone === "function" ? this.clone() : null;',
+    '        try {',
+    '          return await originalResponseJson.call(this);',
+    '        } catch (error) {',
+    '          if (!cloned) throw error;',
+    '          try {',
+    '            const parsedUrl = parseRequestUrl(cloned.url);',
+    '            const bodyText = await cloned.text();',
+    '            if (parsedUrl && isHtmlLikeBody(bodyText)) {',
+    '              console.warn("[Frame Fix] Falling back from Response.json() HTML body for", parsedUrl.pathname);',
+    '              return getFallbackJsonForApiPath(parsedUrl.pathname);',
+    '            }',
+    '          } catch (_) {}',
+    '          throw error;',
+    '        }',
+    '      };',
+    '    }',
+    '    function ensureProseMirrorStyles() {',
+    '      if (!document.head || document.getElementById("cowork-prosemirror-style")) return;',
+    '      const style = document.createElement("style");',
+    '      style.id = "cowork-prosemirror-style";',
+    '      style.textContent = ".ProseMirror{white-space:pre-wrap!important;word-break:break-word;}";',
+    '      document.head.appendChild(style);',
+    '    }',
+    '    const NativeResizeObserver = typeof window.ResizeObserver === "function" ? window.ResizeObserver : null;',
+    '    if (NativeResizeObserver && !window.__coworkResizeObserverPatched) {',
+    '      window.__coworkResizeObserverPatched = true;',
+    '      window.ResizeObserver = class CoworkResizeObserver extends NativeResizeObserver {',
+    '        constructor(callback) {',
+    '          if (typeof callback !== "function") {',
+    '            super(callback);',
+    '            return;',
+    '          }',
+    '          let frameId = 0;',
+    '          let pendingArgs = null;',
+    '          super((...args) => {',
+    '            pendingArgs = args;',
+    '            if (frameId) return;',
+    '            frameId = window.requestAnimationFrame(() => {',
+    '              frameId = 0;',
+    '              const deliverArgs = pendingArgs;',
+    '              pendingArgs = null;',
+    '              if (!deliverArgs) return;',
+    '              try {',
+    '                callback(...deliverArgs);',
+    '              } catch (error) {',
+    '                window.setTimeout(() => { throw error; }, 0);',
+    '              }',
+    '            });',
+    '          });',
+    '        }',
+    '      };',
+    '      window.addEventListener("error", (event) => {',
+    '        const message = String((event && event.message) || "");',
+    '        if (!message.includes("ResizeObserver loop completed with undelivered notifications")) return;',
+    '        event.preventDefault();',
+    '        event.stopImmediatePropagation();',
+    '      }, true);',
+    '    }',
+    '    function ensureDialogTitle(dialog) {',
+    '      if (!(dialog instanceof Element) || dialog.dataset.coworkDialogTitlePatched === "1") return;',
+    '      const existingTitle = dialog.querySelector("[data-radix-dialog-title], h1, h2, h3, [role=\\"heading\\"]");',
+    '      if (existingTitle && existingTitle.textContent && existingTitle.textContent.trim()) {',
+    '        if (!existingTitle.id) existingTitle.id = "cowork-dialog-title-" + Math.random().toString(36).slice(2, 10);',
+    '        dialog.setAttribute("aria-labelledby", existingTitle.id);',
+    '        dialog.dataset.coworkDialogTitlePatched = "1";',
+    '        return;',
+    '      }',
+    '      const hiddenTitle = document.createElement("h2");',
+    '      hiddenTitle.id = "cowork-dialog-title-" + Math.random().toString(36).slice(2, 10);',
+    '      hiddenTitle.setAttribute("data-cowork-dialog-title", "true");',
+    '      hiddenTitle.textContent = (dialog.getAttribute("aria-label") || dialog.getAttribute("data-dialog-title") || "Dialog").trim() || "Dialog";',
+    '      hiddenTitle.style.position = "absolute";',
+    '      hiddenTitle.style.width = "1px";',
+    '      hiddenTitle.style.height = "1px";',
+    '      hiddenTitle.style.padding = "0";',
+    '      hiddenTitle.style.margin = "-1px";',
+    '      hiddenTitle.style.overflow = "hidden";',
+    '      hiddenTitle.style.clip = "rect(0, 0, 0, 0)";',
+    '      hiddenTitle.style.whiteSpace = "nowrap";',
+    '      hiddenTitle.style.border = "0";',
+    '      dialog.prepend(hiddenTitle);',
+    '      dialog.setAttribute("aria-labelledby", hiddenTitle.id);',
+    '      dialog.dataset.coworkDialogTitlePatched = "1";',
+    '    }',
+    '    function scanForUntitledDialogs(root) {',
+    '      if (!root || typeof root.querySelectorAll !== "function") return;',
+    '      if (root instanceof Element && root.matches("[role=\\"dialog\\"], [data-radix-dialog-content]")) ensureDialogTitle(root);',
+    '      root.querySelectorAll("[role=\\"dialog\\"], [data-radix-dialog-content]").forEach(ensureDialogTitle);',
+    '    }',
+    '    const observer = new MutationObserver((mutations) => {',
+    '      for (const mutation of mutations) {',
+    '        for (const node of mutation.addedNodes) {',
+    '          if (node && node.nodeType === Node.ELEMENT_NODE) scanForUntitledDialogs(node);',
+    '        }',
+    '      }',
+    '    });',
+    '    const startObserver = () => {',
+    '      if (!document.documentElement) return;',
+    '      ensureProseMirrorStyles();',
+    '      scanForUntitledDialogs(document);',
+    '      observer.observe(document.documentElement, { childList: true, subtree: true });',
+    '    };',
+    '    if (document.readyState === "loading") {',
+    '      document.addEventListener("DOMContentLoaded", startObserver, { once: true });',
+    '    } else {',
+    '      startObserver();',
+    '    }',
+    '    window.addEventListener("beforeunload", () => observer.disconnect(), { once: true });',
+    '  } catch (error) {',
+    '    console.warn("[Frame Fix] Renderer compatibility patch failed", error);',
+    '  }',
+    '})();',
+  ].join('\n');
+}
+
 Module.prototype.require = function(id) {
   // Intercept claude-swift to inject our Linux implementation
   if (id && id.includes('@ant/claude-swift')) {
@@ -579,12 +1267,26 @@ Module.prototype.require = function(id) {
       ipcMain.handle = function(channel, handler) {
         ensureSyntheticWebIPCHandlers(ipcMain, originalHandle, channel);
 
+        if (typeof channel === 'string' && channel.includes('Extensions_$_installDxtUnpacked')) {
+          return originalHandle(channel, async (event, folderPath, ...rest) => {
+            const normalizedFolderPath = normalizeIpcPathArgument(folderPath);
+            if (!normalizedFolderPath) {
+              console.log('[Frame Fix] installDxtUnpacked received no usable folder path');
+              return null;
+            }
+            if (normalizedFolderPath !== folderPath) {
+              console.log('[Frame Fix] Normalized installDxtUnpacked folder path to ' + normalizedFolderPath);
+            }
+            return handler(event, normalizedFolderPath, ...rest);
+          });
+        }
+
         // Filter ignored message types from transcripts — check both top-level and nested
         if (channel.includes('getTranscript')) {
           return originalHandle(channel, async (...args) => {
             const result = await handler(...args);
             if (Array.isArray(result)) {
-              return result.filter(msg => {
+              return mergeConsecutiveAssistantMessages(result.filter(msg => {
                 if (!msg) return false;
                 // Check top-level type
                 if (IGNORED_LIVE_MESSAGE_TYPES.has(msg.type)) return false;
@@ -593,7 +1295,7 @@ Module.prototype.require = function(id) {
                   return false;
                 }
                 return true;
-              });
+              }));
             }
             return result;
           });
@@ -696,12 +1398,56 @@ Module.prototype.require = function(id) {
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
 
+    if (module.app && !global.__coworkAppPatched) {
+      global.__coworkAppPatched = true;
+
+      if (typeof module.app.getLoginItemSettings === 'function') {
+        const originalGetLoginItemSettings = module.app.getLoginItemSettings.bind(module.app);
+        module.app.getLoginItemSettings = function(...args) {
+          const result = originalGetLoginItemSettings(...args) || {};
+          if (REAL_PLATFORM !== 'linux' || typeof result !== 'object') {
+            return result;
+          }
+          return {
+            ...result,
+            openAtLogin: !!result.openAtLogin,
+            openAsHidden: !!result.openAsHidden,
+            restoreState: !!result.restoreState,
+            wasOpenedAtLogin: !!result.wasOpenedAtLogin,
+            wasOpenedAsHidden: !!result.wasOpenedAsHidden,
+            executableWillLaunchAtLogin: !!result.executableWillLaunchAtLogin,
+          };
+        };
+      }
+
+      if (typeof module.app.setAsDefaultProtocolClient === 'function') {
+        const originalSetAsDefaultProtocolClient = module.app.setAsDefaultProtocolClient.bind(module.app);
+        module.app.setAsDefaultProtocolClient = function(protocol, ...args) {
+          if (REAL_PLATFORM === 'linux' && protocol === 'claude') {
+            return registerLinuxClaudeProtocolHandler();
+          }
+          return originalSetAsDefaultProtocolClient(protocol, ...args);
+        };
+      }
+
+      if (typeof module.app.removeAsDefaultProtocolClient === 'function') {
+        const originalRemoveAsDefaultProtocolClient = module.app.removeAsDefaultProtocolClient.bind(module.app);
+        module.app.removeAsDefaultProtocolClient = function(protocol, ...args) {
+          if (REAL_PLATFORM === 'linux' && protocol === 'claude') {
+            return true;
+          }
+          return originalRemoveAsDefaultProtocolClient(protocol, ...args);
+        };
+      }
+    }
+
     // Patch BrowserWindow to stub macOS-only methods and handle close events
     // The asar's close handler does `if (isMac()) return;` which swallows
     // close events since we spoof darwin. We prepend a listener that forces
     // app.quit() so killactive/WM close works on all Linux DEs.
     let _closePatched = new WeakSet();
     let _sendPatched = new WeakSet();
+    let _rendererPatched = new WeakSet();
 
     function patchWindowClose(win) {
       if (_closePatched.has(win)) return;
@@ -731,13 +1477,45 @@ Module.prototype.require = function(id) {
       _sendPatched.add(contents);
       const originalSend = contents.send.bind(contents);
       contents.send = function(channel, ...args) {
-        const ignoredType = getIgnoredLiveMessageType(channel, args[0]);
-        if (ignoredType) {
-          logIgnoredLiveMessage(channel, args[0], ignoredType);
-          return false;
+        const normalizedPayloads = args.length > 0
+          ? normalizeLiveSessionPayloads(channel, args[0])
+          : [undefined];
+
+        let sent = false;
+        for (const normalizedPayload of normalizedPayloads) {
+          if (args.length > 0) {
+            args[0] = normalizedPayload;
+          }
+          const ignoredType = getIgnoredLiveMessageType(channel, normalizedPayload);
+          if (ignoredType) {
+            logIgnoredLiveMessage(channel, normalizedPayload, ignoredType);
+            continue;
+          }
+          sent = originalSend(channel, ...args) || sent;
         }
-        return originalSend(channel, ...args);
+
+        return sent;
       };
+    }
+
+    function patchRendererCompatibility(contents) {
+      if (!contents || _rendererPatched.has(contents) || typeof contents.executeJavaScript !== 'function') {
+        return;
+      }
+      _rendererPatched.add(contents);
+
+      const injectCompatibilityPatch = () => {
+        const currentUrl = typeof contents.getURL === 'function' ? contents.getURL() : '';
+        if (typeof currentUrl === 'string' && currentUrl.startsWith('devtools://')) {
+          return;
+        }
+        contents.executeJavaScript(getRendererCompatibilityPatchSource(), true).catch((error) => {
+          console.log('[Frame Fix] Renderer compatibility injection failed:', error && error.message ? error.message : error);
+        });
+      };
+
+      contents.on('dom-ready', injectCompatibilityPatch);
+      setImmediate(injectCompatibilityPatch);
     }
 
     // Hook webContents creation to catch windows as they appear
@@ -745,6 +1523,7 @@ Module.prototype.require = function(id) {
       const owner = contents.getOwnerBrowserWindow && contents.getOwnerBrowserWindow();
       if (owner) patchWindowClose(owner);
       patchEventDispatch(contents);
+      patchRendererCompatibility(contents);
     });
 
     // Also patch on browser-window-created for certainty
@@ -752,12 +1531,14 @@ Module.prototype.require = function(id) {
       patchWindowClose(win);
       if (win && win.webContents) {
         patchEventDispatch(win.webContents);
+        patchRendererCompatibility(win.webContents);
       }
     });
 
     if (module.webContents && typeof module.webContents.getAllWebContents === 'function') {
       for (const contents of module.webContents.getAllWebContents()) {
         patchEventDispatch(contents);
+        patchRendererCompatibility(contents);
       }
     }
 
@@ -796,7 +1577,37 @@ Module.prototype.require = function(id) {
       const originalOpenPath = typeof module.shell.openPath === 'function'
         ? module.shell.openPath.bind(module.shell)
         : null;
-      module.shell.showItemInFolder = function(fullPath) {
+
+      function openPathOnLinux(targetPath) {
+        const commands = [
+          ['gio', ['open', targetPath]],
+          ['xdg-open', [targetPath]],
+        ];
+
+        return new Promise((resolve) => {
+          let index = 0;
+
+          const tryNext = (lastError) => {
+            if (index >= commands.length) {
+              resolve(lastError || 'Failed to open path');
+              return;
+            }
+
+            const [command, args] = commands[index++];
+            execFile(command, args, { timeout: 10000 }, (error) => {
+              if (!error) {
+                resolve('');
+                return;
+              }
+              tryNext(error && error.message ? error.message : String(error));
+            });
+          };
+
+          tryNext('');
+        });
+      }
+
+      function resolveSessionShellPath(fullPath, callerName) {
         let resolvedPath = fullPath;
         let candidatePath = null;
         let sessionRoot = null;
@@ -805,8 +1616,8 @@ Module.prototype.require = function(id) {
             const sessionPath = fullPath.substring('/sessions/'.length);
             const sessionName = sessionPath.split('/')[0];
             if (!sessionName || sessionName === '.' || sessionName === '..' || sessionName.includes('/')) {
-              console.error('[Frame Fix] shell.showItemInFolder: invalid session name:', fullPath);
-              return false;
+              console.error('[Frame Fix] ' + callerName + ': invalid session name:', fullPath);
+              return null;
             }
             sessionRoot = path.join(SESSIONS_BASE, sessionName);
             candidatePath = path.resolve(path.join(SESSIONS_BASE, sessionPath));
@@ -814,8 +1625,8 @@ Module.prototype.require = function(id) {
             const sessionRelative = path.relative(SESSIONS_BASE, fullPath);
             const sessionName = sessionRelative.split(path.sep)[0];
             if (!sessionName || sessionName === '.' || sessionName === '..' || sessionName.includes('/')) {
-              console.error('[Frame Fix] shell.showItemInFolder: invalid host session path:', fullPath);
-              return false;
+              console.error('[Frame Fix] ' + callerName + ': invalid host session path:', fullPath);
+              return null;
             }
             sessionRoot = path.join(SESSIONS_BASE, sessionName);
             candidatePath = path.resolve(fullPath);
@@ -826,8 +1637,8 @@ Module.prototype.require = function(id) {
           // through mnt symlinks so the file manager lands on the real host location.
           const relativeToRoot = path.relative(sessionRoot, candidatePath);
           if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
-            console.error('[Frame Fix] shell.showItemInFolder: path escapes session root:', fullPath, '->', candidatePath);
-            return false;
+            console.error('[Frame Fix] ' + callerName + ': path escapes session root:', fullPath, '->', candidatePath);
+            return null;
           }
           try {
             resolvedPath = fs.realpathSync(candidatePath);
@@ -837,8 +1648,8 @@ Module.prototype.require = function(id) {
             while (current !== path.dirname(current)) {
               const relative = path.relative(sessionRoot, current);
               if (relative.startsWith('..') || path.isAbsolute(relative)) {
-                console.error('[Frame Fix] shell.showItemInFolder: no valid ancestor inside session root:', fullPath);
-                return false;
+                console.error('[Frame Fix] ' + callerName + ': no valid ancestor inside session root:', fullPath);
+                return null;
               }
               try {
                 resolvedPath = fs.realpathSync(current);
@@ -849,22 +1660,49 @@ Module.prototype.require = function(id) {
               }
             }
             if (!foundAncestor) {
-              console.error('[Frame Fix] shell.showItemInFolder: no valid ancestor found:', fullPath);
-              return false;
+              console.error('[Frame Fix] ' + callerName + ': no valid ancestor found:', fullPath);
+              return null;
             }
           }
-          console.log('[Frame Fix] shell.showItemInFolder translated:', fullPath, '->', resolvedPath);
+          console.log('[Frame Fix] ' + callerName + ' translated:', fullPath, '->', resolvedPath);
+        }
+        return resolvedPath;
+      }
+
+      module.shell.openPath = function(fullPath) {
+        if (!originalOpenPath && process.platform !== 'linux') {
+          return Promise.resolve('');
+        }
+        const resolvedPath = resolveSessionShellPath(fullPath, 'shell.openPath') ?? fullPath;
+        if (process.platform === 'linux' && typeof resolvedPath === 'string') {
+          return openPathOnLinux(resolvedPath);
+        }
+        return originalOpenPath(resolvedPath);
+      };
+
+      module.shell.showItemInFolder = function(fullPath) {
+        const resolvedPath = resolveSessionShellPath(fullPath, 'shell.showItemInFolder');
+        if (!resolvedPath) {
+          return false;
         }
         try {
-          const stats = typeof resolvedPath === 'string' ? fs.statSync(resolvedPath) : null;
-          if (stats && stats.isDirectory()) {
-            console.log('[Frame Fix] shell.showItemInFolder opening directory directly:', resolvedPath);
-            if (originalOpenPath) {
-              originalOpenPath(resolvedPath).catch((err) => {
-                console.error('[Frame Fix] shell.openPath failed for directory:', resolvedPath, err && err.message ? err.message : err);
-              });
-              return true;
-            }
+          const stats = fs.statSync(resolvedPath);
+          const revealDir = stats.isDirectory() ? resolvedPath : path.dirname(resolvedPath);
+          if (process.platform === 'linux') {
+            console.log('[Frame Fix] shell.showItemInFolder opening directory directly:', revealDir);
+            openPathOnLinux(revealDir).then((errorMessage) => {
+              if (errorMessage) {
+                console.error('[Frame Fix] shell.openPath failed for directory:', revealDir, errorMessage);
+              }
+            });
+            return true;
+          }
+          if (originalOpenPath) {
+            console.log('[Frame Fix] shell.showItemInFolder opening directory directly:', revealDir);
+            originalOpenPath(revealDir).catch((err) => {
+              console.error('[Frame Fix] shell.openPath failed for directory:', revealDir, err && err.message ? err.message : err);
+            });
+            return true;
           }
         } catch (_) {}
         return originalShowItemInFolder(resolvedPath);

@@ -5,6 +5,7 @@
 # Change to script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+export CLAUDE_DESKTOP_LAUNCHER="$SCRIPT_DIR/launch.sh"
 
 # Resolve electron binary: prefer system electron + local .asar-cache, fall back to AppImage
 if command -v electron >/dev/null 2>&1; then
@@ -67,8 +68,17 @@ if [ -f "$INDEX_JS" ] && grep -q 'titleBarOverlay' "$INDEX_JS"; then
   sed -i 's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g' "$INDEX_JS"
 fi
 
+# Allow file:// preload renderers to call DesktopIntl in the unpackaged Linux launch.
+if [ -f "$INDEX_JS" ] && grep -q 'e.protocol==="file:"&&Ce.app.isPackaged===!0' "$INDEX_JS"; then
+  echo "Patching file-origin DesktopIntl validation for Linux..."
+  sed -i 's/e.protocol==="file:"&&Ce.app.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
+fi
+
+PRELOAD_MAIN="linux-app-extracted/.vite/build/mainWindow.js"
+PRELOAD_FIND="linux-app-extracted/.vite/build/findInPage.js"
+
 # Only repack if stub is newer than asar (or asar doesn't exist)
-if [ ! -f "$ASAR_FILE" ] || [ "$STUB_FILE" -nt "$ASAR_FILE" ] || [ "linux-app-extracted/frame-fix-wrapper.js" -nt "$ASAR_FILE" ]; then
+if [ ! -f "$ASAR_FILE" ] || [ "$STUB_FILE" -nt "$ASAR_FILE" ] || [ "linux-app-extracted/frame-fix-wrapper.js" -nt "$ASAR_FILE" ] || [ "$INDEX_JS" -nt "$ASAR_FILE" ] || [ "$PRELOAD_MAIN" -nt "$ASAR_FILE" ] || [ "$PRELOAD_FIND" -nt "$ASAR_FILE" ]; then
   echo "Repacking app.asar (stub changed)..."
   asar pack linux-app-extracted "$ASAR_FILE"
 else
