@@ -673,8 +673,135 @@ function cloneMessageContent(content) {
     if (!block || typeof block !== 'object') {
       return block;
     }
-    return { ...block };
+    const clonedBlock = { ...block };
+    delete clonedBlock.__coworkPartialJson;
+    return clonedBlock;
   });
+}
+
+function cloneAssistantSdkMessage(message) {
+  if (!isAssistantSdkMessage(message)) {
+    return null;
+  }
+
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: cloneMessageContent(message.message.content),
+    },
+  };
+}
+
+function mergeStreamingText(previousValue, nextValue) {
+  if (typeof previousValue !== 'string' || !previousValue) {
+    return typeof nextValue === 'string' ? nextValue : previousValue;
+  }
+  if (typeof nextValue !== 'string' || !nextValue) {
+    return previousValue;
+  }
+  if (nextValue.startsWith(previousValue)) {
+    return nextValue;
+  }
+  if (previousValue.startsWith(nextValue) || previousValue.endsWith(nextValue)) {
+    return previousValue;
+  }
+  return previousValue + nextValue;
+}
+
+function findMergeableAssistantBlockIndex(previousBlocks, nextBlock, fallbackIndex) {
+  if (!Array.isArray(previousBlocks) || !nextBlock || typeof nextBlock !== 'object') {
+    return -1;
+  }
+
+  if (nextBlock.id) {
+    const byIdIndex = previousBlocks.findIndex((block) => block && typeof block === 'object' && block.id === nextBlock.id);
+    if (byIdIndex !== -1) {
+      return byIdIndex;
+    }
+  }
+
+  const fallbackBlock = previousBlocks[fallbackIndex];
+  if (fallbackBlock && typeof fallbackBlock === 'object' && fallbackBlock.type === nextBlock.type) {
+    return fallbackIndex;
+  }
+
+  return -1;
+}
+
+function mergeAssistantContentBlock(previousBlock, nextBlock) {
+  if (!previousBlock || typeof previousBlock !== 'object') {
+    return nextBlock && typeof nextBlock === 'object' ? { ...nextBlock } : nextBlock;
+  }
+  if (!nextBlock || typeof nextBlock !== 'object') {
+    return { ...previousBlock };
+  }
+  if (previousBlock.type !== nextBlock.type) {
+    return { ...nextBlock };
+  }
+
+  const mergedBlock = {
+    ...previousBlock,
+    ...nextBlock,
+  };
+
+  if (mergedBlock.type === 'text') {
+    mergedBlock.text = mergeStreamingText(previousBlock.text, nextBlock.text);
+    if (Array.isArray(previousBlock.citations) || Array.isArray(nextBlock.citations)) {
+      mergedBlock.citations = [
+        ...(Array.isArray(previousBlock.citations) ? previousBlock.citations : []),
+        ...(Array.isArray(nextBlock.citations) ? nextBlock.citations : []),
+      ];
+    }
+  } else if (mergedBlock.type === 'thinking') {
+    mergedBlock.thinking = mergeStreamingText(previousBlock.thinking, nextBlock.thinking);
+    mergedBlock.signature = nextBlock.signature || previousBlock.signature || '';
+  } else if (mergedBlock.type === 'tool_use') {
+    if (previousBlock.input && nextBlock.input && typeof previousBlock.input === 'object' && typeof nextBlock.input === 'object') {
+      mergedBlock.input = {
+        ...previousBlock.input,
+        ...nextBlock.input,
+      };
+    } else if (nextBlock.input === undefined) {
+      mergedBlock.input = previousBlock.input;
+    }
+  } else if (mergedBlock.type === 'tool_result') {
+    if (Array.isArray(previousBlock.content) || Array.isArray(nextBlock.content)) {
+      mergedBlock.content = [
+        ...(Array.isArray(previousBlock.content) ? previousBlock.content : []),
+        ...(Array.isArray(nextBlock.content) ? nextBlock.content : []),
+      ];
+    }
+  }
+
+  if ('__coworkPartialJson' in previousBlock || '__coworkPartialJson' in nextBlock) {
+    mergedBlock.__coworkPartialJson = mergeStreamingText(previousBlock.__coworkPartialJson, nextBlock.__coworkPartialJson);
+  }
+
+  return mergedBlock;
+}
+
+function mergeAssistantContent(previousContent, nextContent) {
+  const mergedContent = cloneMessageContent(previousContent);
+  const normalizedNextContent = cloneMessageContent(nextContent);
+
+  for (let index = 0; index < normalizedNextContent.length; index += 1) {
+    const nextBlock = normalizedNextContent[index];
+    if (!nextBlock || typeof nextBlock !== 'object') {
+      mergedContent.push(nextBlock);
+      continue;
+    }
+
+    const targetIndex = findMergeableAssistantBlockIndex(mergedContent, nextBlock, index);
+    if (targetIndex === -1) {
+      mergedContent.push({ ...nextBlock });
+      continue;
+    }
+
+    mergedContent[targetIndex] = mergeAssistantContentBlock(mergedContent[targetIndex], nextBlock);
+  }
+
+  return mergedContent;
 }
 
 function mergeAssistantSdkMessages(previousMessage, nextMessage) {
@@ -697,12 +824,150 @@ function mergeAssistantSdkMessages(previousMessage, nextMessage) {
     message: {
       ...previousMessage.message,
       ...nextMessage.message,
-      content: [
-        ...cloneMessageContent(previousMessage.message.content),
-        ...cloneMessageContent(nextMessage.message.content),
-      ],
+      content: mergeAssistantContent(previousMessage.message.content, nextMessage.message.content),
     },
   };
+}
+
+function getLiveAssistantMessageCache() {
+  if (!global.__coworkLiveAssistantMessageCache) {
+    global.__coworkLiveAssistantMessageCache = new Map();
+  }
+  return global.__coworkLiveAssistantMessageCache;
+}
+
+function getLiveAssistantStreamState() {
+  if (!global.__coworkLiveAssistantStreamState) {
+    global.__coworkLiveAssistantStreamState = new Map();
+  }
+  return global.__coworkLiveAssistantStreamState;
+}
+
+function clearLiveAssistantSessionState(sessionId) {
+  getLiveAssistantMessageCache().delete(sessionId);
+  getLiveAssistantStreamState().delete(sessionId);
+}
+
+function tryParsePartialJson(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return undefined;
+  }
+}
+
+function buildSyntheticAssistantPayloadFromStreamEvent(sessionId, streamMessage) {
+  if (!streamMessage || typeof streamMessage !== 'object' || streamMessage.type !== 'stream_event') {
+    return null;
+  }
+
+  const streamEvent = streamMessage.event;
+  if (!streamEvent || typeof streamEvent !== 'object') {
+    return null;
+  }
+
+  const streamState = getLiveAssistantStreamState();
+  let currentAssistantMessage = streamState.get(sessionId) || null;
+
+  if (streamEvent.type === 'message_start') {
+    const startingMessage = streamEvent.message;
+    if (!startingMessage || startingMessage.role !== 'assistant') {
+      return null;
+    }
+
+    currentAssistantMessage = {
+      type: 'assistant',
+      uuid: streamMessage.uuid || null,
+      session_id: streamMessage.session_id || null,
+      parent_tool_use_id: streamMessage.parent_tool_use_id ?? null,
+      message: {
+        ...startingMessage,
+        content: cloneMessageContent(startingMessage.content),
+      },
+    };
+    streamState.set(sessionId, currentAssistantMessage);
+    return cloneAssistantSdkMessage(currentAssistantMessage);
+  }
+
+  if (!isAssistantSdkMessage(currentAssistantMessage)) {
+    return null;
+  }
+
+  currentAssistantMessage = {
+    ...currentAssistantMessage,
+    uuid: currentAssistantMessage.uuid || streamMessage.uuid || null,
+    session_id: currentAssistantMessage.session_id || streamMessage.session_id || null,
+    parent_tool_use_id: currentAssistantMessage.parent_tool_use_id ?? streamMessage.parent_tool_use_id ?? null,
+    message: {
+      ...currentAssistantMessage.message,
+      content: cloneMessageContent(currentAssistantMessage.message.content),
+    },
+  };
+
+  const currentContent = currentAssistantMessage.message.content;
+
+  if (streamEvent.type === 'content_block_start') {
+    currentContent[streamEvent.index] = streamEvent.content_block && typeof streamEvent.content_block === 'object'
+      ? { ...streamEvent.content_block }
+      : streamEvent.content_block;
+  } else if (streamEvent.type === 'content_block_delta') {
+    const currentBlock = currentContent[streamEvent.index];
+    if (!currentBlock || typeof currentBlock !== 'object') {
+      return null;
+    }
+
+    if (streamEvent.delta && streamEvent.delta.type === 'text_delta' && currentBlock.type === 'text') {
+      currentContent[streamEvent.index] = {
+        ...currentBlock,
+        text: mergeStreamingText(currentBlock.text, streamEvent.delta.text),
+      };
+    } else if (streamEvent.delta && streamEvent.delta.type === 'thinking_delta' && currentBlock.type === 'thinking') {
+      currentContent[streamEvent.index] = {
+        ...currentBlock,
+        thinking: mergeStreamingText(currentBlock.thinking, streamEvent.delta.thinking),
+      };
+    } else if (streamEvent.delta && streamEvent.delta.type === 'signature_delta' && currentBlock.type === 'thinking') {
+      currentContent[streamEvent.index] = {
+        ...currentBlock,
+        signature: streamEvent.delta.signature || currentBlock.signature || '',
+      };
+    } else if (streamEvent.delta && streamEvent.delta.type === 'input_json_delta' && currentBlock.type === 'tool_use') {
+      const partialJson = mergeStreamingText(currentBlock.__coworkPartialJson, streamEvent.delta.partial_json);
+      const parsedInput = tryParsePartialJson(partialJson);
+      currentContent[streamEvent.index] = {
+        ...currentBlock,
+        __coworkPartialJson: partialJson,
+        ...(parsedInput !== undefined ? { input: parsedInput } : {}),
+      };
+    } else if (streamEvent.delta && streamEvent.delta.type === 'citations_delta' && currentBlock.type === 'text') {
+      currentContent[streamEvent.index] = {
+        ...currentBlock,
+        citations: [
+          ...(Array.isArray(currentBlock.citations) ? currentBlock.citations : []),
+          streamEvent.delta.citation,
+        ],
+      };
+    }
+  } else if (streamEvent.type === 'message_delta') {
+    currentAssistantMessage.message = {
+      ...currentAssistantMessage.message,
+      stop_reason: streamEvent.delta ? streamEvent.delta.stop_reason : currentAssistantMessage.message.stop_reason,
+      stop_sequence: streamEvent.delta ? streamEvent.delta.stop_sequence : currentAssistantMessage.message.stop_sequence,
+      context_management: streamEvent.context_management ?? currentAssistantMessage.message.context_management,
+      usage: {
+        ...(currentAssistantMessage.message.usage || {}),
+        ...(streamEvent.usage || {}),
+      },
+    };
+  } else if (streamEvent.type !== 'content_block_stop' && streamEvent.type !== 'message_stop') {
+    return null;
+  }
+
+  streamState.set(sessionId, currentAssistantMessage);
+  return cloneAssistantSdkMessage(currentAssistantMessage);
 }
 
 function mergeConsecutiveAssistantMessages(messages) {
@@ -725,27 +990,9 @@ function mergeConsecutiveAssistantMessages(messages) {
 
 global.__coworkMergeConsecutiveAssistantMessages = mergeConsecutiveAssistantMessages;
 
-function flushBufferedAssistantPayload(sessionId, outputPayloads) {
-  if (!global.__coworkBufferedAssistantPayloads || !sessionId) {
-    return;
-  }
-
-  const pendingPayload = global.__coworkBufferedAssistantPayloads.get(sessionId);
-  if (!pendingPayload) {
-    return;
-  }
-
-  global.__coworkBufferedAssistantPayloads.delete(sessionId);
-  outputPayloads.push(pendingPayload);
-}
-
 function normalizeLiveSessionPayloads(channel, payload) {
   if (!isLocalSessionEventChannel(channel) || !payload || typeof payload !== 'object') {
     return [payload];
-  }
-
-  if (!global.__coworkBufferedAssistantPayloads) {
-    global.__coworkBufferedAssistantPayloads = new Map();
   }
 
   const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : null;
@@ -753,52 +1000,66 @@ function normalizeLiveSessionPayloads(channel, payload) {
     return [payload];
   }
 
-  const outputPayloads = [];
-
   if (payload.type === 'start' || payload.type === 'close' || payload.type === 'stopped' || payload.type === 'deleted') {
-    flushBufferedAssistantPayload(sessionId, outputPayloads);
-    outputPayloads.push(payload);
-    return outputPayloads;
+    clearLiveAssistantSessionState(sessionId);
+    return [payload];
   }
 
   if (payload.type === 'transcript_loaded' && Array.isArray(payload.messages)) {
-    flushBufferedAssistantPayload(sessionId, outputPayloads);
-    outputPayloads.push({
+    return [{
       ...payload,
       messages: mergeConsecutiveAssistantMessages(payload.messages),
-    });
-    return outputPayloads;
+    }];
   }
 
   if (payload.type !== 'message' || !payload.message || typeof payload.message !== 'object') {
-    flushBufferedAssistantPayload(sessionId, outputPayloads);
-    outputPayloads.push(payload);
-    return outputPayloads;
+    return [payload];
+  }
+
+  if (payload.message.type === 'result') {
+    getLiveAssistantStreamState().delete(sessionId);
+    return [payload];
+  }
+
+  if (payload.message.type === 'stream_event') {
+    const syntheticAssistantMessage = buildSyntheticAssistantPayloadFromStreamEvent(sessionId, payload.message);
+    if (!syntheticAssistantMessage) {
+      return [payload];
+    }
+
+    const liveAssistantMessageCache = getLiveAssistantMessageCache();
+    const previousMessage = liveAssistantMessageCache.get(sessionId);
+    const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, syntheticAssistantMessage) || syntheticAssistantMessage;
+    liveAssistantMessageCache.set(sessionId, mergedAssistantMessage);
+
+    return [
+      payload,
+      {
+        ...payload,
+        message: mergedAssistantMessage,
+      },
+    ];
   }
 
   if (!isAssistantSdkMessage(payload.message)) {
-    flushBufferedAssistantPayload(sessionId, outputPayloads);
-    outputPayloads.push(payload);
-    return outputPayloads;
+    return [payload];
   }
 
-  const pendingPayload = global.__coworkBufferedAssistantPayloads.get(sessionId);
-  if (pendingPayload && pendingPayload.message) {
-    const mergedAssistantMessage = mergeAssistantSdkMessages(pendingPayload.message, payload.message);
+  const liveAssistantMessageCache = getLiveAssistantMessageCache();
+  const previousMessage = liveAssistantMessageCache.get(sessionId);
+  if (previousMessage) {
+    const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, payload.message);
     if (mergedAssistantMessage) {
-      global.__coworkBufferedAssistantPayloads.set(sessionId, {
-        ...pendingPayload,
+      liveAssistantMessageCache.set(sessionId, mergedAssistantMessage);
+      return [{
         ...payload,
         message: mergedAssistantMessage,
-      });
-      return outputPayloads;
+      }];
     }
-
-    outputPayloads.push(pendingPayload);
   }
 
-  global.__coworkBufferedAssistantPayloads.set(sessionId, payload);
-  return outputPayloads;
+  liveAssistantMessageCache.set(sessionId, payload.message);
+  return [payload];
 }
 
 function parseRequestedProcessId(args) {
@@ -1012,73 +1273,6 @@ function getRendererCompatibilityPatchSource() {
     '    const host = String(window.location && window.location.hostname || "");',
     '    if (!(host === "claude.ai" || host === "claude.com" || host === "preview.claude.ai" || host === "preview.claude.com" || host === "localhost" || host.endsWith(".ant.dev"))) return;',
     '    window.__coworkRendererCompatInstalled = true;',
-    '    const pluginListPathPattern = /^\\/api\\/organizations\\/[^/]+\\/plugins\\/list-plugins$/;',
-    '    const localSessionsPathPattern = /^\\/api\\/.*(?:local_sessions|sessions)(?:\\/|$)/;',
-    '    const originalFetch = typeof window.fetch === "function" ? window.fetch.bind(window) : null;',
-    '    const originalResponseJson = typeof Response !== "undefined" && Response.prototype && typeof Response.prototype.json === "function" ? Response.prototype.json : null;',
-    '    function parseRequestUrl(input) {',
-    '      try {',
-    '        const rawUrl = typeof input === "string" ? input : (input && typeof input.url === "string" ? input.url : "");',
-    '        return new URL(rawUrl, window.location.href);',
-    '      } catch (_) {',
-    '        return null;',
-    '      }',
-    '    }',
-    '    function shouldGuardApiJson(urlLike) {',
-    '      const parsedUrl = parseRequestUrl(urlLike);',
-    '      return !!(parsedUrl && parsedUrl.origin === window.location.origin && parsedUrl.pathname.startsWith("/api/"));',
-    '    }',
-    '    function isHtmlLikeBody(bodyText) {',
-    '      const trimmed = String(bodyText || "").trim();',
-    '      return trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html") || trimmed.startsWith("<");',
-    '    }',
-    '    function getFallbackJsonForApiPath(pathname) {',
-    '      if (pluginListPathPattern.test(pathname)) return { plugins: [], has_more: false };',
-    '      if (localSessionsPathPattern.test(pathname)) return [];',
-    '      return {};',
-    '    }',
-    '    function makeFallbackJsonResponse(parsedUrl) {',
-    '      const payload = getFallbackJsonForApiPath(parsedUrl.pathname);',
-    '      console.warn("[Frame Fix] Replacing HTML API response with JSON fallback for", parsedUrl.pathname);',
-    '      return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });',
-    '    }',
-    '    if (originalFetch) {',
-    '      window.fetch = async function(input, init) {',
-    '        const parsedUrl = parseRequestUrl(input);',
-    '        const response = await originalFetch(input, init);',
-    '        if (!(parsedUrl && shouldGuardApiJson(parsedUrl.href))) return response;',
-    '        try {',
-    '          const contentType = response.headers && typeof response.headers.get === "function" ? String(response.headers.get("content-type") || "") : "";',
-    '          if (/application\\/json/i.test(contentType)) return response;',
-    '          const bodyText = await response.clone().text();',
-    '          if (isHtmlLikeBody(bodyText)) {',
-    '            return makeFallbackJsonResponse(parsedUrl);',
-    '          }',
-    '        } catch (error) {',
-    '          console.warn("[Frame Fix] API response inspection failed", error);',
-    '        }',
-    '        return response;',
-    '      };',
-    '    }',
-    '    if (originalResponseJson) {',
-    '      Response.prototype.json = async function() {',
-    '        const cloned = shouldGuardApiJson(this && this.url) && typeof this.clone === "function" ? this.clone() : null;',
-    '        try {',
-    '          return await originalResponseJson.call(this);',
-    '        } catch (error) {',
-    '          if (!cloned) throw error;',
-    '          try {',
-    '            const parsedUrl = parseRequestUrl(cloned.url);',
-    '            const bodyText = await cloned.text();',
-    '            if (parsedUrl && isHtmlLikeBody(bodyText)) {',
-    '              console.warn("[Frame Fix] Falling back from Response.json() HTML body for", parsedUrl.pathname);',
-    '              return getFallbackJsonForApiPath(parsedUrl.pathname);',
-    '            }',
-    '          } catch (_) {}',
-    '          throw error;',
-    '        }',
-    '      };',
-    '    }',
     '    function ensureProseMirrorStyles() {',
     '      if (!document.head || document.getElementById("cowork-prosemirror-style")) return;',
     '      const style = document.createElement("style");',
