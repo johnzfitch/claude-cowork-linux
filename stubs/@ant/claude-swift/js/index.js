@@ -696,11 +696,18 @@ class SwiftAddonStub extends EventEmitter {
         show: () => { trace('quickAccess.overlay.show()'); },
         hide: () => { trace('quickAccess.overlay.hide()'); },
         isVisible: () => false,
+        setLoggedIn: () => { trace('quickAccess.overlay.setLoggedIn()'); },
+        setRecentChats: () => { trace('quickAccess.overlay.setRecentChats()'); },
+        setActiveChatId: () => { trace('quickAccess.overlay.setActiveChatId()'); },
+        toggle: () => { trace('quickAccess.overlay.toggle()'); },
       },
       dictation: {
         start: () => { trace('quickAccess.dictation.start()'); },
         stop: () => { trace('quickAccess.dictation.stop()'); },
         isActive: () => false,
+        setLanguage: () => { trace('quickAccess.dictation.setLanguage()'); },
+        show: () => { trace('quickAccess.dictation.show()'); },
+        toggle: () => { trace('quickAccess.dictation.toggle()'); },
       },
     };
 

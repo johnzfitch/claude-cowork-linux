@@ -384,18 +384,64 @@ function get_app_info_for_file(filePath) {
 // NOTE: IPC handlers are registered in ipc-handler-setup.js (baked into app.asar)
 // registerCriticalHandlers() is no longer called here
 
+// NOTE: CoworkSpaces IPC handlers are registered in frame-fix-wrapper.js
+// via getSyntheticIPCResponse() because ipcMain.handle() is patched and
+// doesn't work correctly from this stub.
+
 log('claude-native stub loaded successfully');
 
 // ============================================================
-// Module exports
+// Quick Access overlay/dictation stubs (macOS-only UI features)
 // ============================================================
 
-module.exports = {
+const quickAccess = {
+  overlay: {
+    setLoggedIn: () => {},
+    setRecentChats: () => {},
+    setActiveChatId: () => {},
+    toggle: () => {},
+  },
+  dictation: {
+    setLanguage: () => {},
+    show: () => {},
+    stop: () => {},
+    toggle: () => {},
+  },
+};
+
+// ============================================================
+// Midnight Owl stub (macOS power management feature)
+// ============================================================
+
+const midnightOwl = {
+  setEnabled: () => {},
+};
+
+// ============================================================
+// API credential stub
+// ============================================================
+
+const api = {
+  setCredentials: () => {},
+};
+
+// ============================================================
+// Module exports — must be an EventEmitter (app calls Br.on())
+// ============================================================
+
+const moduleExports = new EventEmitter();
+
+Object.assign(moduleExports, {
   // Keyboard constants
   KeyboardKeys,
 
   // Auth
   AuthRequest,
+
+  // Quick Access, Midnight Owl, API
+  quickAccess,
+  midnightOwl,
+  api,
 
   // Window management (snake_case and camelCase)
   focus_window,
@@ -417,6 +463,7 @@ module.exports = {
 
   // Native stub functions
   ...nativeStub,
-};
+});
 
+module.exports = moduleExports;
 module.exports.default = module.exports;

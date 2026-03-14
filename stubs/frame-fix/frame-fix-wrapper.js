@@ -65,6 +65,9 @@ try {
   console.error('[Cowork] Failed to patch ipcMain:', e.message);
 }
 
+// SESSION-FIX: Local session navigation is handled via webContents.ipc overrides
+// in the web-contents-created handler below (LocalSessions, ClaudeVM, ClaudeCode)
+
 // ============================================================
 // 0. TMPDIR FIX - MUST BE ABSOLUTELY FIRST
 // ============================================================
@@ -417,6 +420,23 @@ function getSyntheticIPCResponse(channel) {
   if (channel.includes('ClaudeCode_$_prepare')) {
     return async () => ({ ready: true, success: true });
   }
+  // CoworkSpaces handlers — the web app expects these but this version
+  // of the desktop app doesn't implement them natively. Return stubs to
+  // prevent IPC invoke errors that break the task sidebar UI.
+  if (channel.includes('CoworkSpaces_$_')) {
+    if (channel.includes('_$_getAllSpaces')) return async () => [];
+    if (channel.includes('_$_getSpace')) return async () => null;
+    if (channel.includes('_$_createSpace')) return async (_ev, opts) => ({
+      id: `space_${Date.now()}`, name: (opts && opts.name) || 'Untitled',
+      folders: [], projects: [],
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    });
+    if (channel.includes('_$_getAutoMemoryDir')) return async () => null;
+    if (channel.includes('_$_listFolderContents')) return async () => [];
+    if (channel.includes('_$_readFileContents')) return async () => null;
+    // Generic success stub for remaining CoworkSpaces methods
+    return async () => ({ success: true });
+  }
   return null;
 }
 
@@ -565,7 +585,6 @@ Module.prototype.require = function(id) {
           if (typeof channel === 'string' && channel.includes('ClaudeCode_$_')) {
             const synthetic = getSyntheticIPCResponse(channel);
             if (synthetic) {
-              console.log('[Cowork] Overriding ClaudeCode handler:', channel);
               return synthetic;
             }
           }
@@ -573,6 +592,52 @@ Module.prototype.require = function(id) {
           return existing || getSyntheticIPCResponse(channel);
         };
         console.log('[Cowork] _invokeHandlers fallback enabled');
+
+        // ============================================================
+        // Register CoworkSpaces handlers directly in the Map.
+        // The patched .get fallback doesn't work because Electron's
+        // internal C++ dispatch calls Map.prototype.get directly,
+        // bypassing our JS patch. We must use originalSet to place
+        // real entries in the Map.
+        // ============================================================
+        const COWORK_SPACES_HANDLERS = {
+          'CoworkSpaces_$_getAllSpaces': async () => [],
+          'CoworkSpaces_$_getSpace': async () => null,
+          'CoworkSpaces_$_createSpace': async (_ev, opts) => ({
+            id: `space_${Date.now()}`, name: (opts && opts.name) || 'Untitled',
+            folders: [], projects: [],
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          }),
+          'CoworkSpaces_$_updateSpace': async () => ({ success: true }),
+          'CoworkSpaces_$_deleteSpace': async () => ({ success: true }),
+          'CoworkSpaces_$_addFolderToSpace': async () => ({ success: true }),
+          'CoworkSpaces_$_removeFolderFromSpace': async () => ({ success: true }),
+          'CoworkSpaces_$_addProjectToSpace': async () => ({ success: true }),
+          'CoworkSpaces_$_removeProjectFromSpace': async () => ({ success: true }),
+          'CoworkSpaces_$_getAutoMemoryDir': async () => null,
+          'CoworkSpaces_$_listFolderContents': async () => [],
+          'CoworkSpaces_$_readFileContents': async () => null,
+          'CoworkSpaces_$_openFile': async () => ({ success: false, reason: 'linux-stub' }),
+          'CoworkSpaces_$_createSpaceFolder': async () => ({ success: false, reason: 'linux-stub' }),
+          'CoworkSpaces_$_copyFilesToSpaceFolder': async () => ({ success: false, reason: 'linux-stub' }),
+        };
+        // Discover the channel prefix from any existing handler key
+        let eipcPrefix = '$eipc_message$_404349b0-8c09-4d5c-b863-8b2ed327d8db_$_claude.web_$_';
+        for (const key of invokeHandlers.keys()) {
+          const marker = '_$_claude.web_$_';
+          const idx = key.indexOf(marker);
+          if (idx !== -1) {
+            eipcPrefix = key.slice(0, idx + marker.length);
+            break;
+          }
+        }
+        for (const [suffix, handler] of Object.entries(COWORK_SPACES_HANDLERS)) {
+          const fullChannel = eipcPrefix + suffix;
+          originalSet(fullChannel, handler);
+        }
+        console.log('[Cowork] CoworkSpaces handlers registered directly in Map (' + Object.keys(COWORK_SPACES_HANDLERS).length + ' handlers)');
+
+        // Session/VM/Code overrides are applied via webContents.ipc.handle wrapper below
       }
 
       const originalHandle = ipcMain.handle.bind(ipcMain);
@@ -745,6 +810,171 @@ Module.prototype.require = function(id) {
       const owner = contents.getOwnerBrowserWindow && contents.getOwnerBrowserWindow();
       if (owner) patchWindowClose(owner);
       patchEventDispatch(contents);
+    });
+
+    // SESSION-FIX: webContents.ipc overrides below handle local session navigation
+
+    // ============================================================
+    // CRITICAL: Patch webContents.ipc to register CoworkSpaces handlers
+    // and override session/VM/code handlers. setImplementation() uses webContents.ipc.handle(),
+    // NOT ipcMain.handle(), so handlers end up in webContents.ipc._invokeHandlers
+    // (a separate Map from ipcMain._invokeHandlers).
+    // ============================================================
+    _app.on('web-contents-created', (_wcEvent, wcContents) => {
+      if (!wcContents || !wcContents.ipc) return;
+      const wcIpc = wcContents.ipc;
+      const wcInvokeHandlers = wcIpc._invokeHandlers;
+      if (!wcInvokeHandlers || wcContents.__coworkWcIpcPatched) return;
+      wcContents.__coworkWcIpcPatched = true;
+
+      const wcOriginalSet = wcInvokeHandlers.set.bind(wcInvokeHandlers);
+
+      // Register CoworkSpaces handlers in THIS webContents' Map
+      const COWORK_SPACES_HANDLERS = {
+        'CoworkSpaces_$_getAllSpaces': async () => [],
+        'CoworkSpaces_$_getSpace': async () => null,
+        'CoworkSpaces_$_createSpace': async (_ev, opts) => ({
+          id: `space_${Date.now()}`, name: (opts && opts.name) || 'Untitled',
+          folders: [], projects: [],
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        }),
+        'CoworkSpaces_$_updateSpace': async () => ({ success: true }),
+        'CoworkSpaces_$_deleteSpace': async () => ({ success: true }),
+        'CoworkSpaces_$_addFolderToSpace': async () => ({ success: true }),
+        'CoworkSpaces_$_removeFolderFromSpace': async () => ({ success: true }),
+        'CoworkSpaces_$_addProjectToSpace': async () => ({ success: true }),
+        'CoworkSpaces_$_removeProjectFromSpace': async () => ({ success: true }),
+        'CoworkSpaces_$_getAutoMemoryDir': async () => null,
+        'CoworkSpaces_$_listFolderContents': async () => [],
+        'CoworkSpaces_$_readFileContents': async () => null,
+        'CoworkSpaces_$_openFile': async () => ({ success: false, reason: 'linux-stub' }),
+        'CoworkSpaces_$_createSpaceFolder': async () => ({ success: false, reason: 'linux-stub' }),
+        'CoworkSpaces_$_copyFilesToSpaceFolder': async () => ({ success: false, reason: 'linux-stub' }),
+      };
+
+      // Discover the eipc prefix from existing handlers in this webContents
+      let wcEipcPrefix = '$eipc_message$_404349b0-8c09-4d5c-b863-8b2ed327d8db_$_claude.web_$_';
+      // Also try ipcMain's handlers for the prefix
+      const ipcMainHandlers = require('electron').ipcMain._invokeHandlers;
+      for (const map of [wcInvokeHandlers, ipcMainHandlers]) {
+        for (const key of map.keys()) {
+          const marker = '_$_claude.web_$_';
+          const idx = key.indexOf(marker);
+          if (idx !== -1) {
+            wcEipcPrefix = key.slice(0, idx + marker.length);
+            break;
+          }
+        }
+        if (wcEipcPrefix !== '$eipc_message$_404349b0-8c09-4d5c-b863-8b2ed327d8db_$_claude.web_$_') break;
+      }
+
+      let csRegistered = 0;
+      for (const [suffix, handler] of Object.entries(COWORK_SPACES_HANDLERS)) {
+        const fullChannel = wcEipcPrefix + suffix;
+        wcOriginalSet(fullChannel, handler);
+        csRegistered++;
+      }
+      console.log('[Cowork] CoworkSpaces handlers registered in webContents.ipc Map (' + csRegistered + ')');
+
+      // Wrap webContents.ipc.handle to:
+      // 1. Override LocalSessions.getAll to include LocalAgentModeSessions data
+      // 2. Override LocalSessions.getSession to look up from LocalAgentModeSessions
+      // 3. Override LocalSessions.getTranscript to return session transcript
+      // 4. Override ClaudeCode handlers for Linux
+      const wcOriginalHandle = wcIpc.handle.bind(wcIpc);
+      wcIpc.handle = function(channel, handler) {
+        // CRITICAL FIX: Override LocalSessions handlers to proxy to LocalAgentModeSessions
+        if (channel.includes('LocalSessions_$_getAll') && !channel.includes('LocalAgentMode') && !channel.includes('ScheduledTask')) {
+          console.log('[SESSION-FIX] Overriding LocalSessions.getAll to include LocalAgentModeSessions data');
+          const origGetAll = handler;
+          const overriddenGetAll = async function(...args) {
+            // Get results from original handler (Claude Code CLI sessions)
+            let cliSessions = [];
+            try { cliSessions = await origGetAll.apply(this, args) || []; } catch (e) {}
+            // Get results from LocalAgentModeSessions handler
+            let agentSessions = [];
+            try {
+              const agentHandler = wcInvokeHandlers.get(wcEipcPrefix + 'LocalAgentModeSessions_$_getAll');
+              if (agentHandler) {
+                agentSessions = await agentHandler.apply(this, args) || [];
+              }
+            } catch (e) {}
+            // Merge: agent sessions that aren't already in CLI sessions
+            const cliIds = new Set(cliSessions.map(s => s.sessionId));
+            const merged = [...cliSessions, ...agentSessions.filter(s => !cliIds.has(s.sessionId))];
+            console.log('[SESSION-FIX] LocalSessions.getAll: cli=' + cliSessions.length + ' agent=' + agentSessions.length + ' merged=' + merged.length);
+            return merged;
+          };
+          return wcOriginalHandle(channel, overriddenGetAll);
+        }
+
+        if (channel.includes('LocalSessions_$_getSession') && !channel.includes('LocalAgentMode') && !channel.includes('ScheduledTask')) {
+          console.log('[SESSION-FIX] Overriding LocalSessions.getSession to proxy LocalAgentModeSessions');
+          const origGetSession = handler;
+          const overriddenGetSession = async function(event, sessionId, ...rest) {
+            // Try original handler first
+            try {
+              const result = await origGetSession.apply(this, [event, sessionId, ...rest]);
+              if (result) return result;
+            } catch (e) {}
+            // Fall back to LocalAgentModeSessions data
+            try {
+              const agentHandler = wcInvokeHandlers.get(wcEipcPrefix + 'LocalAgentModeSessions_$_getAll');
+              if (agentHandler) {
+                const all = await agentHandler.apply(this, [event]) || [];
+                const match = all.find(s => s.sessionId === sessionId);
+                if (match) {
+                  console.log('[SESSION-FIX] getSession found in agent data:', sessionId);
+                  return match;
+                }
+              }
+            } catch (e) {}
+            console.log('[SESSION-FIX] getSession not found:', sessionId);
+            return null;
+          };
+          return wcOriginalHandle(channel, overriddenGetSession);
+        }
+
+        // CRITICAL FIX: Override ClaudeVM handlers in webContents.ipc
+        // The ipcMain._invokeHandlers overrides don't apply here because
+        // webContents.ipc._invokeHandlers is a separate Map.
+        if (channel.includes('ClaudeVM_$_')) {
+          const vmMethod = channel.split('_$_').pop();
+          const VM_OVERRIDES = {
+            'getRunningStatus': { running: true, connected: true, ready: true, status: 'running' },
+            'getDownloadStatus': { status: 'ready', downloaded: true, installed: true, progress: 100 },
+            'isSupported': 'supported',
+            'getSupportStatus': 'supported',
+            'download': { success: true, downloaded: true, status: 'ready' },
+            'startVM': { success: true, running: true },
+            'start': { success: true, running: true },
+            'apiReachability_$store$_getState': { reachable: true, status: 'reachable' },
+            'setYukonSilverConfig': { success: true },
+          };
+          // Check if this method needs overriding
+          const overrideKey = Object.keys(VM_OVERRIDES).find(k => vmMethod === k || vmMethod.startsWith(k));
+          if (overrideKey) {
+            console.log('[SESSION-FIX] Overriding ClaudeVM.' + vmMethod + ' in webContents.ipc');
+            return wcOriginalHandle(channel, async () => VM_OVERRIDES[overrideKey]);
+          }
+        }
+
+        // Override ClaudeCode handlers in webContents.ipc
+        if (channel.includes('ClaudeCode_$_')) {
+          const ccMethod = channel.split('_$_').pop();
+          const CC_OVERRIDES = {
+            'getStatus': { status: 'ready', ready: true, installed: true, downloading: false, progress: 100, version: '2.1.72' },
+            'prepare': { ready: true, success: true },
+          };
+          if (CC_OVERRIDES[ccMethod]) {
+            console.log('[SESSION-FIX] Overriding ClaudeCode.' + ccMethod + ' in webContents.ipc');
+            return wcOriginalHandle(channel, async () => CC_OVERRIDES[ccMethod]);
+          }
+        }
+
+        // Pass through all other handlers unchanged
+        return wcOriginalHandle(channel, handler);
+      };
     });
 
     // Also patch on browser-window-created for certainty

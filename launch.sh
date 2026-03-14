@@ -22,11 +22,19 @@ fi
 STUB_FILE="linux-app-extracted/node_modules/@ant/claude-swift/js/index.js"
 STUB_SRC_FILE="stubs/@ant/claude-swift/js/index.js"
 
+NATIVE_STUB_FILE="linux-app-extracted/node_modules/@ant/claude-native/index.js"
+NATIVE_STUB_SRC_FILE="stubs/@ant/claude-native/index.js"
+
 # Ensure the extracted app tree has the latest stubs baked in before packing.
 # This avoids relying on runtime module interception (ESM import() bypasses Module._load).
 if [ -f "$STUB_SRC_FILE" ]; then
   mkdir -p "$(dirname "$STUB_FILE")"
   cp -f "$STUB_SRC_FILE" "$STUB_FILE"
+fi
+
+if [ -f "$NATIVE_STUB_SRC_FILE" ]; then
+  mkdir -p "$(dirname "$NATIVE_STUB_FILE")"
+  cp -f "$NATIVE_STUB_SRC_FILE" "$NATIVE_STUB_FILE"
 fi
 
 # Sync frame-fix files so wrapper changes take effect without a full reinstall
@@ -68,7 +76,7 @@ if [ -f "$INDEX_JS" ] && grep -q 'titleBarOverlay' "$INDEX_JS"; then
 fi
 
 # Only repack if stub is newer than asar (or asar doesn't exist)
-if [ ! -f "$ASAR_FILE" ] || [ "$STUB_FILE" -nt "$ASAR_FILE" ] || [ "linux-app-extracted/frame-fix-wrapper.js" -nt "$ASAR_FILE" ]; then
+if [ ! -f "$ASAR_FILE" ] || [ "$STUB_FILE" -nt "$ASAR_FILE" ] || [ "$NATIVE_STUB_FILE" -nt "$ASAR_FILE" ] || [ "linux-app-extracted/frame-fix-wrapper.js" -nt "$ASAR_FILE" ]; then
   echo "Repacking app.asar (stub changed)..."
   asar pack linux-app-extracted "$ASAR_FILE"
 else
@@ -106,10 +114,12 @@ fi
 # Run electron with the repacked app.asar
 echo "Launching Claude Desktop (electron: $ELECTRON_BIN, password-store: $PASSWORD_STORE)..."
 exec "$ELECTRON_BIN" \
-  "./${ASAR_FILE}" \
   --no-sandbox \
   --disable-gpu \
   --password-store="$PASSWORD_STORE" \
   --enable-features=GlobalShortcutsPortal \
+  --remote-debugging-port=9222 \
+  --remote-allow-origins='*' \
+  "./${ASAR_FILE}" \
   "$@" \
   2>&1 | tee -a ~/.local/share/claude-cowork/logs/startup.log
