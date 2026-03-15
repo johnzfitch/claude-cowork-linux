@@ -23,12 +23,24 @@ const {
   buildTranscriptContinuityPlan,
 } = require('./transcript_store.js');
 
+// ============================================================================
+// MOUNT MANAGER
+// ============================================================================
+// MountManager prepares mount symlinks for session spawns. On macOS, the CLI
+// runs in a VM and needs symlinks to access host directories. On Linux, the
+// CLI runs directly on the host, so mount symlinks are created for consistency
+// but are not strictly necessary for most operations.
+
 class MountManager {
   constructor(deps) {
     this._deps = deps || {};
   }
 
   prepare(context) {
+    // Prepare mount symlinks for CLI spawn:
+    //   1. Extract session name from args/envVars/sharedCwdPath
+    //   2. Create mount symlinks if session name is found
+    //   3. Handle session-less spawns (no VM paths, no mounts needed)
     const {
       processId,
       processName,
@@ -44,6 +56,7 @@ class MountManager {
       trace = () => {},
     } = this._deps;
 
+    // Step 1: Extract session name
     let sessionName = null;
     try {
       sessionName = findSessionName(args, envVars, sharedCwdPath);
@@ -54,11 +67,13 @@ class MountManager {
       return { success: false, error: error.message };
     }
 
+    // Skip if no additional mounts provided
     if (!additionalMounts) {
       trace('Skipping mount symlink creation: no additionalMounts provided');
       return { success: true, sessionName, skipped: true };
     }
 
+    // Skip for session-less spawns (e.g., plugin management commands)
     if (!sessionName) {
       // Session-less spawns (e.g. plugin management: `claude plugin marketplace list`)
       // don't have /sessions/ paths. On Linux the CLI runs on the host directly and
@@ -67,6 +82,7 @@ class MountManager {
       return { success: true, sessionName: processName || null, skipped: true };
     }
 
+    // Step 2: Create mount symlinks
     trace('Creating mount symlinks for session: ' + sessionName);
     if (!createMountSymlinks(sessionName, additionalMounts)) {
       const message = 'Failed to create mount symlinks for session: ' + sessionName;
@@ -81,7 +97,16 @@ class MountManager {
   }
 }
 
+// ============================================================================
+// RESUME-ARGUMENT HANDLING
+// ============================================================================
+// These functions manage the --resume flag in CLI arguments, which tells
+// the CLI to continue an existing conversation rather than start fresh.
+// They handle finding, removing, and replacing resume arguments.
+
 function findResumeArgIndex(args) {
+  // Find the index of --resume flag in args array.
+  // Returns -1 if not found or if next arg is missing/invalid.
   if (!Array.isArray(args)) {
     return -1;
   }
@@ -94,6 +119,8 @@ function findResumeArgIndex(args) {
 }
 
 function removeResumeArgs(args, trace) {
+  // Remove --resume and its value from args array.
+  // Used when retrying a failed session from scratch.
   const resumeArgIndex = findResumeArgIndex(args);
   if (resumeArgIndex === -1) {
     return args;
@@ -104,6 +131,8 @@ function removeResumeArgs(args, trace) {
 }
 
 function replaceResumeArgs(args, cliSessionId, trace) {
+  // Replace the --resume argument value with a new session ID.
+  // Used when recovering from flatline with a new CLI session ID.
   const resumeArgIndex = findResumeArgIndex(args);
   if (resumeArgIndex === -1) {
     return args;
@@ -117,7 +146,16 @@ function replaceResumeArgs(args, cliSessionId, trace) {
   return nextArgs;
 }
 
+// ============================================================================
+// METADATA PERSISTENCE
+// ============================================================================
+// These functions handle reading and writing session metadata to disk.
+// Metadata includes session IDs, working directory, CLI session ID, and more.
+// The metadata file is located at <sessionDir>.json (e.g., /path/to/session.json)
+
 function readSessionDataFromMetadata(metadataPath, trace) {
+  // Read and parse session metadata JSON file.
+  // Returns null if file doesn't exist or can't be parsed.
   if (typeof metadataPath !== 'string' || !metadataPath.trim() || !fs.existsSync(metadataPath)) {
     return null;
   }
@@ -131,6 +169,8 @@ function readSessionDataFromMetadata(metadataPath, trace) {
 }
 
 function persistSessionDataToMetadata(metadataPath, sessionData, trace) {
+  // Write session metadata to disk as formatted JSON.
+  // Returns true on success, false on failure.
   if (typeof metadataPath !== 'string' || !metadataPath.trim() || !sessionData || typeof sessionData !== 'object') {
     return false;
   }
@@ -145,7 +185,20 @@ function persistSessionDataToMetadata(metadataPath, sessionData, trace) {
   }
 }
 
+// ============================================================================
+// HOST-PATH ENV TRANSLATION
+// ============================================================================
+// Translates VM-style paths in environment variables to host paths.
+// This is critical for CLAUDE_CONFIG_DIR which must point to the real
+// session directory on the Linux host, not a VM path like /sessions/...
+
 function translateHostConfigDir(envVars, deps) {
+  // Translate CLAUDE_CONFIG_DIR from VM path to host path.
+  // VM path format: /sessions/<name>/mnt/.claude
+  // Host path format: ~/.config/Claude/local-agent-mode-sessions/sessions/<name>/mnt/.claude
+  //
+  // This translation ensures the CLI can find its config, transcripts, and
+  // state files on the Linux host filesystem.
   const {
     canonicalizePathForHostAccess,
     trace = () => {},
@@ -154,6 +207,8 @@ function translateHostConfigDir(envVars, deps) {
 
   const translatedEnvVars = envVars && typeof envVars === 'object' ? { ...envVars } : {};
   let hostConfigDir = translatedEnvVars.CLAUDE_CONFIG_DIR;
+  
+  // Translate /sessions/ paths to host equivalents
   if (typeof hostConfigDir === 'string' && hostConfigDir.startsWith('/sessions/')) {
     try {
       hostConfigDir = canonicalizePathForHostAccess(hostConfigDir);
@@ -172,16 +227,29 @@ function translateHostConfigDir(envVars, deps) {
   };
 }
 
+// ============================================================================
+// GENERIC CLI FLAG PARSING
+// ============================================================================
+// Utility functions for parsing and manipulating CLI arguments.
+// These handle both '--flag value' and '--flag=value' formats.
+
 function findFlagValue(args, flagName) {
+  // Extract the value of a CLI flag from args array.
+  // Supports both '--flag value' and '--flag=value' formats.
+  // Returns null if flag is not found or has no value.
   if (!Array.isArray(args) || typeof flagName !== 'string' || !flagName.length) {
     return null;
   }
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    
+    // Format: --flag value
     if (arg === flagName && typeof args[index + 1] === 'string' && args[index + 1].trim()) {
       return args[index + 1];
     }
+    
+    // Format: --flag=value
     if (typeof arg === 'string' && arg.startsWith(flagName + '=')) {
       const value = arg.slice((flagName + '=').length);
       if (value.trim()) {
@@ -194,12 +262,15 @@ function findFlagValue(args, flagName) {
 }
 
 function removeFlagArgs(args, flagNames) {
+  // Remove specified flags and their values from args array.
+  // Used to filter out flags that should be replaced or ignored.
   if (!Array.isArray(args) || !Array.isArray(flagNames) || flagNames.length === 0) {
     return Array.isArray(args) ? args.slice() : [];
   }
 
   const targetFlags = new Set(flagNames);
   const nextArgs = [];
+  
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (typeof arg !== 'string') {
@@ -207,11 +278,13 @@ function removeFlagArgs(args, flagNames) {
       continue;
     }
 
+    // Skip flag and its value (format: --flag value)
     if (targetFlags.has(arg)) {
       index += 1;
       continue;
     }
 
+    // Skip inline flag (format: --flag=value)
     const inlineFlag = flagNames.find((flagName) => arg.startsWith(flagName + '='));
     if (inlineFlag) {
       continue;
@@ -223,6 +296,8 @@ function removeFlagArgs(args, flagNames) {
 }
 
 function buildBridgeSpawnArgs(args, remoteSessionId) {
+  // Build CLI arguments for bridge session spawns.
+  // Removes asar-specific flags and adds bridge-specific flags.
   const preservedArgs = removeFlagArgs(args, [
     '--resume',
     '--print',
@@ -246,6 +321,8 @@ function buildBridgeSpawnArgs(args, remoteSessionId) {
 }
 
 function deriveOrganizationUuidFromMetadataPath(metadataPath) {
+  // Extract organization UUID from metadata file path structure.
+  // Path format: .../<orgUuid>/<sessionId>.json
   if (typeof metadataPath !== 'string' || !metadataPath.trim()) {
     return null;
   }
@@ -255,6 +332,21 @@ function deriveOrganizationUuidFromMetadataPath(metadataPath) {
     ? organizationUuid.trim()
     : null;
 }
+
+// ============================================================================
+// SESSION ORCHESTRATOR
+// ============================================================================
+// SessionOrchestrator is the main coordinator for CLI spawn operations.
+// It integrates all the pieces above:
+//   - Mount preparation (MountManager)
+//   - Environment building (ProcessManager)
+//   - Argument translation and path resolution
+//   - Session metadata persistence
+//   - File registry and watch management
+//   - Flatline recovery and resume handling
+//
+// This class serves as the boundary between the IPC layer (asar) and the
+// low-level spawn operations (Swift stub).
 
 class SessionOrchestrator {
   constructor(deps) {
@@ -274,6 +366,14 @@ class SessionOrchestrator {
   }
 
   prepareVmSpawn(context) {
+    // Main entry point for preparing a CLI spawn operation.
+    // Steps:
+    //   1. Prepare mount symlinks (MountManager)
+    //   2. Resolve and validate command binary path
+    //   3. Translate VM paths in arguments to host paths
+    //   4. Filter out asar-specific arguments
+    //   5. Build spawn options (ProcessManager)
+    //   6. Return prepared spawn configuration
     const {
       processId,
       processName,
@@ -295,6 +395,7 @@ class SessionOrchestrator {
       translateVmPathStrict,
     } = this._deps;
 
+    // Step 1: Prepare mount symlinks
     const mountResult = this._mountManager.prepare({
       processId,
       processName,
@@ -308,6 +409,7 @@ class SessionOrchestrator {
       return mountResult;
     }
 
+    // Step 2: Define allowed binary paths for security
     const home = os.homedir();
     const allowedVmPrefixes = Array.isArray(claudeVmRoots) && claudeVmRoots.length > 0
       ? claudeVmRoots.map((vmRoot) => path.resolve(vmRoot) + path.sep)
@@ -321,6 +423,7 @@ class SessionOrchestrator {
       '/usr/bin/',
     ];
 
+    // Step 3: Resolve command to host binary path
     const normalizedCommand = (typeof command === 'string' || command instanceof String)
       ? String(command).trim()
       : '';
@@ -350,6 +453,7 @@ class SessionOrchestrator {
       return { success: false, error: 'Unexpected command' };
     }
 
+    // Security check: Ensure resolved command is in allowed directories
     const commandIsAllowed = hostCommand === 'claude' ||
       allowedPrefixes.some((prefix) => hostCommand.startsWith(prefix));
     if (!commandIsAllowed) {
@@ -360,6 +464,7 @@ class SessionOrchestrator {
       return { success: false, error: 'Invalid binary path' };
     }
 
+    // Step 4: Translate VM paths in arguments to host paths
     let hostArgs = (args || []).map((arg) => {
       if (typeof arg === 'string' && arg.startsWith('/sessions/')) {
         try {
@@ -374,6 +479,7 @@ class SessionOrchestrator {
       return arg;
     });
 
+    // Step 5: Filter out asar-specific arguments
     const filteredArgs = [];
     for (let index = 0; index < hostArgs.length; index += 1) {
       if (hostArgs[index] === '--add-dir' && index + 1 < hostArgs.length && hostArgs[index + 1].endsWith('.asar')) {
@@ -385,6 +491,7 @@ class SessionOrchestrator {
     }
     hostArgs = filteredArgs;
 
+    // Step 6: Ensure sessions base directory exists
     try {
       if (!fs.existsSync(sessionsBase)) {
         fs.mkdirSync(sessionsBase, { recursive: true, mode: 0o700 });
@@ -394,12 +501,14 @@ class SessionOrchestrator {
       trace('Failed to create sessions dir: ' + error.message);
     }
 
+    // Step 7: Translate environment variables (CLAUDE_CONFIG_DIR, etc.)
     const { translatedEnvVars, hostConfigDir } = translateHostConfigDir(envVars, {
       canonicalizePathForHostAccess,
       trace,
       translateVmPathStrict,
     });
 
+    // Step 8: Resolve working directory for CLI spawn
     const hostCwdPath = resolveHostCwdPath({
       args: hostArgs,
       canonicalizePathForHostAccess,
@@ -408,6 +517,7 @@ class SessionOrchestrator {
       trace,
     });
 
+    // Step 9: Update sessions API with OAuth token if available
     const spawnOAuthToken = translatedEnvVars.CLAUDE_CODE_OAUTH_TOKEN;
     if (
       spawnOAuthToken && typeof spawnOAuthToken === 'string' && spawnOAuthToken.trim() &&
@@ -417,6 +527,7 @@ class SessionOrchestrator {
       trace('Injected spawn-time OAuth token into sessions API');
     }
 
+    // Step 10: Attempt bridge session resolution (remote session API)
     const metadataPath = deriveSessionMetadataPath(hostConfigDir);
     const localSessionInfo = this._getLocalSessionInfo(metadataPath);
     const bridgeSession = this._resolveBridgeSession({
@@ -426,6 +537,8 @@ class SessionOrchestrator {
       metadataPath,
       trace,
     });
+    
+    // If bridge session is available, configure CLI for bridge mode
     if (bridgeSession) {
       if (typeof bridgeSession.sessionAccessToken !== 'string' || !bridgeSession.sessionAccessToken.trim()) {
         trace('WARNING: Bridge session resolved but sessionAccessToken is empty; falling through to legacy path');
@@ -449,6 +562,7 @@ class SessionOrchestrator {
       }
     }
 
+    // Step 11: Check for resume arguments and session metadata
     const resumeArgIndex = findResumeArgIndex(hostArgs);
     const currentResumeCliSessionId = resumeArgIndex === -1 ? null : hostArgs[resumeArgIndex + 1];
     const sessionDirectory = deriveSessionDirectory(hostConfigDir);
