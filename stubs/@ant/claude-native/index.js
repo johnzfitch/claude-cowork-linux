@@ -21,10 +21,11 @@
 const { ipcMain } = require('electron');
 const EventEmitter = require('events');
 const path = require('path');
-const os = require('os');
 const fs = require('fs');
+const { createDirs } = require('../../cowork/dirs.js');
 
 const LOG_PREFIX = '[claude-native-stub]';
+const DIRS = createDirs();
 
 function log(...args) {
   console.log(LOG_PREFIX, ...args);
@@ -40,7 +41,7 @@ function trace(category, msg, data = null) {
   // Write to trace file if CLAUDE_NATIVE_TRACE is set
   if (process.env.CLAUDE_NATIVE_TRACE) {
     const logDir = process.env.CLAUDE_LOG_DIR ||
-      path.join(os.homedir(), '.local/share/claude-cowork/logs');
+      DIRS.coworkLogsDir;
     try {
       fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
       fs.appendFileSync(

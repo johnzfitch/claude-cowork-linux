@@ -20,6 +20,9 @@ fi
 # Enable logging and DevTools
 export ELECTRON_ENABLE_LOGGING=1
 export CLAUDE_ENABLE_LOGGING=1
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+LOG_DIR="${CLAUDE_LOG_DIR:-$STATE_HOME/claude-cowork/logs}"
+export CLAUDE_LOG_DIR="$LOG_DIR"
 
 # Wayland support
 if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
@@ -28,7 +31,6 @@ if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
 fi
 
 # Create log directory
-LOG_DIR="$HOME/.local/share/claude-cowork/logs"
 mkdir -p "$LOG_DIR"
 
 # Launch with DevTools (--inspect enables Node.js inspector)

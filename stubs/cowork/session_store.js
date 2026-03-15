@@ -1,0 +1,633 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const {
+  chooseSessionTranscriptCandidate,
+  sanitizeTranscriptProjectKey,
+} = require('./transcript_store.js');
+
+const ACTIVE_SESSION_RETENTION_MS = 5 * 60 * 1000;
+
+function isCanonicalHostPath(targetPath) {
+  return (
+    typeof targetPath === 'string' &&
+    targetPath.trim() &&
+    path.isAbsolute(targetPath) &&
+    !targetPath.startsWith('/sessions/')
+  );
+}
+
+function isDesktopRuntimePath(targetPath) {
+  if (!isCanonicalHostPath(targetPath)) {
+    return false;
+  }
+
+  const homeDir = os.homedir();
+  const xdgDataHome = typeof process.env.XDG_DATA_HOME === 'string' && process.env.XDG_DATA_HOME.trim()
+    ? path.resolve(process.env.XDG_DATA_HOME)
+    : path.join(homeDir, '.local', 'share');
+  const desktopDataRoot = path.join(xdgDataHome, 'claude-desktop');
+  const normalizedTargetPath = path.resolve(targetPath);
+  return normalizedTargetPath === desktopDataRoot || normalizedTargetPath.startsWith(desktopDataRoot + path.sep);
+}
+
+function shouldRepairSessionCwd(targetPath, sessionData) {
+  if (!isCanonicalHostPath(targetPath)) {
+    return true;
+  }
+  return isSyntheticSessionCwd(targetPath, sessionData) || isDesktopRuntimePath(targetPath);
+}
+
+function getPreferredSessionRoot(sessionData) {
+  if (!sessionData || typeof sessionData !== 'object' || !Array.isArray(sessionData.userSelectedFolders)) {
+    return null;
+  }
+
+  for (const folderPath of sessionData.userSelectedFolders) {
+    if (isCanonicalHostPath(folderPath) && !isDesktopRuntimePath(folderPath)) {
+      return path.resolve(folderPath);
+    }
+  }
+
+  return null;
+}
+
+function getAuthorizedSessionRoots(sessionData) {
+  if (!sessionData || typeof sessionData !== 'object' || !Array.isArray(sessionData.userSelectedFolders)) {
+    return [];
+  }
+
+  const seenRoots = new Set();
+  const authorizedRoots = [];
+  for (const folderPath of sessionData.userSelectedFolders) {
+    if (!isCanonicalHostPath(folderPath) || isDesktopRuntimePath(folderPath)) {
+      continue;
+    }
+    const normalizedPath = path.resolve(folderPath);
+    if (seenRoots.has(normalizedPath)) {
+      continue;
+    }
+    seenRoots.add(normalizedPath);
+    authorizedRoots.push(normalizedPath);
+  }
+  return authorizedRoots;
+}
+
+function isSyntheticSessionCwd(targetPath, sessionData) {
+  if (typeof targetPath !== 'string' || !targetPath.trim()) {
+    return false;
+  }
+  if (targetPath.startsWith('/sessions/')) {
+    return true;
+  }
+
+  const processNames = [
+    sessionData && typeof sessionData.processName === 'string' ? sessionData.processName : null,
+    sessionData && typeof sessionData.vmProcessName === 'string' ? sessionData.vmProcessName : null,
+  ].filter(Boolean);
+
+  return processNames.some((processName) => targetPath === path.join('/home', processName));
+}
+
+function listLocalSessionMetadataFiles(rootPath) {
+  const pendingPaths = [rootPath];
+  const metadataFiles = [];
+
+  while (pendingPaths.length > 0) {
+    const currentPath = pendingPaths.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    } catch (_) {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        pendingPaths.push(entryPath);
+        continue;
+      }
+      if (entry.isFile() && /^local_[^/\\]+\.json$/i.test(entry.name)) {
+        metadataFiles.push(entryPath);
+      }
+    }
+  }
+
+  return metadataFiles;
+}
+
+function findSessionMetadataPath(localAgentRoot, sessionId) {
+  if (typeof localAgentRoot !== 'string' || !localAgentRoot.trim()) {
+    return null;
+  }
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    return null;
+  }
+
+  const targetName = sessionId + '.json';
+  const metadataFiles = listLocalSessionMetadataFiles(localAgentRoot);
+  return metadataFiles.find((filePath) => path.basename(filePath) === targetName) || null;
+}
+
+function getSessionDirectory(localAgentRoot, sessionId) {
+  const metadataPath = findSessionMetadataPath(localAgentRoot, sessionId);
+  if (!metadataPath) {
+    return null;
+  }
+  return metadataPath.replace(/\.json$/i, '');
+}
+
+function isLocalSessionMetadataFilePath(localAgentRoot, filePath) {
+  if (typeof localAgentRoot !== 'string' || !localAgentRoot.trim()) {
+    return false;
+  }
+  if (typeof filePath !== 'string' || !filePath.trim()) {
+    return false;
+  }
+
+  const normalizedPath = path.resolve(filePath);
+  const normalizedRoot = path.resolve(localAgentRoot);
+  if (!normalizedPath.startsWith(normalizedRoot + path.sep)) {
+    return false;
+  }
+
+  return /^local_[^/\\]+\.json$/i.test(path.basename(normalizedPath));
+}
+
+function detectJsonIndentation(sourceText) {
+  if (typeof sourceText !== 'string') {
+    return '  ';
+  }
+  const indentationMatch = sourceText.match(/^[ \t]+(?=")/m);
+  return indentationMatch ? indentationMatch[0] : '  ';
+}
+
+function deriveMetadataPathFromConfigDir(configDirPath) {
+  if (typeof configDirPath !== 'string' || !configDirPath.trim()) {
+    return null;
+  }
+
+  const normalizedPath = path.resolve(configDirPath);
+  if (path.basename(normalizedPath) !== '.claude') {
+    return null;
+  }
+
+  return path.dirname(normalizedPath) + '.json';
+}
+
+function parseAuditLine(line) {
+  if (typeof line !== 'string' || !line.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(line);
+  } catch (_) {
+    return null;
+  }
+}
+
+function readSessionAuditInitEntries(sessionDirectory) {
+  if (typeof sessionDirectory !== 'string' || !sessionDirectory.trim()) {
+    return [];
+  }
+
+  const auditPath = path.join(sessionDirectory, 'audit.jsonl');
+  let auditText;
+  try {
+    auditText = fs.readFileSync(auditPath, 'utf8');
+  } catch (_) {
+    return [];
+  }
+
+  return auditText
+    .split('\n')
+    .map((line) => parseAuditLine(line))
+    .filter((entry) => (
+      entry &&
+      entry.type === 'system' &&
+      entry.subtype === 'init' &&
+      typeof entry.session_id === 'string' &&
+      isCanonicalHostPath(entry.cwd) &&
+      !isDesktopRuntimePath(entry.cwd)
+    ))
+    .map((entry) => ({
+      cliSessionId: entry.session_id,
+      cwd: path.resolve(entry.cwd),
+      timestampMs: typeof entry._audit_timestamp === 'string'
+        ? (Date.parse(entry._audit_timestamp) || 0)
+        : 0,
+    }));
+}
+
+function chooseAuditPreferredRoot(sessionDirectory, candidateCliSessionIds) {
+  const auditEntries = readSessionAuditInitEntries(sessionDirectory);
+  if (auditEntries.length === 0) {
+    return null;
+  }
+
+  for (const candidateCliSessionId of candidateCliSessionIds || []) {
+    if (typeof candidateCliSessionId !== 'string' || !candidateCliSessionId.trim()) {
+      continue;
+    }
+    const matchingEntries = auditEntries
+      .filter((entry) => entry.cliSessionId === candidateCliSessionId)
+      .sort((left, right) => right.timestampMs - left.timestampMs);
+    if (matchingEntries.length > 0) {
+      return matchingEntries[0].cwd;
+    }
+  }
+
+  const sortedEntries = [...auditEntries].sort((left, right) => right.timestampMs - left.timestampMs);
+  return sortedEntries[0] ? sortedEntries[0].cwd : null;
+}
+
+class SessionStore {
+  constructor(options) {
+    const { localAgentRoot } = options || {};
+    this._localAgentRoot = localAgentRoot;
+    this._activeSessionByRoot = new Map();
+    this._sessionObservedAt = new Map();
+    this._activeSessionId = null;
+  }
+
+  getSessionDirectory(sessionId) {
+    return getSessionDirectory(this._localAgentRoot, sessionId);
+  }
+
+  normalizeSessionRecord(sessionData) {
+    if (!sessionData || typeof sessionData !== 'object' || Array.isArray(sessionData)) {
+      return sessionData;
+    }
+
+    const metadataPath = findSessionMetadataPath(this._localAgentRoot, sessionData.sessionId);
+    return this.normalizeSessionRecordForMetadataPath(metadataPath, sessionData);
+  }
+
+  getSessionInfo(sessionId) {
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      return null;
+    }
+
+    const metadataPath = findSessionMetadataPath(this._localAgentRoot, sessionId);
+    return this.getSessionInfoByMetadataPath(metadataPath);
+  }
+
+  getSessionInfoByMetadataPath(metadataPath) {
+    if (!metadataPath) {
+      return null;
+    }
+
+    let rawSessionData;
+    try {
+      rawSessionData = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    } catch (_) {
+      return null;
+    }
+
+    const normalizedSessionData = this.normalizeSessionRecordForMetadataPath(metadataPath, rawSessionData);
+    const preferredRoot = getPreferredSessionRoot(normalizedSessionData);
+    const sessionDirectory = metadataPath.replace(/\.json$/i, '');
+    const preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+    const transcriptCandidate = chooseSessionTranscriptCandidate({
+      sessionDirectory,
+      preferredProjectKey,
+      cliSessionId: normalizedSessionData.cliSessionId,
+    });
+
+    return {
+      metadataPath,
+      preferredRoot,
+      rawSessionData,
+      sessionDirectory,
+      sessionData: normalizedSessionData,
+      transcriptCandidate,
+    };
+  }
+
+  getSessionInfoForConfigDir(configDirPath) {
+    return this.getSessionInfoByMetadataPath(deriveMetadataPathFromConfigDir(configDirPath));
+  }
+
+  observeSessionRead(sessionData) {
+    const normalizedSessionData = this.normalizeSessionRecord(sessionData);
+    if (!normalizedSessionData || typeof normalizedSessionData !== 'object' || Array.isArray(normalizedSessionData)) {
+      return normalizedSessionData;
+    }
+
+    const preferredRoot = getPreferredSessionRoot(normalizedSessionData);
+    if (!preferredRoot || typeof normalizedSessionData.sessionId !== 'string') {
+      return normalizedSessionData;
+    }
+
+    const now = Date.now();
+    this._activeSessionByRoot.set(preferredRoot, {
+      observedAt: now,
+      sessionId: normalizedSessionData.sessionId,
+    });
+    this._sessionObservedAt.set(normalizedSessionData.sessionId, now);
+    this._activeSessionId = normalizedSessionData.sessionId;
+    return normalizedSessionData;
+  }
+
+  observeSessionId(sessionId) {
+    const sessionInfo = this.getSessionInfo(sessionId);
+    if (!sessionInfo) {
+      return null;
+    }
+    this._activeSessionId = sessionId;
+    this.observeSessionRead(sessionInfo.sessionData);
+    return sessionInfo.sessionData;
+  }
+
+  getActiveSessionId() {
+    return this._activeSessionId;
+  }
+
+  getActiveSessionInfo() {
+    if (typeof this._activeSessionId === 'string' && this._activeSessionId.trim()) {
+      return this.getSessionInfo(this._activeSessionId);
+    }
+    return null;
+  }
+
+  getAuthorizedRoots(sessionId) {
+    const sessionInfo = this.getSessionInfo(sessionId);
+    if (!sessionInfo) {
+      return [];
+    }
+    return getAuthorizedSessionRoots(sessionInfo.sessionData);
+  }
+
+  resolveMutationSessionId(sessionId) {
+    const requestedSessionInfo = this.getSessionInfo(sessionId);
+    if (!requestedSessionInfo) {
+      return sessionId;
+    }
+
+    const { preferredRoot } = requestedSessionInfo;
+    if (!preferredRoot) {
+      return sessionId;
+    }
+
+    const activeSessionState = this._activeSessionByRoot.get(preferredRoot);
+    if (!activeSessionState || activeSessionState.sessionId === sessionId) {
+      return sessionId;
+    }
+
+    if ((Date.now() - activeSessionState.observedAt) > ACTIVE_SESSION_RETENTION_MS) {
+      this._activeSessionByRoot.delete(preferredRoot);
+      return sessionId;
+    }
+
+    const requestedObservedAt = this._sessionObservedAt.get(sessionId) || 0;
+    if (requestedObservedAt >= activeSessionState.observedAt) {
+      return sessionId;
+    }
+
+    const activeSessionInfo = this.getSessionInfo(activeSessionState.sessionId);
+    if (!activeSessionInfo) {
+      return sessionId;
+    }
+
+    if (activeSessionInfo.sessionData && activeSessionInfo.sessionData.isArchived) {
+      return sessionId;
+    }
+
+    const requestedConversationCount = requestedSessionInfo.transcriptCandidate
+      ? requestedSessionInfo.transcriptCandidate.conversationEntryCount || 0
+      : 0;
+    const activeConversationCount = activeSessionInfo.transcriptCandidate
+      ? activeSessionInfo.transcriptCandidate.conversationEntryCount || 0
+      : 0;
+
+    if (activeConversationCount < requestedConversationCount) {
+      return sessionId;
+    }
+
+    return activeSessionInfo.sessionData.sessionId || sessionId;
+  }
+
+  normalizeSessionRecordForMetadataPath(metadataPath, sessionData) {
+    if (!sessionData || typeof sessionData !== 'object' || Array.isArray(sessionData)) {
+      return sessionData;
+    }
+
+    const nextSessionData = { ...sessionData };
+
+    const sessionDirectory = metadataPath && typeof metadataPath === 'string'
+      ? metadataPath.replace(/\.json$/i, '')
+      : this.getSessionDirectory(nextSessionData.sessionId);
+    if (!sessionDirectory) {
+      return nextSessionData;
+    }
+
+    let preferredRoot = getPreferredSessionRoot(nextSessionData);
+    let preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+    let transcriptCandidate = chooseSessionTranscriptCandidate({
+      sessionDirectory,
+      preferredProjectKey,
+      cliSessionId: nextSessionData.cliSessionId,
+    });
+
+    if (!preferredRoot) {
+      const recoveredRoot = chooseAuditPreferredRoot(sessionDirectory, [
+        transcriptCandidate && transcriptCandidate.cliSessionId ? transcriptCandidate.cliSessionId : null,
+        nextSessionData.cliSessionId,
+      ]);
+      if (recoveredRoot) {
+        nextSessionData.userSelectedFolders = [recoveredRoot];
+        preferredRoot = recoveredRoot;
+        preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+        transcriptCandidate = chooseSessionTranscriptCandidate({
+          sessionDirectory,
+          preferredProjectKey,
+          cliSessionId: nextSessionData.cliSessionId,
+        });
+      }
+    }
+
+    if (preferredRoot && shouldRepairSessionCwd(nextSessionData.cwd, nextSessionData)) {
+      nextSessionData.cwd = preferredRoot;
+    }
+
+    if (transcriptCandidate && transcriptCandidate.cliSessionId && transcriptCandidate.cliSessionId !== nextSessionData.cliSessionId) {
+      nextSessionData.cliSessionId = transcriptCandidate.cliSessionId;
+    }
+
+    return nextSessionData;
+  }
+
+  persistSessionIdentity(sessionId, identityPatch) {
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      return {
+        success: false,
+        error: 'Missing sessionId for identity persistence',
+      };
+    }
+
+    return this.persistSessionIdentityForMetadataPath(
+      findSessionMetadataPath(this._localAgentRoot, sessionId),
+      identityPatch
+    );
+  }
+
+  persistSessionIdentityForMetadataPath(metadataPath, identityPatch) {
+    if (typeof metadataPath !== 'string' || !metadataPath.trim()) {
+      return {
+        success: false,
+        error: 'Missing session metadata path for identity persistence',
+      };
+    }
+
+    let serializedValue;
+    try {
+      serializedValue = fs.readFileSync(metadataPath, 'utf8');
+    } catch (error) {
+      return {
+        success: false,
+        error: 'Failed to read session metadata: ' + error.message,
+      };
+    }
+
+    let parsedValue;
+    try {
+      parsedValue = JSON.parse(serializedValue);
+    } catch (error) {
+      return {
+        success: false,
+        error: 'Failed to parse session metadata: ' + error.message,
+      };
+    }
+
+    const nextSessionData = {
+      ...parsedValue,
+    };
+    for (const [key, value] of Object.entries(identityPatch || {})) {
+      if (value === undefined) {
+        continue;
+      }
+      nextSessionData[key] = value;
+    }
+    delete nextSessionData.error;
+
+    const normalizedValue = this.normalizeSessionRecordForMetadataPath(metadataPath, nextSessionData);
+    const indent = detectJsonIndentation(serializedValue);
+    const hasTrailingNewline = serializedValue.endsWith('\n');
+    const nextSerializedValue = JSON.stringify(normalizedValue, null, indent) + (hasTrailingNewline ? '\n' : '');
+
+    try {
+      fs.writeFileSync(metadataPath, nextSerializedValue, 'utf8');
+    } catch (error) {
+      return {
+        success: false,
+        error: 'Failed to persist session metadata: ' + error.message,
+      };
+    }
+
+    return {
+      success: true,
+      metadataPath,
+      sessionData: normalizedValue,
+    };
+  }
+
+  normalizeSerializedMetadata(filePath, serializedValue) {
+    if (!isLocalSessionMetadataFilePath(this._localAgentRoot, filePath) || typeof serializedValue !== 'string' || !serializedValue.trim()) {
+      return serializedValue;
+    }
+
+    try {
+      const parsedValue = JSON.parse(serializedValue);
+      const normalizedValue = this.normalizeSessionRecordForMetadataPath(path.resolve(filePath), parsedValue);
+      if (JSON.stringify(normalizedValue) === JSON.stringify(parsedValue)) {
+        return serializedValue;
+      }
+
+      const indent = detectJsonIndentation(serializedValue);
+      const hasTrailingNewline = serializedValue.endsWith('\n');
+      return JSON.stringify(normalizedValue, null, indent) + (hasTrailingNewline ? '\n' : '');
+    } catch (_) {
+      return serializedValue;
+    }
+  }
+
+  normalizeWriteValue(filePath, value) {
+    if (typeof value === 'string') {
+      return this.normalizeSerializedMetadata(filePath, value);
+    }
+
+    if (Buffer.isBuffer(value)) {
+      const originalStringValue = value.toString('utf8');
+      const normalizedStringValue = this.normalizeSerializedMetadata(filePath, originalStringValue);
+      return normalizedStringValue === originalStringValue
+        ? value
+        : Buffer.from(normalizedStringValue, 'utf8');
+    }
+
+    return value;
+  }
+
+  installMetadataPersistenceGuard() {
+    if (global.__coworkLocalSessionMetadataPersistenceGuardInstalled) {
+      return;
+    }
+    global.__coworkLocalSessionMetadataPersistenceGuardInstalled = true;
+
+    const originalWriteFileSync = fs.writeFileSync.bind(fs);
+    const originalWriteFile = fs.writeFile.bind(fs);
+    const originalPromisesWriteFile = fs.promises && typeof fs.promises.writeFile === 'function'
+      ? fs.promises.writeFile.bind(fs.promises)
+      : null;
+
+    fs.writeFileSync = (filePath, value, ...rest) => {
+      const normalizedValue = this.normalizeWriteValue(filePath, value);
+      return originalWriteFileSync(filePath, normalizedValue, ...rest);
+    };
+
+    fs.writeFile = (filePath, value, options, callback) => {
+      const normalizedValue = this.normalizeWriteValue(filePath, value);
+      return originalWriteFile(filePath, normalizedValue, options, callback);
+    };
+
+    if (originalPromisesWriteFile) {
+      fs.promises.writeFile = (filePath, value, options) => {
+        const normalizedValue = this.normalizeWriteValue(filePath, value);
+        return originalPromisesWriteFile(filePath, normalizedValue, options);
+      };
+    }
+
+    for (const metadataPath of listLocalSessionMetadataFiles(this._localAgentRoot)) {
+      let serializedValue;
+      try {
+        serializedValue = fs.readFileSync(metadataPath, 'utf8');
+      } catch (_) {
+        continue;
+      }
+
+      const normalizedValue = this.normalizeSerializedMetadata(metadataPath, serializedValue);
+      if (normalizedValue !== serializedValue) {
+        originalWriteFileSync(metadataPath, normalizedValue, 'utf8');
+      }
+    }
+  }
+}
+
+function createSessionStore(options) {
+  return new SessionStore(options);
+}
+
+module.exports = {
+  SessionStore,
+  createSessionStore,
+  deriveMetadataPathFromConfigDir,
+  findSessionMetadataPath,
+  getAuthorizedSessionRoots,
+  isLocalSessionMetadataFilePath,
+  getPreferredSessionRoot,
+  getSessionDirectory,
+  isSyntheticSessionCwd,
+  listLocalSessionMetadataFiles,
+  detectJsonIndentation,
+};

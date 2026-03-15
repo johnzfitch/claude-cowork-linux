@@ -144,33 +144,14 @@ const CREDENTIAL_EXEMPT_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
 
 ---
 
-### 3. SDK Bridge Environment — Allowlist Replaces Full Spread
+### 3. Credential Classifier -- Defense-in-Depth Detection
 
-**File**: `cowork/sdk_bridge.js` (lines 30-54, ~367)
+**File**: `stubs/cowork/credential_classifier.js`
 
-**Risk**: The SDK bridge previously copied the entire `process.env` to subprocesses:
-```javascript
-// BEFORE (unsafe):
-const env = { ...process.env, CLAUDE_CODE_SESSION_ID: sessionId };
-```
-
-If the Electron main process had OAuth tokens in its environment (which is possible after auth), they would leak to Claude Code.
-
-**Mitigation**: Replaced with an explicit allowlist:
-
-```javascript
-// AFTER (safe):
-const env = filterEnvForSubprocess(process.env, {
-  CLAUDE_CODE_SESSION_ID: sessionId,
-});
-```
-
-The `SDK_ENV_ALLOWLIST` contains only system variables, display variables, and Claude configuration keys. OAuth tokens, session cookies, and other credentials are structurally excluded.
-
-**How this meets expectations**:
-- Claude Code receives only the minimum environment it needs to function
-- No path exists for OAuth tokens to flow from the Electron process to Claude Code through our code
-- The allowlist is easy to audit — every allowed variable is explicitly named
+Provides pattern-based credential detection used by multiple modules:
+- Identifies API keys, OAuth tokens, bearer tokens, session cookies
+- Used by `filterEnv()` and log redaction paths as a shared classification layer
+- Patterns are intentionally broad to minimize false negatives
 
 ---
 
@@ -254,7 +235,7 @@ Even though our stubs don't handle tokens, trace logs could theoretically captur
 |-----------|-----------|---------|
 | `stubs/@ant/claude-swift/js/index.js` | **Our code** | VM emulation for Linux (process spawn, path translation) |
 | `stubs/@ant/claude-native/index.js` | **Our code** | Platform shims (notifications, keyboard, etc.) |
-| `cowork/sdk_bridge.js` | **Our code** | CLI bridge for SDK-mode sessions |
+| `stubs/cowork/*.js` (15 modules) | **Our code** | Session orchestration, IPC, credential handling |
 | `linux-app-extracted/ipc-handler-setup.js` | **Our code** | IPC handlers, session state, session persistence |
 | `app/.vite/build/index.js` | **Anthropic's code** (3 one-line patches) | Platform gate bypass only |
 | Claude Desktop renderer | **Unmodified** | Handles all OAuth, UI, API communication |
@@ -273,8 +254,8 @@ grep -n 'addApprovedOauthToken' stubs/@ant/claude-swift/js/index.js
 # 2. Confirm filterEnv blocks credential-like keys with explicit exemption for CLI token
 grep -n 'BLOCKED_ENV_KEY_PATTERN\|CREDENTIAL_EXEMPT_KEYS' stubs/@ant/claude-swift/js/index.js
 
-# 3. Confirm SDK bridge uses allowlist, not ...process.env spread
-grep -n 'filterEnvForSubprocess\|SDK_ENV_ALLOWLIST' cowork/sdk_bridge.js
+# 3. Confirm credential classifier patterns cover known token formats
+grep -n 'classify\|CREDENTIAL' stubs/cowork/credential_classifier.js
 
 # 4. Confirm AuthRequest is browser-only: isAvailable→false, ALLOWED_AUTH_ORIGINS enforced
 grep -n 'isAvailable\|ALLOWED_AUTH_ORIGINS' stubs/@ant/claude-native/index.js

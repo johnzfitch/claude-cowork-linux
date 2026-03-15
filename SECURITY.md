@@ -27,11 +27,15 @@ Areas of highest sensitivity in this codebase:
 
 | Area | File | Risk |
 |------|------|------|
-| Token passthrough | `stubs/@ant/claude-swift/js/index.js` — `filterEnv()` | OAuth token leaking to unexpected processes |
-| Process spawning | `stubs/@ant/claude-swift/js/index.js` — `spawn()` | Command injection via path or env var |
-| Auth URL validation | `stubs/@ant/claude-native/index.js` — `AuthRequest.start()` | Open redirect to non-Anthropic domain |
-| Log redaction | `stubs/@ant/claude-swift/js/index.js` — `redactForLogs()` | Token appearing in trace log |
-| Path traversal | `stubs/@ant/claude-swift/js/index.js` — `isPathSafe()` | Session path escaping SESSIONS_BASE |
+| Token passthrough | `stubs/@ant/claude-swift/js/index.js` -- `filterEnv()` | OAuth token leaking to unexpected processes |
+| Process spawning | `stubs/@ant/claude-swift/js/index.js` -- `spawn()` | Command injection via path or env var |
+| Auth URL validation | `stubs/@ant/claude-native/index.js` -- `AuthRequest.start()` | Open redirect to non-Anthropic domain |
+| Log redaction | `stubs/@ant/claude-swift/js/index.js` -- `redactForLogs()` | Token appearing in trace log |
+| Path traversal | `stubs/@ant/claude-swift/js/index.js` -- `isPathSafe()` | Session path escaping SESSIONS_BASE |
+| Credential detection | `stubs/cowork/credential_classifier.js` | False negatives allowing token leakage |
+| HTTP header injection | `stubs/cowork/sessions_api.js` | CRLF injection in API headers |
+| File descriptor bounds | `stubs/cowork/sessions_api.js` | FD exhaustion or out-of-bounds access |
+| Asar path handling | `stubs/cowork/asar_adapter.js` | Path traversal in asar file operations |
 
 ## Response Commitment
 

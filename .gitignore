@@ -81,6 +81,17 @@ ARCHITECTURE.md
 auth_code_reference.txt
 auth_findings_summary.md
 
+# Dev artifacts
+AGENTS.md
+HANDOFF*.md
+REVIEW-*.md
+server.pid
+server.log
+cowork-logs.txt
+data/
+target/
+local-*
+
 # Local Claude Code config
 .claude/
 

@@ -4,8 +4,321 @@ const originalRequire = Module.prototype.require;
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const {
+  createAsarAdapter,
+  DEFAULT_FILESYSTEM_PATH_ALIASES,
+  isFileSystemPathRewriteChannel,
+  rewriteAliasedFilePath,
+} = require('./cowork/asar_adapter.js');
+const { createDirs } = require('./cowork/dirs.js');
+const { createSessionOrchestrator } = require('./cowork/session_orchestrator.js');
+const { createSessionStore } = require('./cowork/session_store.js');
+const { createIpcTap } = require('./cowork/ipc_tap.js');
 
 console.log('[Frame Fix] Wrapper v2.5 loaded');
+
+function wrapAliasedFileSystemHandler(channel, handler, getAdapter) {
+  if (typeof handler !== 'function' || !isFileSystemPathRewriteChannel(channel)) {
+    return handler;
+  }
+  if (handler.__coworkAliasedFileSystemWrapped) {
+    return handler;
+  }
+
+  const normalizedChannel = typeof channel === 'string' ? channel.toLowerCase() : '';
+  function isPotentialIpcEvent(value) {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    return !!(
+      value.sender ||
+      value.senderFrame ||
+      value.frameId ||
+      value.processId
+    );
+  }
+
+  function splitHandlerArgs(args) {
+    if (!Array.isArray(args) || args.length === 0) {
+      return {
+        eventArg: null,
+        payloadArgs: [],
+      };
+    }
+    if (isPotentialIpcEvent(args[0])) {
+      return {
+        eventArg: args[0],
+        payloadArgs: args.slice(1),
+      };
+    }
+    return {
+      eventArg: null,
+      payloadArgs: args.slice(),
+    };
+  }
+
+  function joinHandlerArgs(eventArg, payloadArgs) {
+    return eventArg ? [eventArg, ...(payloadArgs || [])] : (payloadArgs || []);
+  }
+
+  function isSessionScopedFileSystemChannelName(value) {
+    return value.endsWith('filesystem_$_readlocalfile') ||
+      value.endsWith('filesystem_$_openlocalfile');
+  }
+
+  let delegatedHandler = null;
+  const wrappedHandler = async function(...args) {
+    if (!delegatedHandler && typeof getAdapter === 'function') {
+      const adapter = getAdapter();
+      if (adapter && typeof adapter.wrapHandler === 'function') {
+        delegatedHandler = adapter.wrapHandler(channel, handler);
+      }
+    }
+
+    if (delegatedHandler) {
+      return delegatedHandler(...args);
+    }
+
+    if (!Array.isArray(args) || args.length === 0) {
+      return handler(...args);
+    }
+
+    const { eventArg, payloadArgs } = splitHandlerArgs(args);
+    const hasExplicitSessionId = isSessionScopedFileSystemChannelName(normalizedChannel) &&
+      typeof payloadArgs[0] === 'string' &&
+      payloadArgs[0].startsWith('local_');
+    const targetPath = hasExplicitSessionId ? payloadArgs[1] : payloadArgs[0];
+    const rest = hasExplicitSessionId ? payloadArgs.slice(2) : payloadArgs.slice(1);
+    if (typeof targetPath !== 'string') {
+      return handler(...args);
+    }
+
+    const rewrittenPath = rewriteAliasedFilePath(targetPath, DEFAULT_FILESYSTEM_PATH_ALIASES);
+    if (rewrittenPath !== targetPath) {
+      console.log('[Cowork] Rewrote stale FileSystem path:', targetPath, '->', rewrittenPath);
+    }
+    const nextPayloadArgs = hasExplicitSessionId
+      ? [payloadArgs[0], rewrittenPath, ...rest]
+      : [rewrittenPath, ...rest];
+    return handler(...joinHandlerArgs(eventArg, nextPayloadArgs));
+  };
+  wrappedHandler.__coworkAliasedFileSystemWrapped = true;
+  return wrappedHandler;
+}
+
+function resolveElectronApp(electronModule) {
+  const candidate = electronModule && typeof electronModule === 'object'
+    ? electronModule.app
+    : null;
+  if (candidate && typeof candidate.on === 'function') {
+    return candidate;
+  }
+
+  try {
+    const electron = require('electron');
+    if (electron && electron.app && typeof electron.app.on === 'function') {
+      return electron.app;
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+function registerElectronAppListener(electronModule, eventName, listener, description) {
+  const label = description || eventName;
+  try {
+    const app = resolveElectronApp(electronModule);
+    if (!app) {
+      console.log('[Frame Fix] Skipping app listener registration for ' + label + ': app unavailable');
+      return false;
+    }
+    app.on(eventName, listener);
+    return true;
+  } catch (error) {
+    console.log('[Frame Fix] Failed to register app listener for ' + label + ': ' + error.message);
+    return false;
+  }
+}
+
+function hideLinuxMenuBars(electronModule) {
+  if (REAL_PLATFORM !== 'linux') {
+    return;
+  }
+
+  const BrowserWindow = electronModule && electronModule.BrowserWindow;
+  if (!BrowserWindow || typeof BrowserWindow.getAllWindows !== 'function') {
+    console.log('[Frame Fix] Skipping menu bar hide: BrowserWindow.getAllWindows unavailable');
+    return;
+  }
+
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win && typeof win.setMenuBarVisibility === 'function') {
+        win.setMenuBarVisibility(false);
+      }
+    }
+    console.log('[Frame Fix] Menu bar hidden on all windows');
+  } catch (error) {
+    console.log('[Frame Fix] setMenuBarVisibility error:', error.message);
+  }
+}
+
+function describeLinuxMenuApiShape(electronModule) {
+  const menuApi = electronModule && electronModule.Menu;
+  const app = resolveElectronApp(electronModule);
+  const shape = {
+    hasMenuObject: !!(menuApi && (typeof menuApi === 'object' || typeof menuApi === 'function')),
+    hasMenuSetApplicationMenu: !!(menuApi && typeof menuApi.setApplicationMenu === 'function'),
+    hasMenuSetDefaultApplicationMenu: !!(menuApi && typeof menuApi.setDefaultApplicationMenu === 'function'),
+    hasAppObject: !!app,
+    hasAppSetApplicationMenu: !!(app && typeof app.setApplicationMenu === 'function'),
+    missing: [],
+  };
+
+  if (!shape.hasMenuObject) {
+    shape.missing.push('Menu');
+  }
+  if (shape.hasMenuObject && !shape.hasMenuSetApplicationMenu) {
+    shape.missing.push('Menu.setApplicationMenu');
+  }
+  if (shape.hasMenuObject && !shape.hasMenuSetDefaultApplicationMenu) {
+    shape.missing.push('Menu.setDefaultApplicationMenu');
+  }
+  if (shape.hasAppObject && !shape.hasAppSetApplicationMenu) {
+    shape.missing.push('app.setApplicationMenu');
+  }
+
+  return shape;
+}
+
+function installLinuxMenuInterceptors(electronModule) {
+  if (!electronModule || typeof electronModule !== 'object') {
+    return;
+  }
+  if (global.__coworkLinuxMenuInterceptorsInstalled) {
+    return;
+  }
+
+  const menuApi = electronModule.Menu;
+  const app = resolveElectronApp(electronModule);
+  const menuApiShape = describeLinuxMenuApiShape(electronModule);
+  if (!menuApi || (!menuApiShape.hasMenuObject && !menuApiShape.hasMenuSetApplicationMenu && !menuApiShape.hasMenuSetDefaultApplicationMenu)) {
+    console.log('[Frame Fix] Skipping menu interception: Menu API unavailable');
+    console.log('[Frame Fix] Menu API shape:', JSON.stringify(menuApiShape));
+    return;
+  }
+  global.__coworkLinuxMenuInterceptorsInstalled = true;
+
+  const originalSetAppMenu = typeof menuApi.setApplicationMenu === 'function'
+    ? menuApi.setApplicationMenu.bind(menuApi)
+    : null;
+  const originalSetDefaultAppMenu = typeof menuApi.setDefaultApplicationMenu === 'function'
+    ? menuApi.setDefaultApplicationMenu.bind(menuApi)
+    : null;
+
+  if (menuApiShape.missing.length > 0) {
+    console.log('[Frame Fix] Menu API coverage gaps:', menuApiShape.missing.join(', '));
+  }
+
+  if (app && typeof app.setApplicationMenu !== 'function') {
+    app.setApplicationMenu = function(menu) {
+      try {
+        if (originalSetAppMenu) {
+          return originalSetAppMenu(menu);
+        }
+      } catch (error) {
+        console.log('[Frame Fix] app.setApplicationMenu fallback error (ignored):', error.message);
+      } finally {
+        hideLinuxMenuBars(electronModule);
+      }
+      return undefined;
+    };
+    console.log('[Frame Fix] Added app.setApplicationMenu fallback');
+  }
+
+  menuApi.setApplicationMenu = function(menu) {
+    console.log('[Frame Fix] Intercepting setApplicationMenu');
+    try {
+      if (originalSetAppMenu) {
+        return originalSetAppMenu(menu);
+      }
+    } catch (error) {
+      console.log('[Frame Fix] setApplicationMenu error (ignored):', error.message);
+    } finally {
+      hideLinuxMenuBars(electronModule);
+    }
+    return undefined;
+  };
+
+  if (originalSetDefaultAppMenu) {
+    menuApi.setDefaultApplicationMenu = function(...args) {
+      console.log('[Frame Fix] Intercepting setDefaultApplicationMenu');
+      if (REAL_PLATFORM === 'linux') {
+        try {
+          menuApi.setApplicationMenu(null);
+        } catch (error) {
+          console.log('[Frame Fix] setDefaultApplicationMenu fallback error (ignored):', error.message);
+        }
+        return undefined;
+      }
+
+      try {
+        return originalSetDefaultAppMenu(...args);
+      } catch (error) {
+        console.log('[Frame Fix] setDefaultApplicationMenu error (ignored):', error.message);
+        return undefined;
+      }
+    };
+  }
+}
+
+// ============================================================
+// IPC TAP — must be created before the early ipcMain patch so
+// it can instrument _invokeHandlers before any asar code runs.
+// Uses a provisional log dir since DIRS isn't available yet.
+// ============================================================
+const ipcTap = createIpcTap({
+  enabled: process.env.CLAUDE_COWORK_IPC_TAP === '1',
+  logDir: process.env.CLAUDE_LOG_DIR ||
+    (process.env.XDG_STATE_HOME || require('path').join(require('os').homedir(), '.local', 'state'))
+    + '/claude-cowork/logs',
+});
+
+// ============================================================
+// CRITICAL: Patch ipcMain IMMEDIATELY before any asar code runs
+// ============================================================
+// NOTE: _invokeHandlers.get() is dead code — Electron dispatches via C++
+// and never calls Map.get() from JavaScript. Synthetic handlers MUST be
+// registered via ipcMain.handle() to land in Electron's C++ dispatch map.
+// The .set() override here only wraps filesystem handlers with alias
+// rewriting. Linux-specific EIPC overrides (ClaudeCode, ClaudeVM, etc.) are
+// installed on webContents.ipc by installWebContentsIpcOverrides().
+try {
+  const electron = require('electron');
+  const { ipcMain } = electron;
+  if (ipcMain && ipcMain._invokeHandlers && !global.__coworkIpcMainPatched) {
+    global.__coworkIpcMainPatched = true;
+    const invokeHandlers = ipcMain._invokeHandlers;
+    // Tap _invokeHandlers BEFORE our overrides so the tap sees raw handler behavior
+    if (ipcTap.enabled) ipcTap.wrapInvokeHandlers(invokeHandlers);
+    const originalSet = invokeHandlers.set.bind(invokeHandlers);
+    invokeHandlers.set = function(channel, handler) {
+      // Extract EIPC prefix from the first channel that matches the pattern.
+      // This is more reliable than reading files from inside the asar.
+      if (!global.__coworkEipcPrefix && typeof channel === 'string') {
+        const eipcMatch = channel.match(/^(\$eipc_message\$_[a-f0-9-]+_\$_)claude\.(web|hybrid|settings)_\$_/);
+        if (eipcMatch) {
+          global.__coworkEipcPrefix = eipcMatch[1] + 'claude.web_$_';
+          console.log('[Cowork] Discovered EIPC prefix from handler registration: ' + global.__coworkEipcPrefix);
+        }
+      }
+      return originalSet(channel, wrapAliasedFileSystemHandler(channel, handler, () => global.__coworkAsarAdapter || null));
+    };
+    console.log('[Cowork] ipcMain._invokeHandlers patched (filesystem aliasing)');
+  }
+} catch (e) {
+  console.error('[Cowork] Failed to patch ipcMain:', e.message);
+}
 
 // ============================================================
 // 0. TMPDIR FIX - MUST BE ABSOLUTELY FIRST
@@ -15,12 +328,24 @@ console.log('[Frame Fix] Wrapper v2.5 loaded');
 
 const REAL_PLATFORM = process.platform;
 const REAL_ARCH = process.arch;
+const DIRS = createDirs();
 
-const vmBundleDir = path.join(os.homedir(), '.config/Claude/vm_bundles');
+const vmBundleDir = DIRS.claudeVmBundlesDir;
 const vmTmpDir = path.join(vmBundleDir, 'tmp');
 const claudeVmBundle = path.join(vmBundleDir, 'claudevm.bundle');
-const APP_SUPPORT_ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'Claude');
-const LOCAL_AGENT_ROOT = path.join(APP_SUPPORT_ROOT, 'LocalAgentModeSessions');
+const LOCAL_AGENT_ROOT = DIRS.claudeLocalAgentRoot;
+const localSessionStore = createSessionStore({ localAgentRoot: LOCAL_AGENT_ROOT });
+const ipcSessionOrchestrator = createSessionOrchestrator({
+  dirs: DIRS,
+  sessionStore: localSessionStore,
+});
+const asarAdapter = createAsarAdapter({
+  sessionOrchestrator: ipcSessionOrchestrator,
+  sessionStore: localSessionStore,
+});
+global.__coworkAsarAdapter = asarAdapter;
+localSessionStore.installMetadataPersistenceGuard();
+global.__coworkIpcTap = ipcTap;
 
 try {
   // Create temp dir on same filesystem as target
@@ -106,7 +431,17 @@ console.log('[fs.rename] Patched to handle EXDEV errors');
 // ============================================================
 
 // Helper to check if call is from system/electron internals
+function isAppCodeCall(stack) {
+  return stack.includes('/.vite/build/index.js') ||
+         stack.includes('/app.asar/.vite/build/index.js') ||
+         stack.includes('/app.asar/') ||
+         stack.includes('/linux-app-extracted/');
+}
+
 function isSystemCall(stack) {
+  if (isAppCodeCall(stack)) {
+    return false;
+  }
   return stack.includes('node:internal') ||
          stack.includes('internal/modules') ||
          stack.includes('node:electron') ||
@@ -352,41 +687,108 @@ function getSyntheticIPCResponse(channel) {
   return null;
 }
 
-function ensureSyntheticWebIPCHandlers(ipcMain, originalHandle, channel) {
-  if (!ipcMain || typeof channel !== 'string') {
-    return;
-  }
-  const marker = '_$_claude.web_$_';
-  const markerIndex = channel.indexOf(marker);
-  if (markerIndex === -1) {
-    return;
-  }
-  const channelPrefix = channel.slice(0, markerIndex + marker.length);
-  const syntheticSuffixes = [
-    'ComputerUseTcc_$_getState',
-    'ComputerUseTcc_$_requestAccess',
-    'ClaudeCode_$_getStatus',
-    'ClaudeCode_$_prepare',
-  ];
-  if (!global.__coworkSyntheticIPCChannels) {
-    global.__coworkSyntheticIPCChannels = new Set();
-  }
-  for (const suffix of syntheticSuffixes) {
-    const syntheticChannel = channelPrefix + suffix;
-    if (global.__coworkSyntheticIPCChannels.has(syntheticChannel)) {
-      continue;
+// ============================================================
+// EIPC HANDLER OVERRIDES — webContents.ipc (Electron 23+)
+// ============================================================
+// The asar registers EIPC handlers on webContents.ipc (per-window IPC), NOT
+// on ipcMain. This means ipcMain.handle() patches never intercept them.
+//
+// Strategy: after the asar's synchronous initialization completes for each
+// BrowserWindow, remove its broken Linux-incompatible handlers and register
+// our working replacements. No monkey-patching of internal APIs needed —
+// just standard removeHandler + handle on the webContents.ipc object.
+//
+// The EIPC UUID is extracted from the asar's build artifacts at startup.
+
+function discoverEipcPrefix() {
+  // Primary: already extracted from _invokeHandlers.set() at startup
+  if (global.__coworkEipcPrefix) return global.__coworkEipcPrefix;
+
+  // Fallback: read from the asar's build files (may fail inside packed asar)
+  try {
+    const buildDir = path.join(
+      path.dirname(require.main ? require.main.filename : __filename),
+      '.vite', 'build'
+    );
+    const candidates = ['mainView.js', 'aboutWindow.js', 'index.js'];
+    for (const candidate of candidates) {
+      try {
+        const filePath = path.join(buildDir, candidate);
+        const text = fs.readFileSync(filePath, 'utf8');
+        const match = text.match(/\$eipc_message\$_([a-f0-9-]+)_\$_/);
+        if (match) {
+          global.__coworkEipcPrefix = '$eipc_message$_' + match[1] + '_$_claude.web_$_';
+          console.log('[Cowork] Discovered EIPC prefix from build file: ' + candidate);
+          return global.__coworkEipcPrefix;
+        }
+      } catch (e) {
+        console.warn('[Cowork] EIPC fallback: failed to read ' + candidate + ': ' + e.code);
+      }
     }
-    const syntheticHandler = getSyntheticIPCResponse(syntheticChannel);
-    if (!syntheticHandler) {
-      continue;
-    }
-    try {
-      ipcMain.removeHandler(syntheticChannel);
-    } catch (_) {}
-    originalHandle(syntheticChannel, syntheticHandler);
-    global.__coworkSyntheticIPCChannels.add(syntheticChannel);
-    console.log('[Cowork] Registered synthetic IPC handler: ' + syntheticChannel);
+  } catch (e) {
+    console.warn('[Cowork] EIPC fallback: buildDir error: ' + e.message);
   }
+  console.error('[Cowork] EIPC prefix not yet available (will retry on next webContents)');
+  return null;
+}
+
+// Handlers to override on each webContents.ipc. Defined once, applied per-window.
+function getLinuxIpcOverrides() {
+  return {
+    'ClaudeCode_$_getStatus': async () => ({
+      status: 'ready',
+      ready: true,
+      installed: true,
+      downloading: false,
+      progress: 100,
+      version: '2.1.72',
+    }),
+    'ClaudeCode_$_prepare': async () => ({ ready: true, success: true }),
+    'ClaudeCode_$_checkGitAvailable': async () => ({ available: true }),
+    'ComputerUseTcc_$_getState': async () => ({ granted: true, status: 'granted' }),
+    'ComputerUseTcc_$_requestAccess': async () => ({ granted: true }),
+    'ClaudeVM_$_getRunningStatus': async () => ({
+      running: true, connected: true, ready: true, status: 'running',
+    }),
+    'ClaudeVM_$_getDownloadStatus': async () => ({
+      status: 'ready', downloaded: true, installed: true, progress: 100,
+    }),
+    'ClaudeVM_$_isSupported': async () => 'supported',
+    'ClaudeVM_$_getSupportStatus': async () => 'supported',
+    'ClaudeVM_$_isProcessRunning': async (...args) => {
+      const processId = parseRequestedProcessId(args);
+      return getCoworkProcessRunningState(processId);
+    },
+  };
+}
+
+function installWebContentsIpcOverrides(contents) {
+  if (!contents.ipc || contents.ipc.__coworkOverridesDone) return;
+  contents.ipc.__coworkOverridesDone = true;
+
+  const prefix = discoverEipcPrefix();
+  if (!prefix) return;
+
+  const overrides = getLinuxIpcOverrides();
+
+  // Schedule after the current tick so the asar's synchronous handler
+  // registration (c3t(webContents)) completes first. Then we replace.
+  process.nextTick(() => {
+    let count = 0;
+    for (const [suffix, handler] of Object.entries(overrides)) {
+      const channel = prefix + suffix;
+      try {
+        contents.ipc.removeHandler(channel);
+      } catch (_) {}
+      try {
+        contents.ipc.handle(channel, handler);
+        count++;
+      } catch (e) {
+        console.error('[Cowork] Failed to register ' + suffix + ': ' + e.message);
+      }
+    }
+    console.log('[Cowork] Installed ' + count + ' EIPC overrides on webContents.ipc');
+  });
 }
 
 // ============================================================
@@ -413,10 +815,9 @@ function gracefulQuit(reason) {
 
 // window-all-closed: registered early so it fires before the asar's
 // handler (which short-circuits on "darwin" and never quits)
-const { app: _app } = require('electron');
-_app.on('window-all-closed', () => {
+registerElectronAppListener(null, 'window-all-closed', () => {
   gracefulQuit('All windows closed');
-});
+}, 'window-all-closed');
 
 for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
   process.on(sig, () => gracefulQuit(`Received ${sig}`));
@@ -476,41 +877,23 @@ Module.prototype.require = function(id) {
       if (invokeHandlers && !global.__coworkInvokeHandlersPatched) {
         global.__coworkInvokeHandlersPatched = true;
         const originalHas = invokeHandlers.has.bind(invokeHandlers);
-        const originalGet = invokeHandlers.get.bind(invokeHandlers);
+        const originalSet = invokeHandlers.set.bind(invokeHandlers);
         invokeHandlers.has = function(channel) {
           return originalHas(channel) || !!getSyntheticIPCResponse(channel);
         };
-        invokeHandlers.get = function(channel) {
-          const existing = originalGet(channel);
-          return existing || getSyntheticIPCResponse(channel);
+        invokeHandlers.set = function(channel, handler) {
+          return originalSet(channel, asarAdapter.wrapHandler(channel, handler));
         };
-        console.log('[Cowork] _invokeHandlers fallback enabled');
+        console.log('[Cowork] _invokeHandlers patched (filesystem wrapping)');
       }
 
+      // Wire IPC tap before capturing originalHandle so the tap sees raw handler
+      // behavior (before our overrides). Only active when CLAUDE_COWORK_IPC_TAP=1.
+      if (ipcTap.enabled) {
+        ipcTap.wrapHandle(ipcMain);
+      }
       const originalHandle = ipcMain.handle.bind(ipcMain);
       ipcMain.handle = function(channel, handler) {
-        ensureSyntheticWebIPCHandlers(ipcMain, originalHandle, channel);
-
-        // Filter ignored message types from transcripts — check both top-level and nested
-        if (channel.includes('getTranscript')) {
-          return originalHandle(channel, async (...args) => {
-            const result = await handler(...args);
-            if (Array.isArray(result)) {
-              return result.filter(msg => {
-                if (!msg) return false;
-                // Check top-level type
-                if (IGNORED_LIVE_MESSAGE_TYPES.has(msg.type)) return false;
-                // Check nested message type (matches live filtering logic)
-                if (msg.type === 'message' && msg.message && IGNORED_LIVE_MESSAGE_TYPES.has(msg.message.type)) {
-                  return false;
-                }
-                return true;
-              });
-            }
-            return result;
-          });
-        }
-
         const syntheticHandler = getSyntheticIPCResponse(channel);
         if (syntheticHandler) {
           console.log(`[Cowork] Intercepting synthetic IPC handler: ${channel}`);
@@ -588,13 +971,27 @@ Module.prototype.require = function(id) {
           return originalHandle(channel, wrappedHandler);
         }
 
-        return originalHandle(channel, handler);
+        return originalHandle(channel, asarAdapter.wrapHandler(channel, handler));
       };
 
       console.log('[Cowork] IPC handler interception enabled');
     }
 
-    // Patch BrowserWindow so close events actually quit on Linux.
+    // Stub out macOS-only systemPreferences methods that cause crashes on Linux
+    if (module.systemPreferences && !global.__coworkSystemPreferencesPatched) {
+      global.__coworkSystemPreferencesPatched = true;
+      module.systemPreferences.getMediaAccessStatus = function() {
+        console.log('[Frame Fix] Stubbed systemPreferences.getMediaAccessStatus');
+        return 'granted';
+      };
+      module.systemPreferences.askForMediaAccess = async function() {
+        console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess');
+        return true;
+      };
+      console.log('[Frame Fix] systemPreferences patched for Linux');
+    }
+
+    // Patch BrowserWindow to stub macOS-only methods and handle close events
     // The asar's close handler does `if (isMac()) return;` which swallows
     // close events since we spoof darwin. We prepend a listener that forces
     // app.quit() so killactive/WM close works on all Linux DEs.
@@ -604,6 +1001,13 @@ Module.prototype.require = function(id) {
     function patchWindowClose(win) {
       if (_closePatched.has(win)) return;
       _closePatched.add(win);
+
+      // Stub macOS-only BrowserWindow methods
+      if (!win.setWindowButtonPosition) {
+        win.setWindowButtonPosition = function() {
+          // no-op on Linux
+        };
+      }
       // Use prependListener so we fire before the asar's handler
       win.prependListener('close', (event) => {
         if (REAL_PLATFORM === 'linux' && !shuttingDown) {
@@ -632,53 +1036,34 @@ Module.prototype.require = function(id) {
     }
 
     // Hook webContents creation to catch windows as they appear
-    _app.on('web-contents-created', (_event, contents) => {
+    registerElectronAppListener(module, 'web-contents-created', (_event, contents) => {
       const owner = contents.getOwnerBrowserWindow && contents.getOwnerBrowserWindow();
       if (owner) patchWindowClose(owner);
       patchEventDispatch(contents);
-    });
+      if (ipcTap.enabled) ipcTap.wrapWebContents(contents);
+
+      // EIPC override: The asar registers handlers on webContents.ipc (Electron 23+
+      // per-window IPC), NOT ipcMain. After the asar's sync initialization completes,
+      // replace its broken Linux-incompatible handlers with our working versions.
+      if (contents.ipc && typeof contents.ipc.handle === 'function') {
+        installWebContentsIpcOverrides(contents);
+      }
+    }, 'web-contents-created');
 
     // Also patch on browser-window-created for certainty
-    _app.on('browser-window-created', (_event, win) => {
+    registerElectronAppListener(module, 'browser-window-created', (_event, win) => {
       patchWindowClose(win);
       if (win && win.webContents) {
         patchEventDispatch(win.webContents);
       }
-    });
+    }, 'browser-window-created');
 
     if (module.webContents && typeof module.webContents.getAllWebContents === 'function') {
       for (const contents of module.webContents.getAllWebContents()) {
         patchEventDispatch(contents);
       }
     }
-
-    const OriginalMenu = module.Menu;
-
-    // Intercept Menu.setApplicationMenu to hide menu bar on Linux
-    // This catches the app's later calls to setApplicationMenu that would show the menu
-    const originalSetAppMenu = OriginalMenu.setApplicationMenu;
-    module.Menu.setApplicationMenu = function(menu) {
-      console.log('[Frame Fix] Intercepting setApplicationMenu');
-      try {
-        // Call original - use call() to preserve correct context
-        if (typeof originalSetAppMenu === 'function') {
-          originalSetAppMenu.call(OriginalMenu, menu);
-        }
-      } catch (e) {
-        console.log('[Frame Fix] setApplicationMenu error (ignored):', e.message);
-      }
-      if (REAL_PLATFORM === 'linux') {
-        // Hide menu bar on all existing windows after menu is set
-        try {
-          for (const win of module.BrowserWindow.getAllWindows()) {
-            win.setMenuBarVisibility(false);
-          }
-          console.log('[Frame Fix] Menu bar hidden on all windows');
-        } catch (e) {
-          console.log('[Frame Fix] setMenuBarVisibility error:', e.message);
-        }
-      }
-    };
+    installLinuxMenuInterceptors(module);
 
     // Intercept shell.showItemInFolder to translate VM paths for scratchpad/file links
     if (module.shell && !global.__coworkShellPatched) {

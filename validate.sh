@@ -85,7 +85,7 @@ done
 
 step "5. Log Directory"
 
-LOG_DIR="$HOME/.local/share/claude-cowork/logs"
+LOG_DIR="${CLAUDE_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-cowork/logs}"
 if [[ -d "$LOG_DIR" ]]; then
     pass "Log directory exists: $LOG_DIR"
     ls -lh "$LOG_DIR" 2>/dev/null | tail -5

@@ -119,13 +119,13 @@ If this works, restart Claude Desktop and the warning should be gone.
 
 ```bash
 # Clear old logs
-: > ~/Library/Logs/Claude/startup.log
+: > ~/.local/state/claude-cowork/logs/startup.log
 
 # Start Claude
 claude
 
 # Check for the warning
-grep "safeStorage" ~/Library/Logs/Claude/startup.log
+grep "safeStorage" ~/.local/state/claude-cowork/logs/startup.log
 ```
 
 If safeStorage is working, you won't see the warning.

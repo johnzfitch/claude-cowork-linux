@@ -15,8 +15,8 @@
  *   - Then vm.spawn() to launch the Claude Code binary
  *
  * Path translations performed:
- *   - /usr/local/bin/claude -> resolved via claude-code-vm (macOS) or ~/.local/bin/claude (Linux)
- *   - /sessions/... -> ~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/...
+ *   - /usr/local/bin/claude -> resolved via claude-code-vm or ~/.local/bin/claude
+ *   - /sessions/... -> ${XDG_CONFIG_HOME}/Claude/local-agent-mode-sessions/sessions/...
  *
  * Security hardening applied:
  *   - Command injection prevention (execFile instead of exec)
@@ -36,12 +36,18 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
+const { createDirs } = require('../../../../cowork/dirs.js');
+const { createSessionStore } = require('../../../../cowork/session_store.js');
+const { createSessionsApi } = require('../../../../cowork/sessions_api.js');
+const { createSessionOrchestrator } = require('../../../../cowork/session_orchestrator.js');
+const { redactCredentials } = require('../../../../cowork/credential_classifier.js');
 
-const APP_SUPPORT_ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'Claude');
-const LOCAL_AGENT_ROOT = path.join(APP_SUPPORT_ROOT, 'LocalAgentModeSessions');
+const DIRS = createDirs();
+const CLAUDE_CONFIG_ROOT = DIRS.claudeConfigRoot;
+const LOCAL_AGENT_ROOT = DIRS.claudeLocalAgentRoot;
 
 // SECURITY: Log to user-writable location with restricted permissions
-const LOG_DIR = path.join(APP_SUPPORT_ROOT, 'logs');
+const LOG_DIR = process.env.CLAUDE_LOG_DIR || DIRS.coworkLogsDir;
 const TRACE_FILE = path.join(LOG_DIR, 'claude-swift-trace.log');
 
 // Ensure log directory exists with secure permissions
@@ -52,25 +58,7 @@ try {
 const TRACE_IO = process.env.CLAUDE_COWORK_TRACE_IO === '1';
 
 function redactForLogs(input) {
-  let text = String(input);
-
-  // Common header / token formats
-  text = text.replace(/(Authorization:\s*Bearer)\s+[^\s]+/gi, '$1 [REDACTED]');
-  text = text.replace(/(Bearer)\s+[A-Za-z0-9._-]+/g, '$1 [REDACTED]');
-
-  // JSON-style secrets
-  text = text.replace(/("authorization"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
-  text = text.replace(/("api[_-]?key"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
-  text = text.replace(/("access[_-]?token"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
-  text = text.replace(/("refresh[_-]?token"\s*:\s*")[^"]+(")/gi, '$1[REDACTED]$2');
-
-  // Env var leakage
-  text = text.replace(/(ANTHROPIC_API_KEY=)[^\s]+/g, '$1[REDACTED]');
-
-  // Cookies
-  text = text.replace(/(cookie:\s*)[^\n\r]+/gi, '$1[REDACTED]');
-
-  return text;
+  return redactCredentials(String(input));
 }
 
 function trace(msg) {
@@ -196,6 +184,123 @@ function extractSessionNameFromVmPathStrict(vmPath) {
   return parts[0];
 }
 
+function getIgnoredSdkMessageType(line) {
+  if (typeof line !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(line);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    if (parsed.type === 'queue-operation' || parsed.type === 'rate_limit_event') {
+      return parsed.type;
+    }
+    if (parsed.type === 'message' && parsed.message && typeof parsed.message === 'object') {
+      const nestedType = parsed.message.type;
+      if (nestedType === 'queue-operation' || nestedType === 'rate_limit_event') {
+        return nestedType;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function parseJsonLine(line) {
+  if (typeof line !== 'string') {
+    return null;
+  }
+  try {
+    return JSON.parse(line);
+  } catch (_) {
+    return null;
+  }
+}
+
+function hasAssistantResponse(parsedLine) {
+  if (!parsedLine || typeof parsedLine !== 'object') {
+    return false;
+  }
+  if (parsedLine.type === 'stream_event') {
+    return true;
+  }
+  if (parsedLine.type === 'result' && Number(parsedLine.num_turns || 0) > 0) {
+    return true;
+  }
+  if (parsedLine.type === 'assistant') {
+    return true;
+  }
+  if (parsedLine.type === 'message' && parsedLine.message && typeof parsedLine.message === 'object') {
+    if (parsedLine.message.role === 'assistant' || parsedLine.message.type === 'assistant') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isFlatlineResumeResult(parsedLine) {
+  if (!parsedLine || typeof parsedLine !== 'object') {
+    return false;
+  }
+  return parsedLine.type === 'result' &&
+    parsedLine.is_error === true &&
+    Number(parsedLine.num_turns || 0) === 0;
+}
+
+function isSuccessfulResult(parsedLine) {
+  if (!parsedLine || typeof parsedLine !== 'object') {
+    return false;
+  }
+  return parsedLine.type === 'result' &&
+    parsedLine.is_error !== true &&
+    (parsedLine.subtype === 'success' || Number(parsedLine.num_turns || 0) > 0);
+}
+
+function extractCliSessionId(parsedLine) {
+  if (!parsedLine || typeof parsedLine !== 'object') {
+    return null;
+  }
+
+  const directCandidates = [
+    parsedLine.session_id,
+    parsedLine.sessionId,
+    parsedLine.cliSessionId,
+  ];
+  for (const candidate of directCandidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate;
+    }
+  }
+
+  if (parsedLine.event && typeof parsedLine.event === 'object') {
+    const eventCandidates = [
+      parsedLine.event.session_id,
+      parsedLine.event.sessionId,
+      parsedLine.event.cliSessionId,
+    ];
+    for (const candidate of eventCandidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate;
+      }
+    }
+  }
+
+  if (parsedLine.message && typeof parsedLine.message === 'object') {
+    const messageCandidates = [
+      parsedLine.message.session_id,
+      parsedLine.message.sessionId,
+      parsedLine.message.cliSessionId,
+    ];
+    for (const candidate of messageCandidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
 function generateUUID() {
   if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -226,24 +331,25 @@ function compareSemverDesc(a, b) {
 }
 
 function resolveClaudeBinaryPath() {
-  // 1. Try macOS-style claude-code-vm path (for macOS/VM compatibility)
-  const vmRoot = path.join(APP_SUPPORT_ROOT, 'claude-code-vm');
-  try {
-    const entries = fs
-      .readdirSync(vmRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort(compareSemverDesc);
+  // 1. Prefer Claude Desktop's downloaded claude-code-vm roots, resolved with XDG-aware paths.
+  for (const vmRoot of DIRS.claudeVmRoots) {
+    try {
+      const entries = fs
+        .readdirSync(vmRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort(compareSemverDesc);
 
-    for (const version of entries) {
-      const candidate = path.join(vmRoot, version, 'claude');
-      if (fs.existsSync(candidate)) {
-        trace('Resolved Claude binary (claude-code-vm): ' + candidate);
-        return candidate;
+      for (const version of entries) {
+        const candidate = path.join(vmRoot, version, 'claude');
+        if (fs.existsSync(candidate)) {
+          trace('Resolved Claude binary (claude-code-vm): ' + candidate);
+          return candidate;
+        }
       }
+    } catch (e) {
+      trace('claude-code-vm root not available: ' + vmRoot + ' (' + e.message + ')');
     }
-  } catch (e) {
-    trace('claude-code-vm not available: ' + e.message);
   }
 
   // 2. On Linux, find the native Claude Code CLI binary
@@ -291,7 +397,7 @@ function resolveClaudeBinaryPath() {
  * }
  *
  * We create symlinks at:
- *   ~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/<session>/mnt/<mountName>
+ *   ${XDG_CONFIG_HOME}/Claude/local-agent-mode-sessions/sessions/<session>/mnt/<mountName>
  * Pointing to:
  *   ~/<additionalMounts[mountName].path>
  *
@@ -473,7 +579,18 @@ function createMountSymlinks(sessionName, additionalMounts) {
           trace('  Removing existing symlink (pointed to: ' + existingTarget + ')');
           fs.unlinkSync(mountPoint);
         } else if (stats.isDirectory()) {
-          // Stale directory at mount point - can't create symlink here
+          // Mount point is a directory. This happens for nested mounts
+          // (e.g. .local-plugins/cache/.../mcpb-cache) that resolve through
+          // a parent symlink to a real directory on the host. If the resolved
+          // path matches the target host path, the mount is effectively set up.
+          try {
+            const resolvedMountPoint = fs.realpathSync(mountPoint);
+            const resolvedHostPath = fs.realpathSync(hostPath);
+            if (resolvedMountPoint === resolvedHostPath) {
+              trace('  Mount point resolves to host path via parent symlink — already mounted');
+              continue;
+            }
+          } catch (_) {}
           trace('  ERROR: Mount point is a directory, cannot create symlink');
           failedMounts.push(mountName);
           continue;
@@ -640,7 +757,46 @@ class SwiftAddonStub extends EventEmitter {
     this._eventListener = null;
     this._guestConnected = true;  // Linux: always "connected" since we run directly on host
     this._processes = new Map();
+    this._processStates = new Map();
     this._processIdCounter = 0;
+    this._quickAccessOverlayState = {
+      activeChatId: null,
+      isLoggedIn: false,
+      recentChats: [],
+      visible: false,
+    };
+    this._quickAccessDictationState = {
+      active: false,
+      language: 'en-US',
+    };
+    this._sessionStore = createSessionStore({
+      localAgentRoot: LOCAL_AGENT_ROOT,
+    });
+    this._sessionsApi = createSessionsApi({
+      authFileDescriptor: process.env.CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR || null,
+      authToken: process.env.CLAUDE_COWORK_SESSIONS_API_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN || null,
+      baseUrl: process.env.CLAUDE_COWORK_SESSIONS_API_BASE_URL || process.env.CLAUDE_COWORK_SESSION_API_BASE_URL,
+      organizationUuid: process.env.CLAUDE_CODE_ORGANIZATION_UUID || null,
+      requestSync: typeof global.__coworkSessionsApiRequestSync === 'function'
+        ? global.__coworkSessionsApiRequestSync
+        : null,
+      trace,
+    });
+    this._sessionOrchestrator = createSessionOrchestrator({
+      appSupportRoot: CLAUDE_CONFIG_ROOT,
+      claudeVmRoots: DIRS.claudeVmRoots,
+      canonicalizePathForHostAccess,
+      canonicalizeVmPathStrict,
+      createMountSymlinks,
+      filterEnv,
+      findSessionName,
+      resolveClaudeBinaryPath,
+      sessionStore: this._sessionStore,
+      sessionsApi: this._sessionsApi,
+      sessionsBase: SESSIONS_BASE,
+      trace,
+      translateVmPathStrict,
+    });
 
     // Event callbacks for VM processes
     this._onStdout = null;
@@ -671,14 +827,59 @@ class SwiftAddonStub extends EventEmitter {
         console.log('[claude-swift] quickAccess.submit()', data);
       },
       overlay: {
-        show: () => { trace('quickAccess.overlay.show()'); },
-        hide: () => { trace('quickAccess.overlay.hide()'); },
-        isVisible: () => false,
+        show: () => {
+          this._quickAccessOverlayState.visible = true;
+          trace('quickAccess.overlay.show()');
+        },
+        hide: () => {
+          this._quickAccessOverlayState.visible = false;
+          trace('quickAccess.overlay.hide()');
+        },
+        isVisible: () => this._quickAccessOverlayState.visible,
+        setActiveChatId: (chatId) => {
+          this._quickAccessOverlayState.activeChatId = (
+            typeof chatId === 'string' && chatId.trim() ? chatId : null
+          );
+          trace('quickAccess.overlay.setActiveChatId(' + String(this._quickAccessOverlayState.activeChatId) + ')');
+        },
+        setLoggedIn: (isLoggedIn) => {
+          this._quickAccessOverlayState.isLoggedIn = Boolean(isLoggedIn);
+          trace('quickAccess.overlay.setLoggedIn(' + String(this._quickAccessOverlayState.isLoggedIn) + ')');
+        },
+        setRecentChats: (recentChats, activeChatId = null) => {
+          this._quickAccessOverlayState.recentChats = Array.isArray(recentChats)
+            ? recentChats.slice()
+            : [];
+          this._quickAccessOverlayState.activeChatId = (
+            typeof activeChatId === 'string' && activeChatId.trim() ? activeChatId : null
+          );
+          trace(
+            'quickAccess.overlay.setRecentChats(count='
+              + this._quickAccessOverlayState.recentChats.length
+              + ', activeChatId='
+              + String(this._quickAccessOverlayState.activeChatId)
+              + ')'
+          );
+        },
       },
       dictation: {
-        start: () => { trace('quickAccess.dictation.start()'); },
-        stop: () => { trace('quickAccess.dictation.stop()'); },
-        isActive: () => false,
+        start: () => {
+          this._quickAccessDictationState.active = true;
+          trace('quickAccess.dictation.start()');
+        },
+        stop: () => {
+          this._quickAccessDictationState.active = false;
+          trace('quickAccess.dictation.stop()');
+        },
+        isActive: () => this._quickAccessDictationState.active,
+        setLanguage: (language) => {
+          this._quickAccessDictationState.language = (
+            typeof language === 'string' && language.trim()
+              ? language.trim()
+              : this._quickAccessDictationState.language
+          );
+          trace('quickAccess.dictation.setLanguage(' + this._quickAccessDictationState.language + ')');
+        },
       },
     };
 
@@ -1124,137 +1325,33 @@ class SwiftAddonStub extends EventEmitter {
         trace('vm.spawn() additionalMounts=' + JSON.stringify(additionalMounts));
         trace('vm.spawn() isResume=' + isResume);
         trace('vm.spawn() sharedCwdPath=' + sharedCwdPath);
-
-        // Derive the session slug only from validated /sessions/... paths.
-        let sessionName = null;
-        try {
-          sessionName = findSessionName(args, envVars, sharedCwdPath);
-        } catch (err) {
-          if (self._onError) self._onError(id, err.message, err.stack || '');
-          return { success: false, error: err.message };
-        }
-        if (additionalMounts) {
-          if (sessionName) {
-            trace('Creating mount symlinks for session: ' + sessionName);
-            if (!createMountSymlinks(sessionName, additionalMounts)) {
-              const msg = 'Failed to create mount symlinks for session: ' + sessionName;
-              trace('ERROR: ' + msg);
-              if (self._onError) self._onError(id, msg, '');
-              return { success: false, error: msg };
-            }
-          } else {
-            trace('WARNING: additionalMounts provided but no session VM path found; skipping mount creation');
-          }
-        } else {
-          trace('Skipping mount symlink creation: no additionalMounts provided');
-        }
-
-        // SECURITY: Validate and normalize command to the resolved binary.
-        // The asar typically sends /usr/local/bin/claude (the macOS VM path),
-        // but future versions or distro configs may send 'claude' bare or an
-        // absolute path that already exists.  All accepted forms are funneled
-        // through resolveClaudeBinaryPath() so the actual binary on this host
-        // is always what runs.
-        const home = os.homedir();
-        const allowedPrefixes = [
-          path.join(APP_SUPPORT_ROOT, 'claude-code-vm'),
-          path.join(home, '.local/bin/'),
-          path.join(home, '.local/share/claude/'),
-          path.join(home, '.npm-global/bin/'),
-          '/usr/local/bin/',
-          '/usr/bin/',
-        ];
-
-        const normalizedCommand = (typeof command === 'string' || command instanceof String)
-          ? String(command).trim()
-          : '';
-        const commandBasename = normalizedCommand ? path.basename(normalizedCommand) : '';
-
-        let hostCommand;
-        if (
-          normalizedCommand === '/usr/local/bin/claude' ||
-          normalizedCommand === 'claude' ||
-          commandBasename === 'claude'
-        ) {
-          // Standard paths -- resolve to the real host binary
-          hostCommand = resolveClaudeBinaryPath();
-          trace('Translated command: ' + normalizedCommand + ' -> ' + hostCommand);
-        } else if (allowedPrefixes.some(prefix => normalizedCommand.startsWith(prefix))) {
-          // Already an allowed absolute path -- verify it exists, else resolve
-          if (fs.existsSync(normalizedCommand)) {
-            hostCommand = normalizedCommand;
-            trace('Command is an allowed absolute path: ' + normalizedCommand);
-          } else {
-            hostCommand = resolveClaudeBinaryPath();
-            trace('Allowed absolute path missing, resolved: ' + normalizedCommand + ' -> ' + hostCommand);
-          }
-        } else {
-          // SECURITY: Reject anything outside the allowlist
-          trace('SECURITY: Unexpected command blocked: "' + String(command) + '" (type=' + typeof command + ')');
-          if (self._onError) self._onError(id, 'Unexpected command: ' + String(command), '');
-          return { success: false, error: 'Unexpected command' };
-        }
-
-        // SECURITY: Verify resolved binary is in expected location
-        const commandIsAllowed = hostCommand === 'claude' ||
-          allowedPrefixes.some(prefix => hostCommand.startsWith(prefix));
-        if (!commandIsAllowed) {
-          trace('SECURITY: Command outside allowed directories: ' + hostCommand);
-          if (self._onError) self._onError(id, 'Invalid binary path', '');
-          return { success: false, error: 'Invalid binary path' };
-        }
-
-        // Translate VM paths in args with path traversal protection
-        let hostArgs = (args || []).map(arg => {
-          if (typeof arg === 'string' && arg.startsWith('/sessions/')) {
-            try {
-              const translated = canonicalizeVmPathStrict(arg);
-              trace('Translated arg: ' + arg + ' -> ' + translated);
-              return translated;
-            } catch (err) {
-              trace('WARNING: Failed to translate VM arg path "' + arg + '": ' + err.message);
-              return arg; // Return original (will fail gracefully)
-            }
-          }
-          return arg;
+        const preparedSpawn = self._sessionOrchestrator.prepareVmSpawn({
+          processId: id,
+          processName,
+          command,
+          args,
+          envVars,
+          additionalMounts,
+          sharedCwdPath,
+          onError: self._onError,
         });
-
-        // Filter out --add-dir args pointing to .asar files (not valid project dirs on Linux)
-        let filteredArgs = [];
-        for (let i = 0; i < hostArgs.length; i++) {
-          if (hostArgs[i] === '--add-dir' && i + 1 < hostArgs.length && hostArgs[i + 1].endsWith('.asar')) {
-            trace('Filtered out --add-dir for asar: ' + hostArgs[i + 1]);
-            i++; // skip the next arg too
-            continue;
-          }
-          filteredArgs.push(hostArgs[i]);
-        }
-        hostArgs = filteredArgs;
-
-        // Ensure sessions directory exists with secure permissions
-        try {
-          if (!fs.existsSync(SESSIONS_BASE)) {
-            fs.mkdirSync(SESSIONS_BASE, { recursive: true, mode: 0o700 });
-            trace('Created sessions dir: ' + SESSIONS_BASE);
-          }
-        } catch (e) {
-          trace('Failed to create sessions dir: ' + e.message);
+        if (!preparedSpawn.success) {
+          return preparedSpawn;
         }
 
-        // Translate sharedCwdPath if it's a VM path
-        let hostCwdPath = sharedCwdPath;
-        if (typeof sharedCwdPath === 'string' && sharedCwdPath.startsWith('/sessions/')) {
-          try {
-            hostCwdPath = canonicalizeVmPathStrict(sharedCwdPath);
-            trace('Translated sharedCwdPath: ' + sharedCwdPath + ' -> ' + hostCwdPath);
-          } catch (err) {
-            trace('WARNING: Failed to translate sharedCwdPath "' + sharedCwdPath + '": ' + err.message);
-          }
-        }
-        trace('vm.spawn() sharedCwdPath=' + sharedCwdPath + ' hostCwdPath=' + hostCwdPath);
-
-        console.log('[claude-swift] vm.spawn() id=' + id + ' cmd=' + hostCommand);
-        return self.spawn(id, processName, hostCommand, hostArgs, options, envVars, additionalMounts, isResume, allowedDomains, hostCwdPath);
+        console.log('[claude-swift] vm.spawn() id=' + id + ' cmd=' + preparedSpawn.command);
+        return self.spawn(
+          id,
+          processName,
+          preparedSpawn.command,
+          preparedSpawn.args,
+          options,
+          preparedSpawn.envVars,
+          additionalMounts,
+          isResume,
+          allowedDomains,
+          preparedSpawn.sharedCwdPath
+        );
       },
 
       kill: (id, signal) => {
@@ -1374,6 +1471,7 @@ class SwiftAddonStub extends EventEmitter {
           try { entry[1].kill('SIGTERM'); } catch (e) {}
         }
         self._processes.clear();
+        self._processStates.clear();
         self._guestConnected = false;
         self._emit('guestConnectionChanged', { connected: false });
         return { success: true };
@@ -1420,39 +1518,45 @@ class SwiftAddonStub extends EventEmitter {
         trace('vm.mountPath() processId=' + processId + ' subpath=' + subpath + ' pathName=' + pathName + ' mode=' + mode);
         console.log('[claude-swift] vm.mountPath() processId=' + processId + ' subpath=' + subpath + ' mode=' + mode);
 
-        // Translate VM path to host path and resolve symlinks
-        if (typeof pathName === 'string' && pathName.startsWith('/sessions/')) {
-          const hostPath = canonicalizeVmPathStrict(pathName);
-          trace('vm.mountPath() translated to: ' + hostPath);
+        let hostPath;
+        try {
+          hostPath = canonicalizePathForHostAccess(pathName);
+        } catch (e) {
+          trace('vm.mountPath() error canonicalizing pathName: ' + e.message);
+          throw e;
+        }
 
-          // Ensure parent directory exists
-          try {
-            const dir = path.dirname(hostPath);
-            if (!fs.existsSync(dir)) {
-              fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-              trace('vm.mountPath() created parent directory: ' + dir);
-            }
-          } catch (e) {
-            trace('vm.mountPath() error creating parent directory: ' + e.message);
-            throw e;
-          }
+        if (typeof hostPath !== 'string' || !path.isAbsolute(hostPath)) {
+          trace('vm.mountPath() error: pathName is not an absolute host path');
+          throw new Error('Invalid pathName: must be an absolute path');
+        }
 
-          // Create the mount point (directory or symlink as needed)
-          try {
-            if (!fs.existsSync(hostPath)) {
-              // Create directory with appropriate permissions based on mode
-              const dirMode = mode === 'ro' ? 0o500 : 0o700;
-              fs.mkdirSync(hostPath, { recursive: true, mode: dirMode });
-              trace('vm.mountPath() created mount point: ' + hostPath + ' (mode: ' + mode + ')');
-            }
-            return { success: true };
-          } catch (e) {
-            trace('vm.mountPath() error: ' + e.message);
-            throw e;
+        trace('vm.mountPath() translated to: ' + hostPath);
+
+        // Ensure parent directory exists
+        try {
+          const dir = path.dirname(hostPath);
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+            trace('vm.mountPath() created parent directory: ' + dir);
           }
-        } else {
-          trace('vm.mountPath() error: pathName does not start with /sessions/');
-          throw new Error('Invalid pathName: must start with /sessions/');
+        } catch (e) {
+          trace('vm.mountPath() error creating parent directory: ' + e.message);
+          throw e;
+        }
+
+        // Create the mount point (directory or symlink as needed)
+        try {
+          if (!fs.existsSync(hostPath)) {
+            // Create directory with appropriate permissions based on mode
+            const dirMode = mode === 'ro' ? 0o500 : 0o700;
+            fs.mkdirSync(hostPath, { recursive: true, mode: dirMode });
+            trace('vm.mountPath() created mount point: ' + hostPath + ' (mode: ' + mode + ')');
+          }
+          return { success: true };
+        } catch (e) {
+          trace('vm.mountPath() error: ' + e.message);
+          throw e;
         }
       }
     };
@@ -1504,113 +1608,28 @@ class SwiftAddonStub extends EventEmitter {
       trace('spawn envVars keys from asar: ' + Object.keys(envVars).join(', '));
     }
     try {
-      // Translate VM paths (/sessions/...) in env vars to host paths
-      // The asar passes CLAUDE_CONFIG_DIR as a VM-internal path like
-      // /sessions/<name>/mnt/.claude but the CLI runs directly on the host,
-      // so we need to translate to the real host path which follows the
-      // symlink to ~/.config/Claude/local-agent-mode-sessions/.../.claude
-      if (envVars && typeof envVars === 'object') {
-        for (const key of Object.keys(envVars)) {
-          const val = envVars[key];
-          if (typeof val === 'string' && val.startsWith('/sessions/')) {
-            try {
-              const translated = translateVmPathStrict(val);
-              trace('Translated envVar ' + key + ': ' + val + ' -> ' + translated);
-              envVars[key] = translated;
-            } catch (err) {
-              const warning = 'Failed to translate envVar ' + key + '="' + val + '": ' + err.message;
-              trace('WARNING: ' + warning);
-              if (key === 'CLAUDE_CONFIG_DIR') {
-                if (this._onError) this._onError(id, warning, err.stack || '');
-                return { success: false, error: warning };
-              }
-            }
-          }
-        }
-      }
-
-      // SECURITY: Filter environment variables
-      const env = filterEnv(process.env, envVars);
-      // IMPORTANT: Do NOT add auth fixup code here.
-      // The asar passes CLAUDE_CODE_OAUTH_TOKEN in envVars, which filterEnv
-      // merges via Object.assign. The CLI handles this token through its own
-      // internal OAuth code path. Injecting ANTHROPIC_AUTH_TOKEN bypasses
-      // that path and causes a 401 ("OAuth authentication not supported").
-      // See CLAUDE.md "Critical: Auth Flow" for full explanation.
-      // Strip cwd, env, and stdio from options to prevent bypassing sanitized values.
-      const { cwd: _optCwd, env: _optEnv, stdio: _optStdio, ...safeOptions } = (options || {});
-      if (_optEnv && typeof _optEnv === 'object') {
-        trace('WARNING: spawn() ignoring options.env override');
-      }
-      if (_optStdio !== undefined) {
-        trace('WARNING: spawn() ignoring options.stdio override');
-      }
-      const cwd = canonicalizePathForHostAccess(sharedCwdPath || _optCwd || process.cwd());
-      const proc = nodeSpawn(command, args || [], { ...safeOptions, cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
-      this._processes.set(id, proc);
-
-      const self = this;
-      let stdoutBuffer = '';
-      let stderrBuffer = '';
-      let stdoutSeq = 0; // DEBUG: sequence counter for message ordering diagnosis
-
-      if (proc.stdout) {
-        proc.stdout.on('data', function(data) {
-          stdoutBuffer += data.toString();
-          const lines = stdoutBuffer.split('\n');
-          stdoutBuffer = lines.pop();
-          for (const line of lines) {
-            if (line.trim() && self._onStdout) {
-              stdoutSeq++;
-              // DEBUG: Log sequence and message type for ordering diagnosis
-              let msgType = 'unknown';
-              try {
-                const parsed = JSON.parse(line);
-                msgType = parsed.type || (parsed.message?.role) || 'data';
-              } catch (_) {}
-              console.log('[stdout-order] seq=' + stdoutSeq + ' type=' + msgType + ' ts=' + Date.now() + ' len=' + line.length);
-              if (TRACE_IO) {
-                trace('stdout line: ' + line.substring(0, 500) + (line.length > 500 ? '...' : ''));
-              }
-              self._onStdout(id, line + '\n');
-            }
-          }
-        });
-      }
-      if (proc.stderr) {
-        proc.stderr.on('data', function(data) {
-          stderrBuffer += data.toString();
-          const lines = stderrBuffer.split('\n');
-          stderrBuffer = lines.pop();
-          for (const line of lines) {
-            if (line.trim() && self._onStderr) {
-              if (TRACE_IO) {
-                trace('stderr line: ' + line.substring(0, 200) + (line.length > 200 ? '...' : ''));
-              }
-              self._onStderr(id, line + '\n');
-            }
-          }
-        });
-      }
-      proc.on('exit', function(code, signal) {
-        if (stdoutBuffer.trim() && self._onStdout) {
-          self._onStdout(id, stdoutBuffer);
-        }
-        if (stderrBuffer.trim() && self._onStderr) {
-          self._onStderr(id, stderrBuffer);
-        }
-        console.log('[claude-swift] Process ' + id + ' exited: code=' + code + ' signal=' + signal);
-        trace('Process ' + id + ' exited: code=' + code + ' signal=' + signal);
-        // Preserve null code for signaled exits - don't coerce to 0
-        if (self._onExit) self._onExit(id, code, signal || '');
-        self._processes.delete(id);
-      });
-      proc.on('error', function(err) {
-        console.error('[claude-swift] Process ' + id + ' error:', err);
-        if (self._onError) self._onError(id, err.message, err.stack);
-      });
-
-      return { success: true, pid: proc.pid };
+      const processState = {
+        id,
+        processName,
+        command,
+        args: Array.isArray(args) ? args.slice() : [],
+        options: options && typeof options === 'object' ? { ...options } : {},
+        envVars: envVars && typeof envVars === 'object' ? { ...envVars } : {},
+        additionalMounts,
+        allowedDomains,
+        sharedCwdPath,
+        retryCount: 0,
+        stdinHistory: [],
+        deferredResultLine: null,
+        hadFirstResponse: false,
+        attemptedResume: false,
+        completedSuccessfully: false,
+        continuityPlan: null,
+        latestCliSessionId: null,
+        stdoutSeq: 0,
+      };
+      this._processStates.set(id, processState);
+      return this._startManagedProcess(processState);
     } catch (err) {
       console.error('[claude-swift] spawn error:', err);
       if (this._onError) this._onError(id, err.message, err.stack);
@@ -1638,12 +1657,258 @@ class SwiftAddonStub extends EventEmitter {
     }
   }
 
+  _startManagedProcess(processState) {
+    const spawnContext = this._sessionOrchestrator.buildSpawnOptions({
+      processId: processState.id,
+      options: processState.options,
+      envVars: processState.envVars,
+      sharedCwdPath: processState.sharedCwdPath,
+      onError: this._onError,
+    });
+    if (!spawnContext.success) {
+      return spawnContext;
+    }
+
+    processState.envVars = spawnContext.envVars;
+    processState.sharedCwdPath = spawnContext.spawnOptions.cwd || processState.sharedCwdPath;
+    processState.attemptedResume = Array.isArray(processState.args) && processState.args.includes('--resume');
+    processState.hadFirstResponse = false;
+    processState.completedSuccessfully = false;
+    processState.latestCliSessionId = null;
+    processState.deferredResultLine = null;
+    processState.stdoutSeq = 0;
+
+    const proc = nodeSpawn(processState.command, processState.args || [], spawnContext.spawnOptions);
+    this._processes.set(processState.id, proc);
+    this._attachProcessListeners(processState, proc);
+
+    if (processState.retryCount > 0 && processState.stdinHistory.length > 0 && proc.stdin) {
+      const retryInput = this._buildRetryInput(processState);
+      if (retryInput !== null && retryInput !== undefined) {
+        proc.stdin.write(retryInput);
+      }
+    }
+
+    return { success: true, pid: proc.pid };
+  }
+
+  _buildRetryInput(processState) {
+    if (!processState || !Array.isArray(processState.stdinHistory) || processState.stdinHistory.length === 0) {
+      return null;
+    }
+
+    const args = Array.isArray(processState.args) ? processState.args : [];
+    const inputFormatIndex = args.indexOf('--input-format');
+    const inputFormat = inputFormatIndex >= 0 ? args[inputFormatIndex + 1] : null;
+    const allowsPlaintextContinuity = inputFormat !== 'stream-json';
+
+    if (
+      allowsPlaintextContinuity &&
+      processState.continuityPlan &&
+      processState.continuityPlan.strategy === 'transcript_hydration_prompt'
+    ) {
+      const stdinText = processState.stdinHistory.map((chunk) => {
+        if (typeof chunk === 'string') {
+          return chunk;
+        }
+        if (Buffer.isBuffer(chunk)) {
+          return chunk.toString('utf8');
+        }
+        return null;
+      });
+
+      if (stdinText.every((chunk) => typeof chunk === 'string')) {
+        trace('Applying orchestrator continuity retry plan for process ' + processState.id);
+        return processState.continuityPlan.hydratedPrompt + stdinText.join('');
+      }
+    }
+    if (
+      !allowsPlaintextContinuity &&
+      processState.continuityPlan &&
+      processState.continuityPlan.strategy === 'transcript_hydration_prompt'
+    ) {
+      trace(
+        'Skipping plaintext continuity hydration for process ' + processState.id
+          + ' due to incompatible input format: ' + String(inputFormat || 'unknown')
+      );
+    }
+
+    trace('Replaying ' + processState.stdinHistory.length + ' stdin chunks after fresh retry for process ' + processState.id);
+    return Buffer.concat(processState.stdinHistory.map((chunk) => (
+      Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8')
+    )));
+  }
+
+  _attachProcessListeners(processState, proc) {
+    const self = this;
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+
+    if (proc.stdout) {
+      proc.stdout.on('data', function(data) {
+        stdoutBuffer += data.toString();
+        const lines = stdoutBuffer.split('\n');
+        stdoutBuffer = lines.pop();
+        for (const line of lines) {
+          self._handleProcessStdoutLine(processState, line);
+        }
+      });
+    }
+    if (proc.stderr) {
+      proc.stderr.on('data', function(data) {
+        stderrBuffer += data.toString();
+        const lines = stderrBuffer.split('\n');
+        stderrBuffer = lines.pop();
+        for (const line of lines) {
+          if (line.trim() && self._onStderr) {
+            if (TRACE_IO) {
+              trace('stderr line: ' + line.substring(0, 200) + (line.length > 200 ? '...' : ''));
+            }
+            self._onStderr(processState.id, line + '\n');
+          }
+        }
+      });
+    }
+    proc.on('exit', function(code, signal) {
+      if (stdoutBuffer.trim()) {
+        self._handleProcessStdoutLine(processState, stdoutBuffer);
+      }
+      if (stderrBuffer.trim() && self._onStderr) {
+        self._onStderr(processState.id, stderrBuffer);
+      }
+      console.log('[claude-swift] Process ' + processState.id + ' exited: code=' + code + ' signal=' + signal);
+      trace('Process ' + processState.id + ' exited: code=' + code + ' signal=' + signal);
+      if (self._handleFlatlineRetry(processState, proc, code, signal || '')) {
+        return;
+      }
+      if (processState.deferredResultLine && self._onStdout) {
+        self._onStdout(processState.id, processState.deferredResultLine);
+        processState.deferredResultLine = null;
+      }
+      if (
+        processState.retryCount > 0 &&
+        processState.completedSuccessfully &&
+        processState.latestCliSessionId
+      ) {
+        const persistenceResult = self._sessionOrchestrator.persistRecoveredCliSession({
+          cliSessionId: processState.latestCliSessionId,
+          envVars: processState.envVars,
+        });
+        if (!persistenceResult.success) {
+          trace('WARNING: Failed to persist recovered cliSessionId for process ' + processState.id + ': ' + persistenceResult.error);
+        }
+      }
+      // Preserve null code for signaled exits - don't coerce to 0
+      if (self._onExit) self._onExit(processState.id, code, signal || '');
+      if (self._processes.get(processState.id) === proc) {
+        self._processes.delete(processState.id);
+      }
+      self._processStates.delete(processState.id);
+    });
+    proc.on('error', function(err) {
+      console.error('[claude-swift] Process ' + processState.id + ' error:', err);
+      if (self._onError) self._onError(processState.id, err.message, err.stack);
+    });
+  }
+
+  _handleProcessStdoutLine(processState, line) {
+    if (!line.trim() || !this._onStdout) {
+      return;
+    }
+    const ignoredSdkType = getIgnoredSdkMessageType(line);
+    if (ignoredSdkType) {
+      if (TRACE_IO) {
+        trace('stdout ignored sdk message type: ' + ignoredSdkType);
+      }
+      return;
+    }
+
+    const parsed = parseJsonLine(line);
+    const cliSessionId = extractCliSessionId(parsed);
+    if (cliSessionId) {
+      processState.latestCliSessionId = cliSessionId;
+    }
+    if (hasAssistantResponse(parsed)) {
+      processState.hadFirstResponse = true;
+    }
+    if (isSuccessfulResult(parsed)) {
+      processState.completedSuccessfully = true;
+    }
+    if (
+      processState.attemptedResume &&
+      processState.retryCount === 0 &&
+      !processState.hadFirstResponse &&
+      isFlatlineResumeResult(parsed)
+    ) {
+      processState.deferredResultLine = line + '\n';
+      trace('Deferred flatline resume result for process ' + processState.id);
+      return;
+    }
+
+    processState.stdoutSeq += 1;
+    const msgType = parsed ? (parsed.type || (parsed.message && parsed.message.role) || 'data') : 'unknown';
+    console.log('[stdout-order] seq=' + processState.stdoutSeq + ' type=' + msgType + ' ts=' + Date.now() + ' len=' + line.length);
+    if (TRACE_IO) {
+      trace('stdout line: ' + line.substring(0, 500) + (line.length > 500 ? '...' : ''));
+    }
+    this._onStdout(processState.id, line + '\n');
+  }
+
+  _handleFlatlineRetry(processState, proc, code, signal) {
+    if (
+      !processState.attemptedResume ||
+      processState.retryCount > 0 ||
+      processState.hadFirstResponse ||
+      signal
+    ) {
+      return false;
+    }
+
+    const retryContext = this._sessionOrchestrator.prepareFlatlineRetry({
+      args: processState.args,
+      envVars: processState.envVars,
+      sharedCwdPath: processState.sharedCwdPath,
+    });
+    if (!retryContext.success) {
+      trace('Skipping flatline retry for process ' + processState.id + ': ' + retryContext.error);
+      return false;
+    }
+
+    const deferredResultLine = processState.deferredResultLine;
+    processState.retryCount += 1;
+    processState.args = Array.isArray(retryContext.args) ? retryContext.args.slice() : [];
+    processState.envVars = retryContext.envVars && typeof retryContext.envVars === 'object'
+      ? { ...retryContext.envVars }
+      : processState.envVars;
+    processState.sharedCwdPath = retryContext.sharedCwdPath;
+    processState.attemptedResume = false;
+    processState.continuityPlan = retryContext.continuityPlan || null;
+
+    trace('Retrying flatlined resume via ' + (retryContext.retryMode || 'fresh') + ' path for process ' + processState.id + ' after exit code=' + code);
+    const retryResult = this._startManagedProcess(processState);
+    if (retryResult && retryResult.success) {
+      processState.deferredResultLine = null;
+      if (this._processes.get(processState.id) === proc) {
+        this._processes.delete(processState.id);
+      }
+      return true;
+    }
+
+    processState.deferredResultLine = deferredResultLine;
+    trace('Fresh retry failed for process ' + processState.id + ': ' + (retryResult && retryResult.error ? retryResult.error : 'unknown error'));
+    if (this._onError && retryResult && retryResult.error) {
+      this._onError(processState.id, retryResult.error, '');
+    }
+    return false;
+  }
+
   stopVM() {
     console.log('[claude-swift] stopVM()');
     for (const entry of this._processes) {
       try { entry[1].kill('SIGTERM'); } catch (e) {}
     }
     this._processes.clear();
+    this._processStates.clear();
     this._guestConnected = false;
     this._emit('guestConnectionChanged', { connected: false });
   }
@@ -1692,6 +1957,10 @@ class SwiftAddonStub extends EventEmitter {
 
   writeToProcess(id, data) {
     console.log('[claude-swift] writeToProcess(' + id + ')');
+    const processState = this._processStates.get(id);
+    if (processState) {
+      processState.stdinHistory.push(data);
+    }
     const proc = this._processes.get(id);
     if (proc && proc.stdin) {
       // Raw passthrough - /sessions symlink now points to active SESSIONS_BASE,

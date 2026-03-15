@@ -47,7 +47,7 @@ body:
     attributes:
       label: Relevant log output
       description: |
-        Paste from `~/Library/Application Support/Claude/logs/claude-swift-trace.log`
+        Paste from `~/.local/state/claude-cowork/logs/claude-swift-trace.log`
         or `./launch.sh 2>&1 | tee /tmp/cowork.log`. Redact any tokens or credentials.
       render: shell
 

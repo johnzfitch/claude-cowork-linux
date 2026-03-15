@@ -154,21 +154,20 @@ stage_1() {
 # ============================================================
 
 stage_2() {
-    log_stage 2 "fetch-dmg.py output modes"
+    log_stage 2 "fetch-dmg.js output modes"
 
-    # Needs rnet — check if available
-    if ! python3 -c "import rnet" 2>/dev/null; then
-        skip "rnet not installed (install rnet wheel to test fetch-dmg.py)"
+    if ! command -v node >/dev/null 2>&1; then
+        skip "node not installed"
         return
     fi
 
-    local script="$REPO_ROOT/fetch-dmg.py"
+    local script="$REPO_ROOT/fetch-dmg.js"
 
     # --json mode
     local json_out
-    json_out=$(python3 "$script" --json 2>/dev/null) || { fail "--json mode exited non-zero"; return; }
+    json_out=$(node "$script" --json 2>/dev/null) || { fail "--json mode exited non-zero"; return; }
 
-    if echo "$json_out" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d and 'url' in d" 2>/dev/null; then
+    if echo "$json_out" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); if(!d.version||!d.url) process.exit(1)" 2>/dev/null; then
         pass "--json has version + url keys"
     else
         fail "--json missing expected keys"
@@ -176,7 +175,7 @@ stage_2() {
 
     # --url mode
     local url_out
-    url_out=$(python3 "$script" --url 2>/dev/null) || { fail "--url mode exited non-zero"; return; }
+    url_out=$(node "$script" --url 2>/dev/null) || { fail "--url mode exited non-zero"; return; }
 
     if [[ "$url_out" == https://downloads.claude.ai/* ]]; then
         pass "--url starts with https://downloads.claude.ai/"
@@ -186,7 +185,7 @@ stage_2() {
 
     # default mode (version + url)
     local default_out
-    default_out=$(python3 "$script" 2>/dev/null) || { fail "default mode exited non-zero"; return; }
+    default_out=$(node "$script" 2>/dev/null) || { fail "default mode exited non-zero"; return; }
 
     local word_count
     word_count=$(echo "$default_out" | wc -w)
@@ -210,8 +209,8 @@ stage_3() {
     if [[ -n "${CLAUDE_DMG:-}" && -f "${CLAUDE_DMG:-}" ]]; then
         info "Using CLAUDE_DMG=$CLAUDE_DMG"
         cp "$CLAUDE_DMG" "$SHARED_TMP/Claude.dmg"
-    elif python3 -c "import rnet" 2>/dev/null; then
-        dmg_url=$(python3 "$REPO_ROOT/fetch-dmg.py" --url 2>/dev/null) || {
+    elif command -v node >/dev/null 2>&1; then
+        dmg_url=$(node "$REPO_ROOT/fetch-dmg.js" --url 2>/dev/null) || {
             fail "Could not fetch DMG URL"
             return
         }
@@ -221,7 +220,7 @@ stage_3() {
             return
         }
     else
-        skip "No DMG source (set CLAUDE_DMG or install rnet)"
+        skip "No DMG source (set CLAUDE_DMG or install node)"
         return
     fi
 

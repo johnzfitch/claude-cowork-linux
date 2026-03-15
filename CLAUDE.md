@@ -20,12 +20,12 @@ Replaces macOS VM + Swift addon with direct process spawning on Linux.
             └──────────┬──────────┘             └──────────┬──────────┘
                        │                                   │
             ┌──────────▼──────────┐             ┌──────────▼──────────┐
-            │  cowork/sdk_bridge  │             │   vm.spawn() / kill  │
-            │  (dead code for     │             │   filterEnv()        │
-            │   spawn; bridge     │             │   path translation   │
-            │   state only)       │             └──────────┬──────────┘
-            └─────────────────────┘                        │
-                                                ┌──────────▼──────────┐
+            │  stubs/cowork/      │             │   vm.spawn() / kill  │
+            │  (15 orchestration  │             │   filterEnv()        │
+            │   modules: IPC tap, │             │   path translation   │
+            │   session store,    │             └──────────┬──────────┘
+            │   process mgr, ...) │                        │
+            └─────────────────────┘             ┌──────────▼──────────┐
                                                 │   Claude Code CLI   │
                                                 │  (~/.local/bin/     │
                                                 │        claude)      │
@@ -33,8 +33,8 @@ Replaces macOS VM + Swift addon with direct process spawning on Linux.
 ```
 
 **Critical**: The asar's own `LocalAgentModeSessionManager` drives the spawn lifecycle.
-It calls `vm.spawn()` on the Swift stub directly. `sdk_bridge.js` initializes but is NOT
-used for spawning. Do not add spawn logic to `sdk_bridge.js` expecting it to run.
+It calls `vm.spawn()` on the Swift stub directly. The stubs/cowork/ modules provide
+supporting orchestration (EIPC discovery, session persistence, process management).
 
 ## Current Status
 
@@ -46,12 +46,19 @@ used for spawning. Do not add spawn logic to `sdk_bridge.js` expecting it to run
 
 | File | Purpose | Modified by us? |
 |------|---------|-----------------|
-| `stubs/@ant/claude-swift/js/index.js` | **THE** critical stub. Replaces macOS Swift VM addon. Handles `vm.spawn()`, `filterEnv()`, path translation, mount symlinks, process I/O | YES — primary |
-| `linux-app-extracted/ipc-handler-setup.js` | IPC handler implementation baked into the asar. Registers all EIPC handlers, manages session state, `sessions.json` persistence, transcript migration. **Untracked build artifact** — edit via `linux-app-extracted/` then repack | YES — primary |
-| `cowork/sdk_bridge.js` | SDK bridge class. Initializes but **spawn is dead code** — kept for bridge state/transcript/conversation ID extraction | YES — but largely unused |
-| `cowork/event_dispatch.js` | EIPC event dispatch, handler registration | YES — minor |
-| `launch.sh` | Launch script: `--password-store=gnome-libsecret`, Wayland/Ozone flags, asar repacking | YES |
-| `.claude/session-resume.md` | Detailed session-by-session changelog and testing checklist | YES |
+| `stubs/@ant/claude-swift/js/index.js` | **THE** critical stub. Replaces macOS Swift VM addon. Handles `vm.spawn()`, `filterEnv()`, path translation, mount symlinks, process I/O | YES -- primary |
+| `stubs/@ant/claude-native/index.js` | Auth (xdg-open), keyboard constants, platform helpers | YES -- primary |
+| `stubs/cowork/session_orchestrator.js` | Session lifecycle: start, stop, message routing, transcript coordination | YES -- primary |
+| `stubs/cowork/ipc_tap.js` | EIPC channel prefix auto-discovery from runtime handler registration | YES -- primary |
+| `stubs/cowork/asar_adapter.js` | Asar file operations with path traversal protection | YES -- primary |
+| `stubs/cowork/dirs.js` | XDG Base Directory paths, macOS-to-XDG path aliasing | YES -- primary |
+| `stubs/cowork/process_manager.js` | Process spawning with argument arrays, lifecycle management | YES -- primary |
+| `stubs/cowork/session_store.js` | Session persistence (sessions.json), hydration | YES -- primary |
+| `stubs/cowork/credential_classifier.js` | Credential detection patterns for token filtering | YES -- security |
+| `stubs/cowork/sessions_api.js` | Sessions API with CRLF guards, FD bounds checking | YES -- security |
+| `stubs/frame-fix/frame-fix-wrapper.js` | Early bootstrap: TMPDIR fix, platform spoofing, graceful shutdown | YES -- primary |
+| `launch.sh` | Launch script: password-store detection, Wayland/Ozone flags, Code tab binary fixup, asar repacking | YES |
+| `fetch-dmg.js` | Auto-download Claude DMG via Node.js (replaces Python/rnet) | YES |
 
 ## Critical Path Chains
 
@@ -88,10 +95,10 @@ User sends message in webapp
 FILESYSTEM LAYOUT:
 
 /sessions/                                              ← ROOT SYMLINK (created by setup)
-  → ~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/
+  → ~/.config/Claude/local-agent-mode-sessions/sessions/
 
-~/Library/Application Support/Claude/
-  └── LocalAgentModeSessions/
+~/.config/Claude/
+  └── local-agent-mode-sessions/
       └── sessions/                                     ← SESSIONS_BASE (in Swift stub)
           └── <session-name>/                           ← e.g., optimistic-zealous-dirac
               └── mnt/
@@ -120,7 +127,7 @@ FILESYSTEM LAYOUT:
 5. Asar's `getTranscript()` looks in `<sessionStorageDir>/<sessionId>/.claude/projects/` — same place
 
 **If step 2 is missing** (the bug we fixed), the CLI sees `/sessions/<name>/mnt/.claude` which
-resolves via the root `/sessions/` symlink to `~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/<name>/mnt/.claude/`.
+resolves via the root `/sessions/` symlink to `~/.config/Claude/local-agent-mode-sessions/sessions/<name>/mnt/.claude/`.
 That bypasses the per-session `.claude` mount symlink, so transcripts get written to the wrong tree and the asar finds nothing on restart.
 
 ### Chain 3: Session Persistence Across Restarts
@@ -225,11 +232,11 @@ and must authenticate via its own `CLAUDE_CODE_OAUTH_TOKEN` code path.
 
 | Log prefix | Source | Where |
 |------------|--------|-------|
-| `[TRACE]` | Swift stub `trace()` | `~/Library/Application Support/Claude/logs/claude-swift-trace.log` |
+| `[TRACE]` | Swift stub `trace()` | `~/.local/state/claude-cowork/logs/claude-swift-trace.log` |
 | `[claude-swift]` | Swift stub `console.log()` | stdout (captured by launch.sh) |
 | `[Cowork]` | ipc-handler-setup.js | stdout |
 | `[ipc-setup]` | ipc-handler-setup.js | stdout |
-| `[sdk-bridge]` | sdk_bridge.js | stdout |
+| `[cowork]` | stubs/cowork/ modules | stdout |
 | `[MAIN_LOG]` | Asar's main process logger | stdout |
 | `[COWORK_VM]` | Asar's VM manager | stdout |
 | `[CONSOLE:N]` | Chromium renderer (webapp) | stdout (line N in source) |
@@ -250,7 +257,7 @@ use `local_<uuid>` as an API parameter. Cosmetic — local sessions use IPC, not
 modified to inject auth headers. See "Critical: Auth Flow" above.
 
 **Empty transcript after restart** → `CLAUDE_CONFIG_DIR` path mismatch. Check:
-1. `grep "Translated envVar CLAUDE_CONFIG_DIR" ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log`
+1. `grep "Translated envVar CLAUDE_CONFIG_DIR" ~/.local/state/claude-cowork/logs/claude-swift-trace.log`
 2. The translated path should go through SESSIONS_BASE, not through /sessions/ symlink
 3. The .claude symlink in mnt/ should resolve to the asar session storage dir
 4. The .jsonl file should exist at `~/.config/Claude/local-agent-mode-sessions/.../<sessionId>/.claude/projects/<hash>/<ccId>.jsonl`
@@ -262,16 +269,16 @@ The bridge is dead code for spawn but kept for state management.
 
 ```bash
 # 1. Check what CLAUDE_CONFIG_DIR is set to (from trace log)
-grep "Translated envVar CLAUDE_CONFIG_DIR" ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log
+grep "Translated envVar CLAUDE_CONFIG_DIR" ~/.local/state/claude-cowork/logs/claude-swift-trace.log
 
 # 2. Check where the .claude symlink points
-readlink ~/Library/Application\ Support/Claude/LocalAgentModeSessions/sessions/<session-name>/mnt/.claude
+readlink ~/.config/Claude/local-agent-mode-sessions/sessions/<session-name>/mnt/.claude
 
 # 3. Check if transcripts exist at the asar-expected location
 find ~/.config/Claude/local-agent-mode-sessions/ -name "*.jsonl" -path "*projects*"
 
 # 4. Check if transcripts were written under the raw session tree instead of the mounted config dir
-find ~/Library/Application\ Support/Claude/LocalAgentModeSessions/sessions/ -name "*.jsonl" -path "*projects*"
+find ~/.config/Claude/local-agent-mode-sessions/sessions/ -name "*.jsonl" -path "*projects*"
 
 # 5. Check sessions.json for ccConversationId
 python3 -c "import json; d=json.load(open('$HOME/.config/Claude/LocalAgentModeSessions/sessions.json')); [print(s.get('sessionId','?'), s.get('ccConversationId','MISSING')) for s in d.get('sessions',[])]"
@@ -280,8 +287,6 @@ python3 -c "import json; d=json.load(open('$HOME/.config/Claude/LocalAgentModeSe
 ## Known Issues
 
 - The `conversation_uuid` validation error in React Query logs is cosmetic (see Chain 3).
-- `sdk_bridge.js` spawn code is dead — the asar calls `vm.spawn()` directly. The bridge
-  code is kept for compatibility but should not be relied upon for spawn-time behavior.
 - The asar's built-in `localAgentModeSessionManager` has its own session storage
   (`~/.config/Claude/local-agent-mode-sessions/<user-id>/<org-id>/`) that is independent
   of our `sessions.json`. Our IPC handlers intercept all eipc calls so the asar's storage
@@ -293,6 +298,9 @@ python3 -c "import json; d=json.load(open('$HOME/.config/Claude/LocalAgentModeSe
 ## Build / Test
 
 ```bash
+# Run all tests (215+ tests, 18 files)
+node --test tests/node/current-path/*.test.cjs
+
 # Launch cowork
 ./launch.sh
 
@@ -300,7 +308,7 @@ python3 -c "import json; d=json.load(open('$HOME/.config/Claude/LocalAgentModeSe
 ./launch.sh 2>&1 | tee ~/cowork-full-log.txt
 
 # Verify transcript path is correct after a session
-grep "Translated envVar CLAUDE_CONFIG_DIR" ~/Library/Application\ Support/Claude/logs/claude-swift-trace.log
+grep "Translated envVar CLAUDE_CONFIG_DIR" ~/.local/state/claude-cowork/logs/claude-swift-trace.log
 ```
 
 ## Code Style Notes

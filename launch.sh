@@ -36,6 +36,12 @@ for _ff_file in frame-fix-entry.js frame-fix-wrapper.js; do
   fi
 done
 
+# Sync cowork orchestration modules into the extracted app tree.
+if [ -d "stubs/cowork" ]; then
+  mkdir -p "linux-app-extracted/cowork"
+  cp -f stubs/cowork/*.js "linux-app-extracted/cowork/"
+fi
+
 # ============================================================
 # Linux UI Fixes (applied before every repack)
 # ============================================================
@@ -75,8 +81,42 @@ else
   echo "Using cached app.asar (no changes)"
 fi
 
+# ============================================================
+# Fix Code tab binary: the asar downloads a macOS Mach-O binary to
+# claude-code/<version>/claude. Replace with the Linux binary so
+# HostCLIRunner (Code tab) works on Linux.
+# ============================================================
+CLAUDE_CODE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code"
+if [[ -d "$CLAUDE_CODE_DIR" ]]; then
+  LINUX_CLAUDE=""
+  for _candidate in "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude" "/usr/local/bin/claude" "/usr/bin/claude"; do
+    if [[ -x "$_candidate" ]]; then
+      LINUX_CLAUDE="$_candidate"
+      break
+    fi
+  done
+  if [[ -n "$LINUX_CLAUDE" ]]; then
+    LINUX_CLAUDE_REAL="$(readlink -f "$LINUX_CLAUDE")"
+    for _version_dir in "$CLAUDE_CODE_DIR"/*/; do
+      _ccd_bin="${_version_dir}claude"
+      if [[ -f "$_ccd_bin" && ! -L "$_ccd_bin" ]]; then
+        # Check if it's a Mach-O binary (not a Linux ELF)
+        if file "$_ccd_bin" 2>/dev/null | grep -q "Mach-O"; then
+          echo "Fixing Code tab binary: replacing macOS binary with Linux symlink"
+          echo "  $_ccd_bin -> $LINUX_CLAUDE_REAL"
+          mv "$_ccd_bin" "${_ccd_bin}.macho-backup"
+          ln -s "$LINUX_CLAUDE_REAL" "$_ccd_bin"
+        fi
+      fi
+    done
+  fi
+fi
+
 # Enable logging
 export ELECTRON_ENABLE_LOGGING=1
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+LOG_DIR="${CLAUDE_LOG_DIR:-$STATE_HOME/claude-cowork/logs}"
+export CLAUDE_LOG_DIR="$LOG_DIR"
 
 # Wayland support for Hyprland, Sway, and other Wayland compositors
 if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
@@ -88,7 +128,7 @@ if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
 fi
 
 # Create log directory
-mkdir -p ~/.local/share/claude-cowork/logs
+mkdir -p "$LOG_DIR"
 
 # Detect password store backend.
 # gnome-libsecret is preferred (works with gnome-keyring, KeePassXC, KDE Wallet
@@ -112,4 +152,4 @@ exec "$ELECTRON_BIN" \
   --password-store="$PASSWORD_STORE" \
   --enable-features=GlobalShortcutsPortal \
   "$@" \
-  2>&1 | tee -a ~/.local/share/claude-cowork/logs/startup.log
+  2>&1 | tee -a "$LOG_DIR/startup.log"

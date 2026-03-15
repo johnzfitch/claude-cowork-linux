@@ -8,6 +8,7 @@
 <br>
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-v4.0.0-brightgreen?style=flat-square)
 ![Tested](https://img.shields.io/badge/tested-Arch%20Linux-1793D1?style=flat-square&logo=archlinux&logoColor=white)
 ![Status](https://img.shields.io/badge/status-Working-success?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
@@ -38,6 +39,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 - **Unofficial research preview**: This is reverse-engineered and may break when Claude Desktop updates.
 - **Linux support**: Currently targets **Linux x86_64**. Wayland: auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Ozone backend).
 - **Access**: Requires a Claude account. The installer auto-downloads the Claude Desktop DMG; no macOS machine needed.
+- **Tests**: 215+ test cases across 18 test files validating IPC, path translation, security, and session persistence.
 
 ---
 
@@ -57,7 +59,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 **Known caveats:**
 - Wayland compositors that don't implement the `GlobalShortcuts` portal (GNOME) won't have global hotkey support -- set a custom shortcut in your DE settings instead.
 - If `gnome-keyring` or another SecretService provider isn't running, the launcher falls back to `--password-store=basic` (credentials stored on disk, not in a keyring).
-- The `/sessions` root symlink requires `sudo` once during install. If your distro restricts root symlinks differently, point it manually: `sudo ln -s "$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sessions" /sessions`.
+- The `/sessions` root symlink requires `sudo` once during install. If your distro restricts root symlinks differently, point it manually: `sudo ln -s "$HOME/.config/Claude/local-agent-mode-sessions/sessions" /sessions`.
 
 Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to validate your environment.
 
@@ -65,13 +67,13 @@ Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to vali
 
 ## ![](.github/assets/icons/checkbox-24x24.png) Requirements
 
-- **Linux x86_64** (tested on Arch Linux, kernel 6.18.7)
+- **Linux x86_64** (tested on Arch Linux, kernel 6.18.13)
 - **Node.js 18+** / npm
 - **Electron** (system package or npm global)
 - **asar** (`npm install -g @electron/asar`)
 - **p7zip** (to extract the macOS DMG; openSUSE uses `7zip` instead)
 - **bubblewrap** (sandbox isolation)
-- **Python 3.11+** (for auto-download and patches)
+- **Python 3.11+** (optional, for `enable-cowork.py` patching — the installer uses Node.js to download DMGs)
 - **Claude Pro** (or higher) subscription for Cowork access
 - **Secret service provider** (optional) -- gnome-keyring, KDE Wallet, or KeePassXC for secure credential storage. Without one, the launcher falls back to `--password-store=basic`.
 
@@ -84,7 +86,7 @@ Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to vali
 ```bash
 git clone https://github.com/johnzfitch/claude-cowork-linux.git
 cd claude-cowork-linux
-./install.sh          # auto-downloads the latest DMG
+./install.sh          # auto-downloads the latest DMG via Node.js
 claude-desktop
 ```
 
@@ -100,7 +102,7 @@ yay -S claude-cowork-linux       # auto-downloads the latest DMG
 bash <(curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh)
 ```
 
-The installer automatically downloads the latest Claude Desktop DMG (using [rnet](https://github.com/nicholasgasior/rnet) to bypass Cloudflare on the API endpoint, then curl for the CDN download). You can also provide a DMG manually:
+The installer automatically downloads the latest Claude Desktop DMG using Node.js (`scripts/fetch-dmg.js`). You can also provide a DMG manually:
 
 ```bash
 ./install.sh ~/Downloads/Claude-*.dmg
@@ -119,15 +121,10 @@ CLAUDE_DMG=~/Downloads/Claude-1.1.4010.dmg ./install.sh
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Claude Desktop (Electron)                   │
 ├─────────────────────────────────────────────────────────────────┤
-│  ipc-handler-setup.js (baked into app.asar)                     │
-│  ├── EIPC handler registration (all namespaces)                 │
-│  ├── Session lifecycle & sessions.json persistence              │
-│  └── Transcript migration & directory setup                     │
-├─────────────────────────────────────────────────────────────────┤
 │  @ant/claude-swift (STUBBED)                                    │
 │  ├── vm.setEventCallbacks() → Register process event handlers   │
 │  ├── vm.startVM() → No-op (we're already on Linux)              │
-│  ├── vm.spawn() → Creates mount symlinks, spawns processes      │
+│  ├── vm.spawn() → Delegates to session orchestrator             │
 │  ├── vm.kill() → Kills spawned processes                        │
 │  └── vm.writeStdin() → Writes to process stdin                  │
 ├─────────────────────────────────────────────────────────────────┤
@@ -135,8 +132,26 @@ CLAUDE_DMG=~/Downloads/Claude-1.1.4010.dmg ./install.sh
 │  ├── AuthRequest → Opens system browser (xdg-open)              │
 │  └── Platform helpers → Minimal compatibility shims             │
 ├─────────────────────────────────────────────────────────────────┤
+│  stubs/cowork/ — Orchestration Layer (15 modules)               │
+│  ├── session_orchestrator.js   → Coordinates spawn lifecycle   │
+│  ├── asar_adapter.js            → Asar IPC API compatibility    │
+│  ├── process_manager.js         → Process lifecycle & I/O       │
+│  ├── resume_coordinator.js      → Session resume logic          │
+│  ├── sessions_api.js            → Session CRUD operations       │
+│  ├── session_store.js           → In-memory session state       │
+│  ├── transcript_store.js        → Transcript persistence        │
+│  ├── file_registry.js           → Working directory tracking    │
+│  ├── file_watch_manager.js      → File change detection         │
+│  ├── stream_protocol.js         → JSON-RPC stream parsing       │
+│  ├── credential_classifier.js   → Token leak prevention         │
+│  ├── eipc_channel.js            → EIPC message protocol         │
+│  ├── ipc_tap.js                 → IPC channel discovery         │
+│  ├── dirs.js                    → XDG directory resolution      │
+│  └── file_identity.js           → Path normalization            │
+├─────────────────────────────────────────────────────────────────┤
 │  Claude Code Binary                                             │
 │  └── Resolved from ~/.local/bin, mise/asdf shims, PATH, etc.   │
+│      (launch.sh replaces macOS Mach-O binary with Linux symlink)│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -147,24 +162,24 @@ The stub translates VM paths to host paths:
 | VM Path | Host Path |
 |:--------|:----------|
 | `/usr/local/bin/claude` or `claude` | Resolved via `~/.local/bin/claude`, `~/.config/Claude/claude-code-vm/{version}/claude`, or PATH |
-| `/sessions/...` | `~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/...` |
+| `/sessions/...` | `~/.config/Claude/local-agent-mode-sessions/sessions/...` |
 
 ### Mount Symlinks
 
 When you select a folder in Cowork, the stub creates symlinks to make it accessible at the expected VM path:
 
 ```
-~/Library/Application Support/Claude/LocalAgentModeSessions/sessions/<session-name>/mnt/
+~/.config/Claude/local-agent-mode-sessions/sessions/<session-name>/mnt/
 ├── <folder>  → /home/user/path/to/selected/folder (symlink)
-├── .claude   → ~/.config/Claude/.../session/.claude (symlink)
-├── .skills   → ~/.config/Claude/.../skills-plugin/... (symlink)
+├── .claude   → ~/.config/Claude/local-agent-mode-sessions/.../session/.claude (symlink)
+├── .skills   → ~/.config/Claude/local-agent-mode-sessions/skills-plugin/... (symlink)
 └── uploads/  (directory for file uploads)
 ```
 
 The `additionalMounts` parameter from Claude Desktop provides the mapping between mount names and host paths.
 
 > [!NOTE]
-> The Claude Code binary expects `/sessions` to exist. `install.sh` creates `/sessions` as a symlink into `~/Library/Application Support/Claude/LocalAgentModeSessions/sessions` (requires `sudo` once) so you don't need a world-writable root directory.
+> The Claude Code binary expects `/sessions` to exist. `install.sh` creates `/sessions` as a symlink into `~/.config/Claude/local-agent-mode-sessions/sessions` (requires `sudo` once) so you don't need a world-writable root directory.
 
 ---
 
@@ -197,7 +212,7 @@ The platform-gate function (minified name changes per build — `xPt()` in v1.1.
 The original `@ant/claude-swift` uses Apple's Virtualization Framework. Our stub:
 
 - Implements the same API surface
-- Uses Node.js `child_process` to spawn real processes
+- Delegates spawn logic to `session_orchestrator.js` for proper lifecycle management
 - Line-buffers JSON output for proper stream parsing
 - Translates VM paths to host paths
 
@@ -213,12 +228,17 @@ The app also expects `@ant/claude-native` (a macOS-specific native module). Our 
 </details>
 
 <details>
-<summary><strong>5. IPC Handler Setup</strong></summary>
+<summary><strong>5. Session Orchestration Layer</strong></summary>
 
-All EIPC handlers (session lifecycle, transcript management, feature flags) are registered by `ipc-handler-setup.js`, which is baked directly into `app.asar`. `launch.sh` repacks the asar automatically whenever stubs or frame-fix files change — no manual step required.
+The `stubs/cowork/` orchestration layer provides 15 modules that handle session lifecycle, IPC communication, transcript persistence, and security:
 
-> [!NOTE]
-> Prior to v3.0.3, a separate `linux-loader.js` ran alongside the asar-baked handler via `--require`. It has been removed — `ipc-handler-setup.js` is now the sole IPC implementation.
+- **session_orchestrator.js** coordinates all spawn operations, mount symlinks, and process cleanup
+- **credential_classifier.js** prevents auth token leakage to spawned processes
+- **ipc_tap.js** discovers EIPC channels at runtime by tapping `ipcMain._invokeHandlers.set()`
+- **transcript_store.js** persists conversation history to `~/.config/Claude/local-agent-mode-sessions/`
+- **file_watch_manager.js** detects file changes in the working directory
+
+All modules follow XDG Base Directory conventions and are tested with 215+ test cases.
 
 </details>
 
@@ -241,6 +261,8 @@ $CLAUDE_CODE_PATH                                    (explicit override)
 ~/.asdf/shims/claude                                 (asdf version manager)
 ```
 
+**Code tab binary fixup**: `launch.sh` automatically detects if the Claude Code binary in the asar is a macOS Mach-O binary and replaces it with a symlink to the host Linux binary. This enables the Code tab to work seamlessly.
+
 </details>
 
 ---
@@ -250,35 +272,67 @@ $CLAUDE_CODE_PATH                                    (explicit override)
 ```
 claude-cowork-linux/
 ├── stubs/
-│   ├── @ant/claude-swift/js/index.js   # Primary stub: vm.spawn(), filterEnv(), path translation
+│   ├── @ant/claude-swift/js/index.js   # Primary stub: vm.spawn() → delegates to orchestrator
 │   ├── @ant/claude-native/index.js     # Auth (xdg-open), keyboard constants, platform helpers
+│   ├── cowork/                         # Orchestration layer (15 modules)
+│   │   ├── session_orchestrator.js     # Spawn lifecycle coordinator
+│   │   ├── asar_adapter.js             # Asar IPC API compatibility
+│   │   ├── process_manager.js          # Process lifecycle & I/O
+│   │   ├── resume_coordinator.js       # Session resume logic
+│   │   ├── sessions_api.js             # Session CRUD operations
+│   │   ├── session_store.js            # In-memory session state
+│   │   ├── transcript_store.js         # Transcript persistence
+│   │   ├── file_registry.js            # Working directory tracking
+│   │   ├── file_watch_manager.js       # File change detection
+│   │   ├── stream_protocol.js          # JSON-RPC stream parsing
+│   │   ├── credential_classifier.js    # Token leak prevention
+│   │   ├── eipc_channel.js             # EIPC message protocol
+│   │   ├── ipc_tap.js                  # IPC channel discovery
+│   │   ├── dirs.js                     # XDG directory resolution
+│   │   └── file_identity.js            # Path normalization
 │   └── frame-fix/
 │       ├── frame-fix-wrapper.js        # Early bootstrap: TMPDIR fix, platform spoofing, graceful shutdown
 │       └── frame-fix-entry.js          # Entry point: loads frame-fix-wrapper then main index.js
-├── cowork/
-│   ├── event_dispatch.js               # EIPC event dispatch for LocalAgentModeSessions
-│   └── sdk_bridge.js                   # SDK bridge (spawn dead code, kept for session state)
 ├── tests/
-│   ├── test-install-paths.sh           # 8-stage install validation (static analysis → Docker)
-│   └── Dockerfile.test                 # Arch Linux container for full install testing
+│   ├── node/current-path/             # 18 test files, 215+ node:test cases
+│   │   ├── asar_adapter.test.cjs
+│   │   ├── credential_classifier.test.cjs
+│   │   ├── dirs.test.cjs
+│   │   ├── eipc_channel.test.cjs
+│   │   ├── file_identity.test.cjs
+│   │   ├── file_registry.test.cjs
+│   │   ├── file_watch_manager.test.cjs
+│   │   ├── ipc_tap.test.cjs
+│   │   ├── process_manager.test.cjs
+│   │   ├── resume_coordinator.test.cjs
+│   │   ├── session_orchestrator.test.cjs
+│   │   ├── session_store.test.cjs
+│   │   ├── sessions_api.test.cjs
+│   │   ├── stream_protocol.test.cjs
+│   │   ├── transcript_store.test.cjs
+│   │   └── ... (integration tests)
+│   ├── test-install-paths.sh          # 8-stage install validation (static analysis → Docker)
+│   └── Dockerfile.test                # Arch Linux container for full install testing
+├── scripts/
+│   ├── fetch-dmg.js                   # Auto-download Claude DMG via Node.js fetch
+│   └── enable-cowork.py               # Patches platform gate to return {status:"supported"}
 ├── docs/
-│   ├── extensions.md                   # MCP and Chrome Extension integration overview
-│   ├── known-issues.md                 # Safe Storage encryption, keyring setup
-│   └── safestorage-tokens.md           # How to persist tokens across restarts
+│   ├── FAQ.md                         # Detailed troubleshooting guide
+│   ├── extensions.md                  # MCP and Chrome Extension integration overview
+│   ├── known-issues.md                # Safe Storage encryption, keyring setup
+│   └── safestorage-tokens.md          # How to persist tokens across restarts
 ├── config/
-│   └── hyprland/claude.conf            # Optional: Hyprland window rules
-├── .github/assets/                     # README icons and hero image
-├── enable-cowork.py                    # Patches platform gate to return {status:"supported"}
-├── fetch-dmg.py                        # Auto-download Claude DMG via rnet (Cloudflare bypass)
-├── install.sh                          # Installer + --doctor preflight diagnostics
-├── launch.sh                           # Launcher: syncs stubs, repacks asar, runs electron
-├── launch-devtools.sh                  # Launcher with --inspect (Node.js DevTools)
-├── validate.sh                         # Env var checks, stub URL validation, log scanning
-├── PKGBUILD                            # Arch Linux AUR package definition
-├── docs/releases/                      # Per-version release notes
-├── docs/OAUTH-COMPLIANCE.md            # OAuth token handling audit
-├── CLAUDE.md                           # Project guide and critical paths
-├── README.md                           # This file
+│   └── hyprland/claude.conf           # Optional: Hyprland window rules
+├── .github/assets/                    # README icons and hero image
+├── install.sh                         # Installer + --doctor preflight diagnostics
+├── launch.sh                          # Launcher: syncs stubs, repacks asar, runs electron
+├── launch-devtools.sh                 # Launcher with --inspect (Node.js DevTools)
+├── validate.sh                        # Env var checks, stub URL validation, log scanning
+├── PKGBUILD                           # Arch Linux AUR package definition
+├── docs/releases/                     # Per-version release notes
+├── docs/OAUTH-COMPLIANCE.md           # OAuth token handling audit
+├── CLAUDE.md                          # Project guide and critical paths
+├── README.md                          # This file
 └── LICENSE
 ```
 
@@ -325,6 +379,7 @@ rm -rf /tmp/claude-extract
 ```bash
 # Copy our stubs over the original modules
 cp -r stubs/@ant/* linux-app-extracted/node_modules/@ant/
+cp -r stubs/cowork linux-app-extracted/node_modules/
 ```
 
 </details>
@@ -335,7 +390,7 @@ cp -r stubs/@ant/* linux-app-extracted/node_modules/@ant/
 Run the cowork patch (auto-detects the minified function name):
 
 ```bash
-python3 enable-cowork.py linux-app-extracted/.vite/build/index.js
+python3 scripts/enable-cowork.py linux-app-extracted/.vite/build/index.js
 ```
 
 </details>
@@ -345,11 +400,11 @@ python3 enable-cowork.py linux-app-extracted/.vite/build/index.js
 
 ```bash
 # Create user session directory
-mkdir -p "$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sessions"
-chmod 700 "$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sessions"
+mkdir -p "$HOME/.config/Claude/local-agent-mode-sessions/sessions"
+chmod 700 "$HOME/.config/Claude/local-agent-mode-sessions/sessions"
 
 # Create symlink (requires sudo once)
-sudo ln -s "$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sessions" /sessions
+sudo ln -s "$HOME/.config/Claude/local-agent-mode-sessions/sessions" /sessions
 ```
 
 </details>
@@ -371,6 +426,8 @@ npm install -g electron @electron/asar
 
 ## ![](.github/assets/icons/warning-24x24.png) Troubleshooting
 
+For detailed troubleshooting guides, see **[docs/FAQ.md](docs/FAQ.md)**.
+
 <details>
 <summary><strong>Verify patches were applied</strong></summary>
 
@@ -390,8 +447,8 @@ The patch replaces the platform-gate function to return `{status:"supported"}` u
 Create a symlink to user space instead of a world-writable directory:
 
 ```bash
-mkdir -p "$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sessions"
-sudo ln -s "$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sessions" /sessions
+mkdir -p "$HOME/.config/Claude/local-agent-mode-sessions/sessions"
+sudo ln -s "$HOME/.config/Claude/local-agent-mode-sessions/sessions" /sessions
 ```
 
 </details>
@@ -402,7 +459,7 @@ sudo ln -s "$HOME/Library/Application Support/Claude/LocalAgentModeSessions/sess
 JSON parsing issue. The stub uses line buffering to send complete JSON objects. If this persists, check the trace log:
 
 ```bash
-cat ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+cat ~/.local/state/claude-cowork/logs/claude-swift-trace.log
 ```
 
 </details>
@@ -424,7 +481,7 @@ Run `claude-desktop --doctor` first to check your environment. Then verify:
 Check stderr in the trace log for the actual error:
 
 ```bash
-tail -50 ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+tail -50 ~/.local/state/claude-cowork/logs/claude-swift-trace.log
 ```
 
 Common issues:
@@ -454,8 +511,6 @@ rm -f ~/.config/Claude/SingletonLock ~/.config/Claude/SingletonSocket ~/.config/
 claude-desktop
 ```
 
-This was fixed in v3.0.4 — the app now handles SIGTERM and window-close events gracefully. Update to the latest version to prevent it from recurring.
-
 </details>
 
 <details>
@@ -476,6 +531,9 @@ The app enables `GlobalShortcutsPortal` for Wayland global shortcut support via 
 ./launch-devtools.sh          # with Node.js inspector
 ./validate.sh                 # env var checks, stub URL validation, log errors
 ./install.sh --doctor         # preflight: binaries, node, CLI, /sessions, secret service, patches
+
+# Run tests
+node --test tests/node/current-path/*.test.cjs
 ```
 
 ### Debug Logging
@@ -491,18 +549,18 @@ export CLAUDE_COWORK_DEBUG=1
 export ELECTRON_ENABLE_LOGGING=1
 
 # Clear old logs
-rm -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+rm -f ~/.local/state/claude-cowork/logs/claude-swift-trace.log
 
 # Run with output capture
 ./launch.sh 2>&1 | tee /tmp/claude-full.log
 
 # In another terminal, watch the trace
-tail -f ~/.local/share/claude-cowork/logs/claude-swift-trace.log
+tail -f ~/.local/state/claude-cowork/logs/claude-swift-trace.log
 ```
 
 ### Trace Log Format
 
-The stub writes to `~/.local/share/claude-cowork/logs/claude-swift-trace.log`:
+The stub writes to `~/.local/state/claude-cowork/logs/claude-swift-trace.log`:
 
 ```
 [timestamp] === MODULE LOADING ===
@@ -528,6 +586,9 @@ This project includes security hardening:
 - **Symlink for /sessions** - No world-writable directories
 - **URL origin validation** - `Auth_$_doAuthInBrowser` and `AuthRequest.start()` enforce Anthropic-only domains
 - **OAuth compliance** - `BLOCKED_ENV_KEY_PATTERN` + `CREDENTIAL_EXEMPT_KEYS` prevent token leakage to subprocesses
+- **Credential classification** - `credential_classifier.js` enforces strict token leak prevention with allowlist-based exemptions
+- **CRLF guards** - Stream parsers reject CRLF injection attempts in JSON-RPC messages
+- **FD bounds checking** - File descriptor limits enforced on spawned processes to prevent resource exhaustion
 
 ---
 
