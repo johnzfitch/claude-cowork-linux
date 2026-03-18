@@ -1607,6 +1607,12 @@ class SwiftAddonStub extends EventEmitter {
     let stdoutBuffer = '';
     let stderrBuffer = '';
 
+    if (proc.stdin) {
+      proc.stdin.on('error', (err) => {
+        if (err.code !== 'EPIPE') trace('stdin error for process ' + processState.id + ': ' + err.message);
+      });
+    }
+
     if (proc.stdout) {
       proc.stdout.on('data', function(data) {
         stdoutBuffer += data.toString();
@@ -1830,11 +1836,14 @@ class SwiftAddonStub extends EventEmitter {
       processState.stdinHistory.push(data);
     }
     const proc = this._processes.get(id);
-    if (proc && proc.stdin) {
+    if (proc && proc.stdin && proc.exitCode === null) {
       trace('Sending ' + Buffer.byteLength(data) + ' bytes to stdin of process ' + id);
-      proc.stdin.write(data);
+      proc.stdin.write(data, (err) => {
+        if (err) trace('stdin write error for process ' + id + ': ' + err.message);
+      });
     } else {
-      trace('stdin write dropped for process ' + id + ': proc=' + !!proc + ' stdin=' + !!(proc && proc.stdin));
+      trace('stdin write dropped for process ' + id + ': ' +
+        (!proc ? 'no process' : proc.exitCode !== null ? 'exited with code ' + proc.exitCode : 'no stdin'));
     }
   }
 
