@@ -1,5 +1,28 @@
 'use strict';
 
+// ============================================================================
+// IPC TAP - IPC TRAFFIC MONITORING
+// ============================================================================
+// This module intercepts and logs all IPC (Inter-Process Communication) 
+// between the Electron main process and renderer processes. It's essential
+// for debugging and understanding the webapp's behavior.
+//
+// IPC CHANNELS:
+//   - EIPC format: $eipc_message$_<uuid>_$_<namespace>_$_<method>
+//   - Example: $eipc_message$_123_$_claude.web_$_LocalAgentModeSessions_$_start
+//
+// PRIVACY PROTECTION:
+//   - All payloads are passed through redactCredentials() before logging
+//   - OAuth tokens and API keys are redacted as [REDACTED]
+//   - Truncates large payloads to prevent log bloat
+//
+// LOGGING:
+//   - Writes to ipc-tap.jsonl (JSONL format for easy parsing)
+//   - Also emits to stdout with [IPC-TAP] prefix for real-time monitoring
+//   - Tracks statistics: call counts, errors, timings per channel
+//
+// Used by frame-fix-wrapper.js to monitor all IPC traffic in the app.
+
 const fs = require('fs');
 const path = require('path');
 const { redactCredentials } = require('./credential_classifier.js');
@@ -17,6 +40,8 @@ function defaultLogDir() {
 }
 
 function truncatePayload(value) {
+  // Truncate large payloads to prevent log files from growing too large.
+  // Keeps first 4000 characters and indicates truncation.
   if (value === undefined) return undefined;
   const str = typeof value === 'string' ? value : JSON.stringify(value);
   if (typeof str !== 'string') return String(value);
@@ -25,6 +50,8 @@ function truncatePayload(value) {
 }
 
 function safeSerialize(value) {
+  // PRIVACY: Serialize and redact credentials from any value before logging.
+  // This ensures OAuth tokens never appear in IPC logs.
   try {
     return redactCredentials(truncatePayload(value));
   } catch (_) {
@@ -33,11 +60,24 @@ function safeSerialize(value) {
 }
 
 function createIpcTap(options) {
+  // Create IPC tap for monitoring all IPC traffic between main and renderer.
+  // When enabled=false, returns no-op wrapper for production use.
+  //
+  // Options:
+  //   - enabled: Whether to enable IPC monitoring (default: false)
+  //   - logDir: Directory for ipc-tap.jsonl log file
+  //
+  // Returns object with methods:
+  //   - wrapHandle: Wrap ipcMain.handle() to intercept handler registration
+  //   - wrapInvokeHandlers: Wrap internal _invokeHandlers Map
+  //   - wrapWebContents: Wrap webContents.send() to monitor outgoing messages
+  //   - getStats: Get statistics about IPC traffic
   const {
     logDir = defaultLogDir(),
     enabled = process.env.CLAUDE_COWORK_IPC_TAP === '1',
   } = options || {};
 
+  // Return no-op implementation if not enabled
   if (!enabled) {
     return {
       enabled: false,
@@ -48,6 +88,7 @@ function createIpcTap(options) {
     };
   }
 
+  // Open log file for writing (append mode)
   const logPath = logDir
     ? path.join(logDir, 'ipc-tap.jsonl')
     : null;
@@ -61,16 +102,19 @@ function createIpcTap(options) {
     }
   }
 
+  // Track statistics for monitoring and debugging
   const stats = {
-    handleCalls: 0,
-    handleErrors: 0,
-    platformErrors: 0,
-    sendCalls: 0,
-    registrations: 0,
-    channels: new Map(),
+    handleCalls: 0,        // Total handler invocations
+    handleErrors: 0,       // Handler errors
+    platformErrors: 0,     // Platform-specific errors (e.g., "not supported on Linux")
+    sendCalls: 0,          // Outgoing messages to renderer
+    registrations: 0,      // Handler registrations
+    channels: new Map(),   // Per-channel statistics
   };
 
   function recordEntry(entry) {
+    // Write log entry to both file and stdout.
+    // JSONL format allows easy parsing with jq or streaming analysis.
     const line = JSON.stringify(entry) + '\n';
     if (logFd !== null) {
       try {
@@ -82,6 +126,8 @@ function createIpcTap(options) {
   }
 
   function recordChannelStats(channel, direction, durationMs, error) {
+    // Track per-channel statistics for performance monitoring.
+    // Helps identify slow or error-prone IPC channels.
     let channelStats = stats.channels.get(channel);
     if (!channelStats) {
       const parsed = parseEipcChannel(channel);
@@ -96,7 +142,7 @@ function createIpcTap(options) {
         sendCount: 0,
         totalDurationMs: 0,
         lastSeen: 0,
-        errors: [],
+        errors: [],  // Last 3 unique error messages
       };
       stats.channels.set(channel, channelStats);
     }
@@ -124,6 +170,8 @@ function createIpcTap(options) {
 
   // Wrap a raw handler function with tap instrumentation
   function wrapHandlerFn(channel, handler) {
+    // Intercept handler function to log invocation, args, result, and timing.
+    // PRIVACY: All payloads are redacted before logging.
     if (typeof handler !== 'function') return handler;
     const parsed = parseEipcChannel(channel);
 
