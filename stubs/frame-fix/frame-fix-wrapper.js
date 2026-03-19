@@ -773,6 +773,182 @@ Module.prototype.require = function(id) {
       console.log('[Cowork] IPC handler interception enabled');
     }
 
+    // Patch shell.openExternal to keep OAuth in the Electron session.
+    // The asar tries ASWebAuth (macOS), fails on Linux, then falls back
+    // to shell.openExternal, sending auth to the system browser where
+    // cookies never reach Electron. Fix: open auth in a BrowserWindow
+    // with an isolated session partition (bypasses asar's will-navigate
+    // and webRequest handlers), then copy cookies back after completion.
+    if (module.shell && !global.__coworkShellPatched) {
+      global.__coworkShellPatched = true;
+      const originalOpenExternal = module.shell.openExternal.bind(module.shell);
+      let authInProgress = false; global.__coworkAuthInProgress = false;
+
+      module.shell.openExternal = async function(url, options) {
+        let parsed;
+        try { parsed = new URL(url); } catch (_) {
+          return originalOpenExternal(url, options);
+        }
+        // While auth popup is open, redirect openExternal calls back
+        // into the auth window. The asar's will-navigate handler calls
+        // preventDefault() + openExternal(), so we must re-navigate.
+        if (authInProgress) {
+          console.log('[Frame Fix] Auth redirect in-window:', parsed.hostname + parsed.pathname);
+          const { BrowserWindow } = module;
+          const wins = BrowserWindow.getAllWindows();
+          for (const w of wins) {
+            if (!w.isDestroyed() && w.webContents
+                && (global.__coworkAuthWebContentsIds || new Set()).has(w.webContents.id)) {
+              w.loadURL(url);
+              return;
+            }
+          }
+          return;
+        }
+        const isAuthUrl = parsed.hostname === 'claude.ai'
+          && parsed.pathname.startsWith('/login/');
+        if (!isAuthUrl) {
+          return originalOpenExternal(url, options);
+        }
+
+        authInProgress = true;
+        global.__coworkAuthInProgress = true;
+        console.log('[Frame Fix] Auth intercepted, opening isolated popup');
+        const { BrowserWindow, session } = module;
+        const wins = BrowserWindow.getAllWindows();
+        const mainWin = wins.find(w => !w.isDestroyed());
+        if (!mainWin) {
+          authInProgress = false; global.__coworkAuthInProgress = false;
+          return originalOpenExternal(url, options);
+        }
+
+        const authSession = session.fromPartition('persist:oauth');
+        parsed.searchParams.delete('open_in_browser');
+        const cleanUrl = parsed.toString();
+
+        const authWin = new BrowserWindow({
+          width: 500,
+          height: 700,
+          parent: mainWin,
+          show: true,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            session: authSession,
+          },
+        });
+
+        global.__coworkAuthWebContentsIds = global.__coworkAuthWebContentsIds || new Set();
+        global.__coworkAuthWebContentsIds.add(authWin.webContents.id);
+
+        authWin.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
+          console.log('[Frame Fix] Auth popup loading in-window:', popupUrl);
+          authWin.loadURL(popupUrl);
+          return { action: 'deny' };
+        });
+        authWin.webContents.setWindowOpenHandler = () => {};
+
+        process.nextTick(() => {
+          authWin.webContents.removeAllListeners('will-navigate');
+          console.log('[Frame Fix] Stripped will-navigate from auth popup');
+        });
+
+        let authCodeCaptured = false;
+        authWin.webContents.on('did-finish-load', () => {
+          const currentUrl = authWin.webContents.getURL();
+          if (!currentUrl.includes('accounts.google.com')) return;
+          authWin.webContents.executeJavaScript(`
+            (function() {
+              if (window.__openerInjected) return;
+              window.__openerInjected = true;
+              window.opener = {
+                postMessage: function(data, origin) {
+                  document.title = '__AUTH_CODE__:' + JSON.stringify(data);
+                },
+                closed: false,
+                location: { href: 'https://claude.ai' }
+              };
+            })();
+          `).catch(() => {});
+        });
+
+        authWin.on('page-title-updated', async (_event, title) => {
+          if (!title.startsWith('__AUTH_CODE__:') || authCodeCaptured) return;
+          authCodeCaptured = true;
+          const dataStr = title.slice('__AUTH_CODE__:'.length);
+          console.log('[Frame Fix] Auth code captured, replaying to claude.ai');
+
+          const replayOnLoad = () => {
+            const url = authWin.webContents.getURL();
+            if (!url.includes('claude.ai')) return;
+            authWin.webContents.removeListener('did-finish-load', replayOnLoad);
+            setTimeout(() => {
+              console.log('[Frame Fix] Replaying auth postMessage to claude.ai');
+              authWin.webContents.executeJavaScript(
+                `window.postMessage(${dataStr}, 'https://accounts.google.com');`
+              ).catch(e => console.error('[Frame Fix] Replay failed:', e.message));
+            }, 2000);
+          };
+          authWin.webContents.on('did-finish-load', replayOnLoad);
+          authWin.loadURL('https://claude.ai/login/app-google-auth');
+        });
+
+        if (!authSession.protocol.isProtocolHandled('storagerelay')) {
+          authSession.protocol.handle('storagerelay', async (request) => {
+            console.log('[Frame Fix] storagerelay intercepted:', request.url);
+            return new Response('', { status: 200 });
+          });
+        }
+
+        authWin.loadURL(cleanUrl);
+
+        const finishAuth = async () => {
+          console.log('[Frame Fix] Auth complete, copying cookies');
+          try {
+            const cookies = await authSession.cookies.get({});
+            const mainSes = mainWin.webContents.session;
+            let copied = 0;
+            for (const c of cookies) {
+              if (!c.domain.includes('claude.ai')
+                  && !c.domain.includes('anthropic.com')) continue;
+              try {
+                await mainSes.cookies.set({
+                  url: `https://${c.domain.replace(/^\./, '')}${c.path}`,
+                  name: c.name,
+                  value: c.value,
+                  domain: c.domain,
+                  path: c.path,
+                  secure: c.secure,
+                  httpOnly: c.httpOnly,
+                  sameSite: c.sameSite,
+                  expirationDate: c.expirationDate,
+                });
+                copied++;
+              } catch (_) {}
+            }
+            console.log(`[Frame Fix] Copied ${copied} cookies`);
+          } catch (e) {
+            console.error('[Frame Fix] Cookie copy failed:', e.message);
+          }
+          authInProgress = false; global.__coworkAuthInProgress = false;
+          if (!authWin.isDestroyed()) authWin.close();
+          mainWin.webContents.loadURL('https://claude.ai/');
+        };
+
+        authWin.webContents.on('did-navigate', async (_event, navUrl) => {
+          let dest;
+          try { dest = new URL(navUrl); } catch (_) { return; }
+          console.log('[Frame Fix] Auth did-navigate:', dest.hostname + dest.pathname);
+          if (dest.hostname === 'claude.ai'
+              && !dest.pathname.startsWith('/login')) {
+            await finishAuth();
+          }
+        });
+        authWin.on('closed', () => { authInProgress = false; global.__coworkAuthInProgress = false; });
+      };
+      console.log('[Frame Fix] shell.openExternal patched for OAuth');
+    }
+
     // Stub out macOS-only systemPreferences methods that cause crashes on Linux
     if (module.systemPreferences && !global.__coworkSystemPreferencesPatched) {
       global.__coworkSystemPreferencesPatched = true;
@@ -807,6 +983,11 @@ Module.prototype.require = function(id) {
       // Use prependListener so we fire before the asar's handler
       win.prependListener('close', (event) => {
         if (REAL_PLATFORM === 'linux' && !shuttingDown) {
+          // Don't quit while OAuth is in progress (child windows closing)
+          if (global.__coworkAuthInProgress) {
+            console.log('[Shutdown] Window close during auth — ignoring');
+            return;
+          }
           console.log('[Shutdown] Window close on Linux — scheduling exit');
           // Defer exit so the close event chain finishes without
           // hitting "Object has been destroyed" in downstream handlers
@@ -834,8 +1015,25 @@ Module.prototype.require = function(id) {
     // Hook webContents creation to catch windows as they appear
     registerElectronAppListener(module, 'web-contents-created', (_event, contents) => {
       const owner = contents.getOwnerBrowserWindow && contents.getOwnerBrowserWindow();
-      if (owner) patchWindowClose(owner);
+      // Don't install close-kills-app handler on auth windows
+      const authIds = global.__coworkAuthWebContentsIds || new Set();
+      const isAuthRelated = authIds.has(contents.id)
+        || (owner && owner.webContents && authIds.has(owner.webContents.id));
+      if (owner && !isAuthRelated) patchWindowClose(owner);
       patchEventDispatch(contents);
+
+      // For auth-related child windows (Google OAuth popup), set a
+      // permissive handler and then lock it by replacing the setter
+      // with a no-op so the asar can't override it.
+      if (isAuthRelated || (owner && owner.webContents && authIds.has(owner.webContents.id))) {
+        authIds.add(contents.id);
+        contents.setWindowOpenHandler(({ url: popupUrl }) => {
+          console.log('[Frame Fix] Auth child navigation:', popupUrl);
+          return { action: 'allow' };
+        });
+        contents.setWindowOpenHandler = () => {};
+      }
+
       if (ipcTap.enabled) ipcTap.wrapWebContents(contents);
 
 
@@ -866,7 +1064,9 @@ Module.prototype.require = function(id) {
 
     // Also patch on browser-window-created for certainty
     registerElectronAppListener(module, 'browser-window-created', (_event, win) => {
-      patchWindowClose(win);
+      const authIds = global.__coworkAuthWebContentsIds || new Set();
+      const isAuth = win && win.webContents && authIds.has(win.webContents.id);
+      if (!isAuth) patchWindowClose(win);
       if (win && win.webContents) {
         patchEventDispatch(win.webContents);
         if (process.env.CLAUDE_DEVTOOLS === '1' && !global.__coworkDevToolsOpened) {
