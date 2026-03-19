@@ -124,11 +124,29 @@ if [[ -d "$CLAUDE_CODE_DIR" ]]; then
   fi
 fi
 
+# --devtools flag opens DevTools + asset dumper on launch
+for arg in "$@"; do
+  if [[ "$arg" == "--devtools" ]]; then
+    export CLAUDE_DEVTOOLS=1
+    shift
+    break
+  fi
+done
+
 # Enable logging
 export ELECTRON_ENABLE_LOGGING=1
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 LOG_DIR="${CLAUDE_LOG_DIR:-$STATE_HOME/claude-cowork/logs}"
 export CLAUDE_LOG_DIR="$LOG_DIR"
+
+if [[ -n "$CLAUDE_DEVTOOLS" ]]; then
+  echo ""
+  echo "  DEVTOOLS MODE"
+  echo "  Assets will be saved to: $LOG_DIR/webapp-assets/"
+  echo "  Previous assets backed up to: $LOG_DIR/webapp-assets.bak/"
+  echo "  Compare: diff $LOG_DIR/webapp-assets/ $LOG_DIR/webapp-assets.bak/"
+  echo ""
+fi
 
 # Wayland support for Hyprland, Sway, and other Wayland compositors
 if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then

@@ -17,6 +17,54 @@ const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
 
 console.log('[Frame Fix] Wrapper v2.5 loaded');
+if (process.env.CLAUDE_DEVTOOLS === '1') console.log('[Frame Fix] DevTools mode enabled');
+
+// ── Asset Dumper (--devtools only) ──────────────────────────────────────
+// Saves JS/CSS/JSON from claude.ai and *.anthropic.com to:
+//   ~/.local/state/claude-cowork/logs/webapp-assets/
+// Previous dump is rotated to webapp-assets.bak/ on each launch.
+function setupAssetDumper(win) {
+  const logDir = process.env.CLAUDE_LOG_DIR || path.join(os.homedir(), '.local', 'state', 'claude-cowork', 'logs');
+  const dumpDir = path.join(logDir, 'webapp-assets');
+  const bakDir = dumpDir + '.bak';
+
+  // Rotate: remove old .bak, rename current to .bak
+  try { fs.rmSync(bakDir, { recursive: true, force: true }); } catch (_) {}
+  try { fs.renameSync(dumpDir, bakDir); } catch (_) {}
+  try { fs.mkdirSync(dumpDir, { recursive: true }); } catch (_) {}
+
+  const dumped = new Set();
+  let dumpCount = 0;
+  win.webContents.session.webRequest.onCompleted(
+    { urls: ['*://*.anthropic.com/*', '*://claude.ai/*'] },
+    (details) => {
+      if (details.statusCode !== 200) return;
+      const url = details.url;
+      if (dumped.has(url)) return;
+      const ext = path.extname(new URL(url).pathname).toLowerCase();
+      if (!['.js', '.css', '.json', '.html'].includes(ext)) return;
+      dumped.add(url);
+      win.webContents.session.fetch(url).then(r => r.text()).then(body => {
+        const safeName = new URL(url).pathname.replace(/\//g, '_').replace(/^_/, '');
+        fs.writeFile(path.join(dumpDir, safeName), body, () => {
+          dumpCount++;
+          if (dumpCount <= 5 || dumpCount % 10 === 0) {
+            console.log('[Asset Dump] ' + dumpCount + ' files -> ' + dumpDir);
+          }
+        });
+      }).catch(() => {});
+    }
+  );
+
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════════════════╗');
+  console.log('║  DEVTOOLS MODE  —  Asset dumper active                      ║');
+  console.log('║  Current: ' + dumpDir.padEnd(49) + '║');
+  console.log('║  Backup:  ' + bakDir.padEnd(49) + '║');
+  console.log('║  Diff with: diff <dir> <dir.bak> to spot protocol changes   ║');
+  console.log('╚══════════════════════════════════════════════════════════════╝');
+  console.log('');
+}
 
 function wrapAliasedFileSystemHandler(channel, handler, getAdapter) {
   if (typeof handler !== 'function' || !isFileSystemPathRewriteChannel(channel)) {
@@ -771,6 +819,7 @@ Module.prototype.require = function(id) {
       patchEventDispatch(contents);
       if (ipcTap.enabled) ipcTap.wrapWebContents(contents);
 
+
       // Patch webContents.ipc.handle() to intercept handler registration.
       // When the asar calls contents.ipc.handle(channel, handler), we
       // check the channel suffix against our override registry and
@@ -801,6 +850,13 @@ Module.prototype.require = function(id) {
       patchWindowClose(win);
       if (win && win.webContents) {
         patchEventDispatch(win.webContents);
+        if (process.env.CLAUDE_DEVTOOLS === '1' && !global.__coworkDevToolsOpened) {
+          global.__coworkDevToolsOpened = true;
+          win.webContents.once('dom-ready', () => {
+            try { win.webContents.openDevTools({ mode: 'detach' }); } catch (_) {}
+          });
+          setupAssetDumper(win);
+        }
       }
     }, 'browser-window-created');
 
