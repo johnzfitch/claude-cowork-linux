@@ -29,6 +29,14 @@ if [ -f "$STUB_SRC_FILE" ]; then
   cp -f "$STUB_SRC_FILE" "$STUB_FILE"
 fi
 
+# Sync claude-native stub
+NATIVE_STUB_FILE="linux-app-extracted/node_modules/@ant/claude-native/index.js"
+NATIVE_STUB_SRC="stubs/@ant/claude-native/index.js"
+if [ -f "$NATIVE_STUB_SRC" ]; then
+  mkdir -p "$(dirname "$NATIVE_STUB_FILE")"
+  cp -f "$NATIVE_STUB_SRC" "$NATIVE_STUB_FILE"
+fi
+
 # Sync frame-fix files so wrapper changes take effect without a full reinstall
 for _ff_file in frame-fix-entry.js frame-fix-wrapper.js; do
   if [ -f "stubs/frame-fix/$_ff_file" ]; then
