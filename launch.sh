@@ -124,6 +124,16 @@ if [[ -d "$CLAUDE_CODE_DIR" ]]; then
   fi
 fi
 
+# Code tab: tell the asar to use the host Claude Code CLI directly,
+# bypassing the darwin-arm64 binary download that fails on Linux.
+for _candidate in "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude" "/usr/local/bin/claude" "/usr/bin/claude"; do
+  if [[ -x "$_candidate" ]]; then
+    export CLAUDE_CODE_LOCAL_BINARY="$_candidate"
+    echo "Code tab: using local binary $CLAUDE_CODE_LOCAL_BINARY"
+    break
+  fi
+done
+
 # --devtools flag opens DevTools + asset dumper on launch
 _args=()
 for arg in "$@"; do
