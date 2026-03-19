@@ -292,20 +292,12 @@ get_archive() {
     found=$(scan_for_archive "$script_dir") || true
 
     if [[ -z "$found" ]]; then
-        # Nothing found anywhere — send user to download, then scan again
         echo ""
-        log_info "Opening the Claude download page in your browser..."
-        log_info "Download the macOS installer (it contains the app we need)."
+        log_info "Download the Claude macOS installer (we extract the app from it):"
         echo ""
-        if ! xdg-open "$CLAUDE_DOWNLOAD_REDIRECT" 2>/dev/null; then
-            log_warn "Could not open browser automatically."
-            echo ""
-            echo "  Download manually from:"
-            echo "    $CLAUDE_DOWNLOAD_REDIRECT"
-        fi
+        echo "    $CLAUDE_DOWNLOAD_REDIRECT"
         echo ""
-        echo "  Save the file to your Downloads folder or next to install.sh:"
-        echo "    $script_dir/"
+        echo "  Save it here: $script_dir/"
         echo ""
         echo -n "  Press ENTER when the download is complete..."
         read -r
