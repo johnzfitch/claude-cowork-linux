@@ -129,19 +129,14 @@ function runSwiftBridgeHarness(options) {
   const script = `
     const fs = require('fs');
     global.__coworkSessionsApiRequestSync = (request) => {
-      if (request.method === 'POST' && /\\/v1\\/sessions$/.test(request.url)) {
+      if (request.method === 'POST' && /\\/bridge$/.test(request.url)) {
         return {
           statusCode: 200,
           body: JSON.stringify({
-            id: 'remote-created',
-            session_access_token: 'bridge-token',
+            worker_jwt: 'bridge-token',
+            api_base_url: 'https://api.anthropic.com',
+            expires_in: 3600,
           }),
-        };
-      }
-      if (request.method === 'GET' && /\\/v1\\/sessions\\//.test(request.url)) {
-        return {
-          statusCode: 404,
-          body: JSON.stringify({ error: 'not found' }),
         };
       }
       throw new Error('Unexpected sessions API request: ' + request.method + ' ' + request.url);
@@ -208,7 +203,7 @@ function runSwiftBridgeHarness(options) {
   });
 }
 
-test('claude-swift provisions a remote session, persists it on the local session, and spawns with bridge flags', (t) => {
+test('claude-swift provisions a remote session via bridge-state.json and /bridge API, spawns with bridge flags', (t) => {
   const tempRoot = createTempDir(t);
   const { tempHome, tempRepoRoot, modulePath } = setupPackedStubFixture(tempRoot);
   const workspaceDir = path.join(tempRoot, 'workspace');
@@ -230,6 +225,13 @@ test('claude-swift provisions a remote session, persists it on the local session
     cwd: workspaceDir,
     userSelectedFolders: [workspaceDir],
   }, null, 2) + '\n', 'utf8');
+
+  // Bridge-state.json maps local -> remote session
+  const bridgeStateDir = path.join(tempHome, '.config', 'Claude');
+  fs.mkdirSync(bridgeStateDir, { recursive: true });
+  fs.writeFileSync(path.join(bridgeStateDir, 'bridge-state.json'), JSON.stringify([
+    { localSessionId: 'local_demo_session', remoteSessionId: 'remote-created' },
+  ]), 'utf8');
   fs.writeFileSync(workerPath, `
     const fs = require('fs');
     fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2), null, 2));
@@ -282,6 +284,8 @@ test('claude-swift provisions a remote session, persists it on the local session
     '--output-format',
     'stream-json',
     '--replay-user-messages',
+    '--sdk-url',
+    'wss://api.anthropic.com/v1/code/sessions/remote-created',
     '--model',
     'claude-opus-4-6',
   ]);
@@ -294,8 +298,6 @@ test('claude-swift provisions a remote session, persists it on the local session
   assert.equal(spawnedEnv.CLAUDE_CODE_USE_COWORK_PLUGINS, '1');
   assert.equal(result.metadata.sessionId, 'local_demo_session');
   assert.equal(result.metadata.cliSessionId, 'legacy-cli-session');
-  assert.equal(result.metadata.remoteSessionId, 'remote-created');
-  assert.equal(result.metadata.remoteSessionAccessToken, 'bridge-token');
 });
 
 test('claude-swift exposes the quick access overlay and dictation methods expected by the packed app', (t) => {

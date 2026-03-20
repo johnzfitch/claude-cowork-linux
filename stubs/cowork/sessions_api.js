@@ -429,6 +429,43 @@ class SessionsApi {
     };
   }
 
+  fetchBridgeCredentials(remoteSessionId, options) {
+    // Fetch bridge credentials for dispatch mode.
+    // POST /v1/code/sessions/{id}/bridge -> { worker_jwt, api_base_url, expires_in }
+    // Equivalent to HeA() in CLI binary 4449_initEnvLessBridgeCore.js
+    if (typeof remoteSessionId !== 'string' || !remoteSessionId.trim()) {
+      return {
+        success: false,
+        error: 'Missing remoteSessionId for bridge credentials',
+      };
+    }
+
+    const result = this.requestJson('POST',
+      '/v1/code/sessions/' + encodeURIComponent(remoteSessionId) + '/bridge',
+      {}, options);
+    if (!result.success) {
+      return result;
+    }
+
+    const r = result.response;
+    if (!r || typeof r.worker_jwt !== 'string' || typeof r.expires_in !== 'number'
+        || typeof r.api_base_url !== 'string') {
+      return {
+        success: false,
+        error: 'Malformed /bridge response (need worker_jwt, expires_in, api_base_url)',
+        statusCode: result.statusCode,
+      };
+    }
+
+    return {
+      success: true,
+      workerJwt: r.worker_jwt,
+      apiBaseUrl: r.api_base_url,
+      expiresIn: r.expires_in,
+      statusCode: result.statusCode,
+    };
+  }
+
   postEvents(remoteSessionId, events, options) {
     // Post events to existing remote session
     if (typeof remoteSessionId !== 'string' || !remoteSessionId.trim()) {

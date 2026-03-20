@@ -300,19 +300,20 @@ function removeFlagArgs(args, flagNames) {
   return nextArgs;
 }
 
-function buildBridgeSpawnArgs(args, remoteSessionId) {
+function buildBridgeSpawnArgs(args, remoteSessionId, sdkUrl) {
   // Build CLI arguments for bridge session spawns.
   // Removes asar-specific flags and adds bridge-specific flags.
   const preservedArgs = removeFlagArgs(args, [
     '--resume',
     '--print',
     '--session-id',
+    '--sdk-url',
     '--input-format',
     '--output-format',
     '--replay-user-messages',
   ]);
 
-  return [
+  const bridgeArgs = [
     '--print',
     '--session-id',
     remoteSessionId,
@@ -321,8 +322,13 @@ function buildBridgeSpawnArgs(args, remoteSessionId) {
     '--output-format',
     'stream-json',
     '--replay-user-messages',
-    ...preservedArgs,
   ];
+
+  if (typeof sdkUrl === 'string' && sdkUrl.trim()) {
+    bridgeArgs.push('--sdk-url', sdkUrl);
+  }
+
+  return [...bridgeArgs, ...preservedArgs];
 }
 
 function deriveOrganizationUuidFromMetadataPath(metadataPath) {
@@ -337,6 +343,113 @@ function deriveOrganizationUuidFromMetadataPath(metadataPath) {
     ? organizationUuid.trim()
     : null;
 }
+
+// ============================================================================
+// BRIDGE-STATE READER
+// ============================================================================
+// Reads bridge-state.json written by Claude Desktop's bridge infrastructure.
+// Maps localSessionId -> remoteSessionId (cse_*) for dispatch mode.
+
+const BRIDGE_STATE_MAX_RETRIES = 5;
+const BRIDGE_STATE_RETRY_DELAY_MS = 100;
+
+function readRemoteSessionIdFromBridgeState(localSessionId, deps) {
+  const {
+    bridgeStatePath,
+    readFileSync = fs.readFileSync,
+    trace = () => {},
+    waitMs = BRIDGE_STATE_RETRY_DELAY_MS,
+  } = deps || {};
+
+  if (typeof localSessionId !== 'string' || !localSessionId.trim()) {
+    trace('[bridge-creds] readRemoteSessionIdFromBridgeState: missing localSessionId');
+    return null;
+  }
+
+  const filePath = typeof bridgeStatePath === 'string' && bridgeStatePath.trim()
+    ? bridgeStatePath
+    : path.join(os.homedir(), '.config', 'Claude', 'bridge-state.json');
+
+  for (let attempt = 0; attempt < BRIDGE_STATE_MAX_RETRIES; attempt++) {
+    let raw;
+    try {
+      raw = readFileSync(filePath, 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        if (attempt === 0) {
+          trace('[bridge-creds] bridge-state.json: missing (' + filePath + ')');
+        }
+      } else {
+        trace('[bridge-creds] bridge-state.json: read error: ' + err.message);
+        return null;
+      }
+      // Retry — file may not be written yet
+      if (attempt < BRIDGE_STATE_MAX_RETRIES - 1) {
+        try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs); } catch (_) {}
+      }
+      continue;
+    }
+
+    let entries;
+    try {
+      entries = JSON.parse(raw);
+    } catch (err) {
+      trace('[bridge-creds] bridge-state.json: parse-error: ' + err.message);
+      return null;
+    }
+
+    if (!Array.isArray(entries)) {
+      // Might be a single object or other shape — wrap for uniform iteration
+      entries = entries && typeof entries === 'object' ? [entries] : [];
+    }
+
+    // Schema canary: log shape on first read
+    if (attempt === 0 && entries.length > 0) {
+      const fieldNames = Object.keys(entries[0]).sort();
+      trace('[bridge-creds] bridge-state.json schema: entryCount=' + entries.length
+        + ', fieldNames=[' + fieldNames.join(',') + ']');
+    }
+
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (entry.localSessionId === localSessionId && typeof entry.remoteSessionId === 'string' && entry.remoteSessionId.trim()) {
+        trace('[bridge-creds] remote session: ' + entry.remoteSessionId + ' (matched from localSessionId: ' + localSessionId + ')');
+        return entry.remoteSessionId;
+      }
+    }
+
+    // No match yet — may be a race with bridge writing the file
+    if (attempt === 0) {
+      trace('[bridge-creds] bridge-state.json: no-match (searching for localSessionId=' + localSessionId + ')');
+    }
+    if (attempt < BRIDGE_STATE_MAX_RETRIES - 1) {
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs); } catch (_) {}
+    }
+  }
+
+  trace('[bridge-creds] bridge-state.json: no-match after ' + BRIDGE_STATE_MAX_RETRIES + ' attempts');
+  return null;
+}
+
+// Build the WebSocket SDK URL from apiBaseUrl for --sdk-url argument.
+// CLI's e$_(H) in 4444.js converts wss: -> https: and appends /events for POSTing.
+function buildSdkUrl(apiBaseUrl, remoteSessionId) {
+  if (typeof apiBaseUrl !== 'string' || !apiBaseUrl.trim() ||
+      typeof remoteSessionId !== 'string' || !remoteSessionId.trim()) {
+    return null;
+  }
+  return apiBaseUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+    + '/v1/code/sessions/' + remoteSessionId;
+}
+
+// ============================================================================
+// TOKEN REFRESH CONSTANTS
+// ============================================================================
+// Matches CLI's fg$ scheduler in 4410.js: kH_ = 300000ms buffer, floor 30s
+const BRIDGE_REFRESH_BUFFER_MS = 300000;
+const BRIDGE_REFRESH_FLOOR_MS = 30000;
+const BRIDGE_REFRESH_MAX_FAILURES = 3;      // CLI's XI8 = 3
+const BRIDGE_REFRESH_RETRY_DELAY_MS = 60000; // CLI's vH_ = 60000
 
 // ============================================================================
 // SESSION ORCHESTRATOR
@@ -372,6 +485,8 @@ class SessionOrchestrator {
     this._liveAssistantMessageCache = new Map();
     this._liveAssistantStreamState = new Map();
     this._liveSessionCompatibilityState = new Map();
+    // Bridge credential refresh timers: Map<processId, { timer, remoteSessionId, failureCount }>
+    this._bridgeRefreshTimers = new Map();
   }
 
   prepareVmSpawn(context) {
@@ -579,16 +694,22 @@ class SessionOrchestrator {
       if (typeof bridgeSession.sessionAccessToken !== 'string' || !bridgeSession.sessionAccessToken.trim()) {
         trace('WARNING: Bridge session resolved but sessionAccessToken is empty; falling through to legacy path');
       } else {
-        hostArgs = buildBridgeSpawnArgs(hostArgs, bridgeSession.remoteSessionId);
+        hostArgs = buildBridgeSpawnArgs(hostArgs, bridgeSession.remoteSessionId, bridgeSession.sdkUrl);
         Object.assign(translatedEnvVars, {
           CLAUDE_CODE_ENTRYPOINT: translatedEnvVars.CLAUDE_CODE_ENTRYPOINT || 'claude-desktop',
           CLAUDE_CODE_ENVIRONMENT_KIND: 'bridge',
           CLAUDE_CODE_IS_COWORK: '1',
-          CLAUDE_CODE_OAUTH_TOKEN: '',
+          CLAUDE_CODE_OAUTH_TOKEN: undefined,
           CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2: '1',
           CLAUDE_CODE_SESSION_ACCESS_TOKEN: bridgeSession.sessionAccessToken,
           CLAUDE_CODE_USE_COWORK_PLUGINS: '1',
         });
+        trace(
+          '[bridge-creds] env injection: SESSION_ACCESS_TOKEN=present'
+            + ', POST_FOR_SESSION_INGRESS_V2=1'
+            + ', ENVIRONMENT_KIND=bridge'
+            + ', sdk_url=' + (bridgeSession.sdkUrl || 'none')
+        );
         trace(
           'Prepared bridge spawn for local session '
             + bridgeSession.localSessionId
@@ -631,6 +752,7 @@ class SessionOrchestrator {
       args: hostArgs,
       envVars: translatedEnvVars,
       sharedCwdPath: hostCwdPath,
+      bridgeSession: bridgeSession || null,
     };
   }
 
@@ -910,80 +1032,50 @@ class SessionOrchestrator {
       return null;
     }
 
-    const persistedRemoteSessionId = typeof sessionData.remoteSessionId === 'string' && sessionData.remoteSessionId.trim()
-      ? sessionData.remoteSessionId
-      : null;
-    const persistedRemoteSessionAccessToken = typeof sessionData.remoteSessionAccessToken === 'string' && sessionData.remoteSessionAccessToken.trim()
-      ? sessionData.remoteSessionAccessToken
-      : null;
-    if (persistedRemoteSessionId && persistedRemoteSessionAccessToken) {
-      return {
-        localSessionId: sessionData.sessionId,
-        remoteSessionId: persistedRemoteSessionId,
-        sessionAccessToken: persistedRemoteSessionAccessToken,
-        source: 'metadata',
-      };
-    }
+    const localSessionId = sessionData.sessionId;
 
-    if (!this._deps.sessionsApi || typeof this._deps.sessionsApi.ensureSession !== 'function') {
-      return null;
-    }
-
-    const ensureResult = this._deps.sessionsApi.ensureSession({
-      cwd: typeof hostCwdPath === 'string' && hostCwdPath.trim() ? hostCwdPath : sessionData.cwd,
-      localSessionId: sessionData.sessionId,
-      model: findFlagValue(hostArgs, '--model') || sessionData.model || null,
-      organizationUuid: deriveOrganizationUuidFromMetadataPath(metadataPath),
-      permissionMode: findFlagValue(hostArgs, '--permission-mode') || sessionData.permissionMode || 'default',
-      remoteSessionAccessToken: persistedRemoteSessionAccessToken,
-      remoteSessionId: persistedRemoteSessionId,
-      title: sessionData.title || null,
-      userSelectedFolders: Array.isArray(sessionData.userSelectedFolders) ? sessionData.userSelectedFolders : [],
+    // Step 1: Read bridge-state.json for remoteSessionId
+    const remoteSessionId = readRemoteSessionIdFromBridgeState(localSessionId, {
+      bridgeStatePath: this._deps.bridgeStatePath || null,
+      readFileSync: this._deps.readFileSync || undefined,
+      trace,
+      waitMs: this._deps.bridgeStateRetryDelayMs || undefined,
     });
-    if (!ensureResult || ensureResult.success !== true) {
-      if (ensureResult && ensureResult.skipped) {
-        return null;
-      }
-      trace(
-        'WARNING: Failed to resolve remote session for '
-          + sessionData.sessionId
-          + ': '
-          + (ensureResult && ensureResult.error ? ensureResult.error : 'unknown error')
-      );
-      return null;
-    }
-    if (
-      typeof ensureResult.remoteSessionId !== 'string' ||
-      !ensureResult.remoteSessionId.trim() ||
-      typeof ensureResult.sessionAccessToken !== 'string' ||
-      !ensureResult.sessionAccessToken.trim()
-    ) {
-      trace('WARNING: Sessions API returned incomplete bridge session identity for ' + sessionData.sessionId);
+
+    if (!remoteSessionId) {
+      trace('[bridge-creds] skipped: no bridge-state match (degrading to non-bridge spawn)');
       return null;
     }
 
-    const identityPatch = {
-      remoteSessionAccessToken: ensureResult.sessionAccessToken,
-      remoteSessionId: ensureResult.remoteSessionId,
-    };
-    if (this._sessionStore && typeof this._sessionStore.persistSessionIdentityForMetadataPath === 'function') {
-      const persistenceResult = this._sessionStore.persistSessionIdentityForMetadataPath(metadataPath, identityPatch);
-      if (!persistenceResult.success) {
-        trace('WARNING: Failed to persist remote session identity: ' + persistenceResult.error);
-      }
-    } else if (metadataPath) {
-      const persistedSessionData = readSessionDataFromMetadata(metadataPath, trace) || {};
-      persistSessionDataToMetadata(metadataPath, {
-        ...persistedSessionData,
-        ...identityPatch,
-      }, trace);
+    // Step 2: Fetch bridge credentials via /bridge endpoint
+    if (!this._deps.sessionsApi || typeof this._deps.sessionsApi.fetchBridgeCredentials !== 'function') {
+      trace('[bridge-creds] skipped: sessionsApi.fetchBridgeCredentials not available');
+      return null;
     }
+
+    const organizationUuid = deriveOrganizationUuidFromMetadataPath(metadataPath);
+    const credResult = this._deps.sessionsApi.fetchBridgeCredentials(remoteSessionId, { organizationUuid });
+
+    trace('[bridge-creds] POST /bridge: status=' + (credResult.statusCode || 'n/a')
+      + ', expires_in=' + (credResult.expiresIn || 'n/a')
+      + ', has_jwt=' + (typeof credResult.workerJwt === 'string' && credResult.workerJwt.length > 0));
+
+    if (!credResult.success) {
+      trace('[bridge-creds] /bridge failed for ' + remoteSessionId + ': ' + (credResult.error || 'unknown'));
+      return null;
+    }
+
+    // Step 3: Build SDK URL from apiBaseUrl
+    const sdkUrl = buildSdkUrl(credResult.apiBaseUrl, remoteSessionId);
 
     return {
-      localSessionId: sessionData.sessionId,
-      remoteSessionId: ensureResult.remoteSessionId,
-      sessionAccessToken: ensureResult.sessionAccessToken,
-      source: ensureResult.source || 'created',
+      localSessionId,
+      remoteSessionId,
+      sessionAccessToken: credResult.workerJwt,
+      expiresIn: credResult.expiresIn,
+      apiBaseUrl: credResult.apiBaseUrl,
+      sdkUrl,
+      source: 'bridge_api',
     };
   }
 
@@ -1019,6 +1111,97 @@ class SessionOrchestrator {
     }
 
     return null;
+  }
+
+  // --- Bridge credential refresh ---
+
+  scheduleBridgeRefresh(processId, bridgeSession, processStdinWrite) {
+    const trace = this._deps.trace || (() => {});
+    if (!bridgeSession || typeof bridgeSession.expiresIn !== 'number') {
+      return;
+    }
+
+    if (bridgeSession.expiresIn < 60) {
+      trace('[bridge-creds] WARNING: expires_in=' + bridgeSession.expiresIn + ' too short for refresh (< 60s), skipping');
+      return;
+    }
+
+    const refreshDelayMs = Math.max(bridgeSession.expiresIn * 1000 - BRIDGE_REFRESH_BUFFER_MS, BRIDGE_REFRESH_FLOOR_MS);
+    trace('[bridge-creds] refresh scheduled: ' + refreshDelayMs + 'ms (expires_in=' + bridgeSession.expiresIn + 's, buffer=300s)');
+
+    const timerState = {
+      timer: null,
+      remoteSessionId: bridgeSession.remoteSessionId,
+      failureCount: 0,
+    };
+
+    const doRefresh = () => {
+      if (!this._bridgeRefreshTimers.has(processId)) {
+        return; // Timer was cleared (process exited)
+      }
+
+      if (!this._deps.sessionsApi || typeof this._deps.sessionsApi.fetchBridgeCredentials !== 'function') {
+        trace('[bridge-creds] refresh skipped: sessionsApi unavailable');
+        return;
+      }
+
+      const credResult = this._deps.sessionsApi.fetchBridgeCredentials(timerState.remoteSessionId);
+      if (credResult.success) {
+        timerState.failureCount = 0;
+        trace('[bridge-creds] refresh fired: status=' + (credResult.statusCode || 'ok')
+          + ', new_expires_in=' + credResult.expiresIn);
+
+        // Send token update to CLI via stdin
+        if (typeof processStdinWrite === 'function') {
+          const updatePayload = JSON.stringify({
+            type: 'update_environment_variables',
+            variables: { CLAUDE_CODE_SESSION_ACCESS_TOKEN: credResult.workerJwt },
+          }) + '\n';
+          try {
+            processStdinWrite(updatePayload);
+            trace('[bridge-creds] stdin token update: sent ' + updatePayload.length + ' bytes to pid=' + processId);
+          } catch (err) {
+            trace('[bridge-creds] stdin token update failed for pid=' + processId + ': ' + err.message);
+          }
+        }
+
+        // Schedule next refresh
+        const nextDelayMs = Math.max(credResult.expiresIn * 1000 - BRIDGE_REFRESH_BUFFER_MS, BRIDGE_REFRESH_FLOOR_MS);
+        timerState.timer = setTimeout(doRefresh, nextDelayMs);
+        if (timerState.timer.unref) timerState.timer.unref();
+      } else {
+        timerState.failureCount++;
+        trace('[bridge-creds] refresh failed: ' + (credResult.error || 'unknown')
+          + ' (attempt ' + timerState.failureCount + '/' + BRIDGE_REFRESH_MAX_FAILURES + ')');
+
+        if (timerState.failureCount >= BRIDGE_REFRESH_MAX_FAILURES) {
+          trace('[bridge-creds] refresh abandoned: max failures reached (' + timerState.failureCount
+            + '/' + BRIDGE_REFRESH_MAX_FAILURES + '), session continues without refresh');
+          return;
+        }
+
+        // Retry after delay
+        timerState.timer = setTimeout(doRefresh, BRIDGE_REFRESH_RETRY_DELAY_MS);
+        if (timerState.timer.unref) timerState.timer.unref();
+      }
+    };
+
+    timerState.timer = setTimeout(doRefresh, refreshDelayMs);
+    if (timerState.timer.unref) timerState.timer.unref();
+    this._bridgeRefreshTimers.set(processId, timerState);
+  }
+
+  clearBridgeRefreshTimer(processId) {
+    const trace = this._deps.trace || (() => {});
+    const timerState = this._bridgeRefreshTimers.get(processId);
+    if (!timerState) {
+      return;
+    }
+    if (timerState.timer) {
+      clearTimeout(timerState.timer);
+    }
+    this._bridgeRefreshTimers.delete(processId);
+    trace('[bridge-creds] refresh timer cleared for pid=' + processId + ' (process exited)');
   }
 
   dualWriteEvent(remoteSessionId, event) {
@@ -1818,6 +2001,9 @@ module.exports = {
   createSessionOrchestrator,
   removeResumeArgs,
   symlinkGlobalConfig,
+  // Bridge credential helpers
+  buildSdkUrl,
+  readRemoteSessionIdFromBridgeState,
   // Phase 1: Message type filtering
   LIVE_EVENT_IGNORED_TYPES,
   LIVE_EVENT_METADATA_TYPES,

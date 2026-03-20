@@ -186,14 +186,13 @@ test('prepareVmSpawn derives host cwd from translated --add-dir when sharedCwdPa
   assert.equal(result.sharedCwdPath, '/host/sessions/demo/mnt/project');
 });
 
-test('prepareVmSpawn provisions a bridge session through session_store ownership and emits bridge-style flags/env', (t) => {
+test('prepareVmSpawn provisions a bridge session via bridge-state.json + /bridge API and emits bridge-style flags/env', (t) => {
   const tempRoot = createTempDir(t);
   const localAgentRoot = path.join(tempRoot, 'claude-local');
   const sessionId = 'local_demo_session';
   const metadataPath = path.join(localAgentRoot, 'user', 'org', sessionId + '.json');
   const configDir = metadataPath.replace(/\.json$/, '') + '/.claude';
   const workspaceRoot = path.join(tempRoot, 'workspace');
-  const seenEnsureCalls = [];
 
   fs.mkdirSync(path.dirname(metadataPath), { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
@@ -205,17 +204,27 @@ test('prepareVmSpawn provisions a bridge session through session_store ownership
     userSelectedFolders: [workspaceRoot],
   }, null, 2) + '\n', 'utf8');
 
+  // Bridge-state.json maps localSessionId -> remoteSessionId
+  const bridgePath = path.join(tempRoot, 'bridge-state.json');
+  fs.writeFileSync(bridgePath, JSON.stringify([
+    { localSessionId: sessionId, remoteSessionId: 'remote-created' },
+  ]), 'utf8');
+
+  const seenFetchCalls = [];
   const sessionStore = createSessionStore({ localAgentRoot });
   const orchestrator = createOrchestrator({
     sessionStore,
+    bridgeStatePath: bridgePath,
     sessionsApi: {
-      ensureSession(context) {
-        seenEnsureCalls.push(context);
+      updateAuthToken: () => {},
+      fetchBridgeCredentials(remoteSessionId) {
+        seenFetchCalls.push(remoteSessionId);
         return {
           success: true,
-          remoteSessionId: 'remote-created',
-          sessionAccessToken: 'bridge-token',
-          source: 'created',
+          workerJwt: 'bridge-token',
+          apiBaseUrl: 'https://api.anthropic.com',
+          expiresIn: 3600,
+          statusCode: 200,
         };
       },
     },
@@ -232,7 +241,6 @@ test('prepareVmSpawn provisions a bridge session through session_store ownership
     additionalMounts: null,
     sharedCwdPath: workspaceRoot,
   });
-  const persisted = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
 
   assert.equal(result.success, true);
   assert.deepEqual(result.args, [
@@ -244,6 +252,8 @@ test('prepareVmSpawn provisions a bridge session through session_store ownership
     '--output-format',
     'stream-json',
     '--replay-user-messages',
+    '--sdk-url',
+    'wss://api.anthropic.com/v1/code/sessions/remote-created',
     '--model',
     'claude-opus-4-6',
     '--add-dir',
@@ -254,14 +264,10 @@ test('prepareVmSpawn provisions a bridge session through session_store ownership
   assert.equal(result.envVars.CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2, '1');
   assert.equal(result.envVars.CLAUDE_CODE_IS_COWORK, '1');
   assert.equal(result.envVars.CLAUDE_CODE_USE_COWORK_PLUGINS, '1');
-  assert.equal(seenEnsureCalls.length, 1);
-  assert.equal(seenEnsureCalls[0].localSessionId, sessionId);
-  assert.equal(seenEnsureCalls[0].cwd, workspaceRoot);
-  assert.equal(seenEnsureCalls[0].model, 'claude-opus-4-6');
-  assert.equal(persisted.sessionId, sessionId);
-  assert.equal(persisted.cliSessionId, 'legacy-cli-session');
-  assert.equal(persisted.remoteSessionId, 'remote-created');
-  assert.equal(persisted.remoteSessionAccessToken, 'bridge-token');
+  assert.equal(seenFetchCalls.length, 1);
+  assert.equal(seenFetchCalls[0], 'remote-created');
+  assert.ok(result.bridgeSession);
+  assert.equal(result.bridgeSession.source, 'bridge_api');
 });
 
 test('prepareFlatlineRetry clears only cliSessionId and removes --resume for the fresh retry', (t) => {

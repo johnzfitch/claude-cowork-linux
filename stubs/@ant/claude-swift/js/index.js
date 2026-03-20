@@ -111,7 +111,10 @@ const BLOCKED_ENV_KEY_PATTERN = /oauth[_.]?token|bearer[_.]?token|session_?cooki
 
 // Keys that must pass through filterEnv even though they match the pattern above.
 // CLAUDE_CODE_OAUTH_TOKEN is the legitimate auth mechanism — the CLI needs it.
-const CREDENTIAL_EXEMPT_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
+const CREDENTIAL_EXEMPT_KEYS = new Set([
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
+]);
 
 function filterEnv(baseEnv, additionalEnv) {
   const filtered = {};
@@ -1203,7 +1206,7 @@ class SwiftAddonStub extends EventEmitter {
         }
 
         console.log('[claude-swift] vm.spawn() id=' + id + ' cmd=' + preparedSpawn.command);
-        return self.spawn(
+        const spawnResult = self.spawn(
           id,
           processName,
           preparedSpawn.command,
@@ -1215,6 +1218,17 @@ class SwiftAddonStub extends EventEmitter {
           allowedDomains,
           preparedSpawn.sharedCwdPath
         );
+
+        // Schedule bridge credential refresh if bridge session was resolved
+        if (preparedSpawn.bridgeSession && spawnResult && spawnResult.success !== false) {
+          const proc = self._processes.get(id);
+          const stdinWriter = proc && proc.stdin
+            ? (data) => { proc.stdin.write(data); }
+            : null;
+          self._sessionOrchestrator.scheduleBridgeRefresh(id, preparedSpawn.bridgeSession, stdinWriter);
+        }
+
+        return spawnResult;
       },
 
       kill: (id, signal) => {
@@ -1666,6 +1680,10 @@ class SwiftAddonStub extends EventEmitter {
         if (!persistenceResult.success) {
           trace('WARNING: Failed to persist recovered cliSessionId for process ' + processState.id + ': ' + persistenceResult.error);
         }
+      }
+      // Clean up bridge credential refresh timer before re-spawn or final exit
+      if (self._sessionOrchestrator && typeof self._sessionOrchestrator.clearBridgeRefreshTimer === 'function') {
+        self._sessionOrchestrator.clearBridgeRefreshTimer(processState.id);
       }
       // Preserve null code for signaled exits - don't coerce to 0
       if (self._onExit) self._onExit(processState.id, code, signal || '');
