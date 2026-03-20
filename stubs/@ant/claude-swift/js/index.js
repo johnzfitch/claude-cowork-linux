@@ -1481,6 +1481,11 @@ class SwiftAddonStub extends EventEmitter {
       const authKeys = Object.keys(envVars).filter(k => /ANTHROPIC|AUTH|TOKEN|API_KEY|OAUTH/i.test(k));
       if (authKeys.length > 0) {
         trace('spawn envVars auth keys from asar: ' + authKeys.join(', '));
+        // Log token prefix for debugging auth issues (first 8 chars only)
+        const oauthVal = envVars.CLAUDE_CODE_OAUTH_TOKEN;
+        if (typeof oauthVal === 'string' && oauthVal.length > 8) {
+          trace('spawn OAUTH_TOKEN prefix: ' + oauthVal.substring(0, 8) + '... (len=' + oauthVal.length + ')');
+        }
       }
       trace('spawn envVars keys from asar: ' + Object.keys(envVars).join(', '));
     }
