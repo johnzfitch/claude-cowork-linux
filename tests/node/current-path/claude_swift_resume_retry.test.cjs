@@ -236,6 +236,7 @@ test('claude-swift provisions a remote session via bridge-state.json and /bridge
       CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN || null,
       CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2: process.env.CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2 || null,
       CLAUDE_CODE_SESSION_ACCESS_TOKEN: process.env.CLAUDE_CODE_SESSION_ACCESS_TOKEN || null,
+      CLAUDE_CODE_USE_CCR_V2: process.env.CLAUDE_CODE_USE_CCR_V2 || null,
       CLAUDE_CODE_USE_COWORK_PLUGINS: process.env.CLAUDE_CODE_USE_COWORK_PLUGINS || null,
     }, null, 2));
     process.stdout.write(JSON.stringify({
@@ -269,15 +270,17 @@ test('claude-swift provisions a remote session via bridge-state.json and /bridge
 
   assert.equal(result.exits.length, 1);
   assert.equal(result.exits[0].code, 0);
-  // Args: bridge mode with --session-id cse_*, no --sdk-url (CLI self-bootstraps)
+  // Args: --session-id appended for CCR, --resume preserved for desktop tracking
   const sessionIdIdx = spawnedArgs.indexOf('--session-id');
-  assert.ok(sessionIdIdx !== -1);
+  assert.ok(sessionIdIdx !== -1, '--session-id should be appended');
   assert.equal(spawnedArgs[sessionIdIdx + 1], 'cse_remote-created');
-  assert.equal(spawnedArgs.indexOf('--sdk-url'), -1);
+  assert.ok(spawnedArgs.includes('--resume'), '--resume preserved for desktop transcript tracking');
+  assert.ok(spawnedArgs.includes('legacy-cli-session'), '--resume value preserved');
   // Env: v2 transport, OAuth preserved for CLI self-bootstrap
   assert.equal(spawnedEnv.CLAUDE_CODE_ENTRYPOINT, 'claude-desktop');
   assert.equal(spawnedEnv.CLAUDE_CODE_ENVIRONMENT_KIND, 'bridge');
   assert.equal(spawnedEnv.CLAUDE_CODE_IS_COWORK, '1');
+  assert.equal(spawnedEnv.CLAUDE_CODE_USE_CCR_V2, '1');
   assert.equal(spawnedEnv.CLAUDE_CODE_USE_COWORK_PLUGINS, '1');
   assert.equal(result.metadata.sessionId, 'local_demo_session');
   assert.equal(result.metadata.cliSessionId, 'legacy-cli-session');

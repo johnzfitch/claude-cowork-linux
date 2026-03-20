@@ -301,10 +301,11 @@ test('_resolveBridgeSession activates v2 transport when bridge-state has cse_* e
   assert.equal(result.envVars.CLAUDE_CODE_IS_COWORK, '1');
   // OAuth token preserved — CLI uses it to self-bootstrap /bridge
   assert.equal(result.envVars.CLAUDE_CODE_OAUTH_TOKEN, 'test-oauth');
-  // --session-id should be cse_*
+  // --session-id appended for CCR, original --resume preserved for desktop tracking
   const sessionIdIdx = result.args.indexOf('--session-id');
-  assert.ok(sessionIdIdx !== -1, '--session-id should be present');
+  assert.ok(sessionIdIdx !== -1, '--session-id should be appended');
   assert.equal(result.args[sessionIdIdx + 1], 'cse_dispatch_1');
+  assert.ok(result.args.includes('--resume'), '--resume preserved for desktop transcript tracking');
   assert.ok(result.bridgeSession);
   assert.equal(result.bridgeSession.source, 'bridge_state');
 });

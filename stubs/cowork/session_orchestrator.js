@@ -691,10 +691,12 @@ class SessionOrchestrator {
     });
     
     // If bridge session is available, configure CLI for dispatch mode.
-    // The CLI's initEnvLessBridgeCore handles its own /bridge call and
-    // SSE transport setup — we just pass the session ID and activate v2.
+    // --resume <ccId> and --session-id <cse_*> are independent codepaths:
+    //   --resume: local transcript hydration + desktop writing bubble
+    //   --session-id: remote CCR routing via v2 transport
+    // Keep ALL original args intact, just append --session-id for CCR.
     if (bridgeSession) {
-      hostArgs = buildBridgeSpawnArgs(hostArgs, bridgeSession.remoteSessionId);
+      hostArgs.push('--session-id', bridgeSession.remoteSessionId);
       Object.assign(translatedEnvVars, {
         CLAUDE_CODE_ENTRYPOINT: translatedEnvVars.CLAUDE_CODE_ENTRYPOINT || 'claude-desktop',
         CLAUDE_CODE_ENVIRONMENT_KIND: 'bridge',
@@ -703,7 +705,8 @@ class SessionOrchestrator {
         CLAUDE_CODE_USE_COWORK_PLUGINS: '1',
       });
       trace('[bridge-creds] env injection: USE_CCR_V2=1, ENVIRONMENT_KIND=bridge'
-        + ', session-id=' + bridgeSession.remoteSessionId);
+        + ', session-id=' + bridgeSession.remoteSessionId
+        + ' (original args preserved, --session-id appended)');
     }
 
     // Step 11: Check for resume arguments and session metadata
