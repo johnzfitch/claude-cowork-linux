@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
+// @session-refactor:NORM-004 DEFINITION — message types to drop from transcript reads (asar_adapter.js)
+// NOTE: Same set as NORM-001 (frame-fix-wrapper.js) but used for transcript filtering, not live events
 const IGNORED_LOCAL_SESSION_MESSAGE_TYPES = new Set([
   'last-prompt',
   'progress',
@@ -49,6 +51,7 @@ function isLocalSessionResultChannel(channel) {
     normalizedChannel.includes('gettranscript');
 }
 
+// @session-refactor:NORM-005 DEFINITION — filter transcript messages, removing ignored types
 function filterTranscriptMessages(result) {
   if (!Array.isArray(result)) {
     return result;
@@ -58,9 +61,11 @@ function filterTranscriptMessages(result) {
     if (!message || typeof message !== 'object') {
       return false;
     }
+    // @session-refactor:NORM-004 CALLER — uses IGNORED_LOCAL_SESSION_MESSAGE_TYPES
     if (IGNORED_LOCAL_SESSION_MESSAGE_TYPES.has(message.type)) {
       return false;
     }
+    // @session-refactor:NORM-004 CALLER — uses IGNORED_LOCAL_SESSION_MESSAGE_TYPES (nested message)
     if (message.type === 'message' && message.message && typeof message.message === 'object') {
       if (IGNORED_LOCAL_SESSION_MESSAGE_TYPES.has(message.message.type)) {
         return false;
@@ -357,6 +362,7 @@ class AsarAdapter {
       : DEFAULT_FILESYSTEM_PATH_ALIASES.slice();
   }
 
+  // @session-refactor:NORM-006 DEFINITION — normalize IPC results (filter transcripts, repair session records)
   normalizeIpcResult(channel, result) {
     if (!isLocalSessionResultChannel(channel)) {
       return result;
@@ -364,14 +370,17 @@ class AsarAdapter {
 
     const normalizedChannel = String(channel).toLowerCase();
     if (normalizedChannel.includes('gettranscript')) {
+      // @session-refactor:NORM-005 CALLER — filter transcript messages
       return filterTranscriptMessages(result);
     }
     if (normalizedChannel.includes('getsession')) {
+      // @session-refactor:NORM-020 CALLER — normalize single session record
       return this._sessionStore && typeof this._sessionStore.normalizeSessionRecord === 'function'
         ? this._sessionStore.normalizeSessionRecord(result)
         : result;
     }
     if (normalizedChannel.includes('getall') && Array.isArray(result)) {
+      // @session-refactor:NORM-020 CALLER — normalize array of session records
       return this._sessionStore && typeof this._sessionStore.normalizeSessionRecord === 'function'
         ? result.map((entry) => this._sessionStore.normalizeSessionRecord(entry))
         : result;
@@ -551,6 +560,8 @@ function createAsarAdapter(options) {
   return new AsarAdapter(options);
 }
 
+// @session-refactor:NORM-005 DEFINITION — export surface for filterTranscriptMessages
+// @session-refactor:NORM-006 DEFINITION — export surface for AsarAdapter.normalizeIpcResult
 module.exports = {
   createAsarAdapter,
   DEFAULT_FILESYSTEM_PATH_ALIASES,

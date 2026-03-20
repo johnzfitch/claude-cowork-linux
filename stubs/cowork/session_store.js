@@ -314,12 +314,14 @@ class SessionStore {
     return getSessionDirectory(this._localAgentRoot, sessionId);
   }
 
+  // @session-refactor:NORM-020 DEFINITION — normalize session record (top-level entry point)
   normalizeSessionRecord(sessionData) {
     if (!sessionData || typeof sessionData !== 'object' || Array.isArray(sessionData)) {
       return sessionData;
     }
 
     const metadataPath = findSessionMetadataPath(this._localAgentRoot, sessionData.sessionId);
+    // @session-refactor:NORM-021 CALLER — delegates to path-specific normalization
     return this.normalizeSessionRecordForMetadataPath(metadataPath, sessionData);
   }
 
@@ -344,6 +346,7 @@ class SessionStore {
       return null;
     }
 
+    // @session-refactor:NORM-021 CALLER — normalize session record on read
     const normalizedSessionData = this.normalizeSessionRecordForMetadataPath(metadataPath, rawSessionData);
     const preferredRoot = getPreferredSessionRoot(normalizedSessionData);
     const sessionDirectory = metadataPath.replace(/\.json$/i, '');
@@ -369,6 +372,7 @@ class SessionStore {
   }
 
   observeSessionRead(sessionData) {
+    // @session-refactor:NORM-020 CALLER — normalize session record on observation
     const normalizedSessionData = this.normalizeSessionRecord(sessionData);
     if (!normalizedSessionData || typeof normalizedSessionData !== 'object' || Array.isArray(normalizedSessionData)) {
       return normalizedSessionData;
@@ -467,6 +471,7 @@ class SessionStore {
     return activeSessionInfo.sessionData.sessionId || sessionId;
   }
 
+  // @session-refactor:NORM-021 DEFINITION — normalize session record with metadata path context (cwd repair, cliSessionId selection)
   normalizeSessionRecordForMetadataPath(metadataPath, sessionData) {
     if (!sessionData || typeof sessionData !== 'object' || Array.isArray(sessionData)) {
       return sessionData;
@@ -489,6 +494,7 @@ class SessionStore {
       cliSessionId: nextSessionData.cliSessionId,
     });
 
+    // @session-refactor:NORM-022 — recover preferred root from audit.jsonl if userSelectedFolders is empty
     if (!preferredRoot) {
       const recoveredRoot = chooseAuditPreferredRoot(sessionDirectory, [
         transcriptCandidate && transcriptCandidate.cliSessionId ? transcriptCandidate.cliSessionId : null,
@@ -506,10 +512,12 @@ class SessionStore {
       }
     }
 
+    // @session-refactor:NORM-023 — repair session cwd if synthetic/invalid
     if (preferredRoot && shouldRepairSessionCwd(nextSessionData.cwd, nextSessionData)) {
       nextSessionData.cwd = preferredRoot;
     }
 
+    // @session-refactor:NORM-024 — update cliSessionId to match canonical transcript
     if (transcriptCandidate && transcriptCandidate.cliSessionId && transcriptCandidate.cliSessionId !== nextSessionData.cliSessionId) {
       nextSessionData.cliSessionId = transcriptCandidate.cliSessionId;
     }
@@ -570,6 +578,7 @@ class SessionStore {
     }
     delete nextSessionData.error;
 
+    // @session-refactor:NORM-021 CALLER — normalize patched session data before persisting
     const normalizedValue = this.normalizeSessionRecordForMetadataPath(metadataPath, nextSessionData);
     const indent = detectJsonIndentation(serializedValue);
     const hasTrailingNewline = serializedValue.endsWith('\n');
@@ -591,6 +600,7 @@ class SessionStore {
     };
   }
 
+  // @session-refactor:NORM-080 DEFINITION — normalize serialized metadata (JSON string → normalized JSON string)
   normalizeSerializedMetadata(filePath, serializedValue) {
     if (!isLocalSessionMetadataFilePath(this._localAgentRoot, filePath) || typeof serializedValue !== 'string' || !serializedValue.trim()) {
       return serializedValue;
@@ -598,6 +608,7 @@ class SessionStore {
 
     try {
       const parsedValue = JSON.parse(serializedValue);
+      // @session-refactor:NORM-021 CALLER — repair session record before writing
       const normalizedValue = this.normalizeSessionRecordForMetadataPath(path.resolve(filePath), parsedValue);
       if (JSON.stringify(normalizedValue) === JSON.stringify(parsedValue)) {
         return serializedValue;
@@ -611,13 +622,16 @@ class SessionStore {
     }
   }
 
+  // @session-refactor:NORM-081 DEFINITION — normalize write value (handles string, Buffer, or passthrough)
   normalizeWriteValue(filePath, value) {
     if (typeof value === 'string') {
+      // @session-refactor:NORM-080 CALLER — normalize JSON string
       return this.normalizeSerializedMetadata(filePath, value);
     }
 
     if (Buffer.isBuffer(value)) {
       const originalStringValue = value.toString('utf8');
+      // @session-refactor:NORM-080 CALLER — normalize JSON string from buffer
       const normalizedStringValue = this.normalizeSerializedMetadata(filePath, originalStringValue);
       return normalizedStringValue === originalStringValue
         ? value
@@ -627,6 +641,7 @@ class SessionStore {
     return value;
   }
 
+  // @session-refactor:NORM-082 DEFINITION — install fs.writeFile* patches to auto-repair session metadata on write
   installMetadataPersistenceGuard() {
     if (global.__coworkLocalSessionMetadataPersistenceGuardInstalled) {
       return;
@@ -640,22 +655,26 @@ class SessionStore {
       : null;
 
     fs.writeFileSync = (filePath, value, ...rest) => {
+      // @session-refactor:NORM-081 CALLER — normalize value before writing
       const normalizedValue = this.normalizeWriteValue(filePath, value);
       return originalWriteFileSync(filePath, normalizedValue, ...rest);
     };
 
     fs.writeFile = (filePath, value, options, callback) => {
+      // @session-refactor:NORM-081 CALLER — normalize value before writing
       const normalizedValue = this.normalizeWriteValue(filePath, value);
       return originalWriteFile(filePath, normalizedValue, options, callback);
     };
 
     if (originalPromisesWriteFile) {
       fs.promises.writeFile = (filePath, value, options) => {
+        // @session-refactor:NORM-081 CALLER — normalize value before writing
         const normalizedValue = this.normalizeWriteValue(filePath, value);
         return originalPromisesWriteFile(filePath, normalizedValue, options);
       };
     }
 
+    // @session-refactor:NORM-083 — repair all existing session metadata files on startup
     for (const metadataPath of listLocalSessionMetadataFiles(this._localAgentRoot)) {
       let serializedValue;
       try {
@@ -664,6 +683,7 @@ class SessionStore {
         continue;
       }
 
+      // @session-refactor:NORM-080 CALLER — normalize existing metadata
       const normalizedValue = this.normalizeSerializedMetadata(metadataPath, serializedValue);
       if (normalizedValue !== serializedValue) {
         originalWriteFileSync(metadataPath, normalizedValue, 'utf8');

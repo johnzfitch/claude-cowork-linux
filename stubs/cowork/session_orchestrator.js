@@ -1064,6 +1064,26 @@ class SessionOrchestrator {
       retryAttempt: typeof retryCount === 'number' ? retryCount : 0,
     };
   }
+
+  // @session-refactor:NORM-100 TARGET — consolidated message type filtering will land here
+  // consolidate: NORM-001, NORM-002, NORM-004, NORM-007
+  // method signature: filterMessagesByType(messages, filterConfig)
+
+  // @session-refactor:NORM-101 TARGET — consolidated session record normalization will land here
+  // consolidate: NORM-020, NORM-021, NORM-025
+  // method signature: normalizeSessionRecord(sessionData, context)
+
+  // @session-refactor:NORM-102 TARGET — consolidated SDK message transformation will land here
+  // consolidate: NORM-040, NORM-041, NORM-042, NORM-043, NORM-044, NORM-045
+  // method signature: transformSdkMessages(messages, sessionId)
+
+  // @session-refactor:NORM-103 TARGET — consolidated live event dispatch normalization will land here
+  // consolidate: NORM-060, NORM-061, NORM-062, NORM-063, NORM-064
+  // method signature: normalizeLiveEvent(channel, payload, sessionId)
+
+  // @session-refactor:NORM-104 TARGET — consolidated metadata persistence will land here
+  // consolidate: NORM-080, NORM-081, NORM-082, NORM-083, NORM-084, NORM-085, NORM-086, NORM-087
+  // method signature: installMetadataPersistence(config)
 }
 
 // Global Claude Code config directory (skills, commands, settings, etc.)
