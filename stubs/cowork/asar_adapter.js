@@ -333,7 +333,6 @@ class AsarAdapter {
       : DEFAULT_FILESYSTEM_PATH_ALIASES.slice();
   }
 
-  // @session-refactor:NORM-006 DEFINITION — normalize IPC results (filter transcripts, repair session records)
   normalizeIpcResult(channel, result) {
     if (!isLocalSessionResultChannel(channel)) {
       return result;
@@ -341,7 +340,6 @@ class AsarAdapter {
 
     const normalizedChannel = String(channel).toLowerCase();
     if (normalizedChannel.includes('gettranscript')) {
-      // @session-refactor:NORM-005 CALLER — filter transcript messages
       return filterTranscriptMessages(result);
     }
     if (normalizedChannel.includes('getsession')) {
@@ -529,8 +527,6 @@ function createAsarAdapter(options) {
   return new AsarAdapter(options);
 }
 
-// @session-refactor:NORM-005 DEFINITION — export surface for filterTranscriptMessages
-// @session-refactor:NORM-006 DEFINITION — export surface for AsarAdapter.normalizeIpcResult
 module.exports = {
   createAsarAdapter,
   DEFAULT_FILESYSTEM_PATH_ALIASES,
