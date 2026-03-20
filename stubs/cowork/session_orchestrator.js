@@ -368,6 +368,10 @@ class SessionOrchestrator {
         watchManager: this._fileWatchManager,
       }) : null
     );
+    // Phase 4: Live event dispatch state (per-session maps)
+    this._liveAssistantMessageCache = new Map();
+    this._liveAssistantStreamState = new Map();
+    this._liveSessionCompatibilityState = new Map();
   }
 
   prepareVmSpawn(context) {
@@ -1075,7 +1079,377 @@ class SessionOrchestrator {
     return this._sessionStore.normalizeSessionRecord(sessionData);
   }
 
-  // --- NORM-103 TARGET: live event dispatch (Phase 4) ---
+  // --- Phase 4: Live event dispatch normalization ---
+
+  _isLocalSessionEventChannel(channel) {
+    return typeof channel === 'string' && (
+      channel.includes('LocalAgentModeSessions_$_onEvent') ||
+      channel.includes('LocalSessions_$_onEvent')
+    );
+  }
+
+  _getLocalSessionEventSessionId(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    if (typeof payload.sessionId === 'string') {
+      return payload.sessionId;
+    }
+    if (typeof payload.session_id === 'string') {
+      return payload.session_id;
+    }
+    if (payload.message && typeof payload.message === 'object') {
+      if (typeof payload.message.sessionId === 'string') {
+        return payload.message.sessionId;
+      }
+      if (typeof payload.message.session_id === 'string') {
+        return payload.message.session_id;
+      }
+    }
+    return null;
+  }
+
+  _getOrCreateCompatibilityState(sessionId) {
+    if (!this._liveSessionCompatibilityState.has(sessionId)) {
+      this._liveSessionCompatibilityState.set(sessionId, {
+        queueOperations: [],
+        queueSize: null,
+        progress: null,
+        lastPrompt: null,
+        updatedAt: 0,
+      });
+    }
+    return this._liveSessionCompatibilityState.get(sessionId);
+  }
+
+  _cloneCompatibilityState(sessionId) {
+    const state = this._liveSessionCompatibilityState.get(sessionId);
+    if (!state) {
+      return null;
+    }
+    return {
+      queueOperations: cloneSerializable(state.queueOperations),
+      queueSize: state.queueSize,
+      progress: cloneSerializable(state.progress),
+      lastPrompt: cloneSerializable(state.lastPrompt),
+      updatedAt: state.updatedAt,
+    };
+  }
+
+  _mergeQueueOperationState(state, queuePayload) {
+    if (!state || !queuePayload || typeof queuePayload !== 'object') {
+      return false;
+    }
+
+    const rawPayload = cloneSerializable(queuePayload);
+    if (Array.isArray(rawPayload.operations)) {
+      state.queueOperations = rawPayload.operations.map((entry) => cloneSerializable(entry));
+      state.queueSize = state.queueOperations.length;
+      return true;
+    }
+
+    const extractId = (v) => {
+      if (!v || typeof v !== 'object') return null;
+      const c = v.id ?? v.operation_id ?? v.request_id ?? v.uuid ?? v.name ?? null;
+      return typeof c === 'string' || typeof c === 'number' ? String(c) : null;
+    };
+
+    const operation = rawPayload.operation && typeof rawPayload.operation === 'object'
+      ? cloneSerializable(rawPayload.operation)
+      : rawPayload;
+    const operationId = extractId(operation);
+    const action = String(operation.action ?? operation.subtype ?? operation.operation ?? '').toLowerCase();
+    if (action.includes('remove') || action.includes('dequeue') || action.includes('complete') || action.includes('finish')) {
+      if (operationId) {
+        state.queueOperations = state.queueOperations.filter((entry) => extractId(entry) !== operationId);
+      } else if (state.queueOperations.length > 0) {
+        state.queueOperations = state.queueOperations.slice(1);
+      }
+    } else if (operationId) {
+      const existingIndex = state.queueOperations.findIndex((entry) => extractId(entry) === operationId);
+      if (existingIndex >= 0) {
+        state.queueOperations[existingIndex] = operation;
+      } else {
+        state.queueOperations.push(operation);
+      }
+    } else {
+      state.queueOperations.push(operation);
+    }
+
+    const queueSize = rawPayload.queue_size ?? rawPayload.size ?? rawPayload.pending ?? null;
+    state.queueSize = typeof queueSize === 'number' ? queueSize : state.queueOperations.length;
+    return true;
+  }
+
+  _applyMetadataMessage(sessionId, sdkMessage) {
+    if (typeof sessionId !== 'string' || !sdkMessage || typeof sdkMessage !== 'object') {
+      return false;
+    }
+
+    const messageType = sdkMessage.type;
+    if (!LIVE_EVENT_METADATA_TYPES.has(messageType)) {
+      return false;
+    }
+
+    const state = this._getOrCreateCompatibilityState(sessionId);
+    let updated = false;
+
+    if (messageType === 'queue-operation') {
+      updated = this._mergeQueueOperationState(state, sdkMessage);
+    } else if (messageType === 'progress') {
+      state.progress = {
+        current: typeof sdkMessage.current === 'number' ? sdkMessage.current : (typeof sdkMessage.completed === 'number' ? sdkMessage.completed : null),
+        total: typeof sdkMessage.total === 'number' ? sdkMessage.total : (typeof sdkMessage.max === 'number' ? sdkMessage.max : null),
+        phase: typeof sdkMessage.phase === 'string' ? sdkMessage.phase : (typeof sdkMessage.status === 'string' ? sdkMessage.status : null),
+        raw: cloneSerializable(sdkMessage),
+      };
+      updated = true;
+    } else if (messageType === 'last-prompt') {
+      const promptValue = sdkMessage.prompt ?? sdkMessage.last_prompt ?? sdkMessage.text ?? sdkMessage.value ?? sdkMessage.message ?? null;
+      state.lastPrompt = {
+        text: typeof promptValue === 'string' ? promptValue : null,
+        raw: cloneSerializable(sdkMessage),
+      };
+      updated = true;
+    }
+
+    if (updated) {
+      state.updatedAt = Date.now();
+    }
+    return updated;
+  }
+
+  _finalizeCompatibilityState(sessionId) {
+    const state = this._liveSessionCompatibilityState.get(sessionId);
+    if (!state) {
+      return;
+    }
+    if (state.progress && typeof state.progress === 'object' && !state.progress.phase) {
+      state.progress = { ...state.progress, phase: 'completed' };
+    }
+    state.queueOperations = [];
+    state.queueSize = 0;
+    state.updatedAt = Date.now();
+  }
+
+  _attachCompatibilityState(sessionId, payload) {
+    const compatibilityState = this._cloneCompatibilityState(sessionId);
+    if (!compatibilityState || !payload || typeof payload !== 'object') {
+      return payload;
+    }
+    return { ...payload, coworkCompatibilityState: compatibilityState };
+  }
+
+  _clearLiveSessionState(sessionId) {
+    this._liveAssistantMessageCache.delete(sessionId);
+    this._liveAssistantStreamState.delete(sessionId);
+    this._liveSessionCompatibilityState.delete(sessionId);
+  }
+
+  _buildSyntheticAssistantFromStreamEvent(sessionId, streamMessage) {
+    if (!streamMessage || typeof streamMessage !== 'object' || streamMessage.type !== 'stream_event') {
+      return null;
+    }
+
+    const streamEvent = streamMessage.event;
+    if (!streamEvent || typeof streamEvent !== 'object') {
+      return null;
+    }
+
+    let currentAssistantMessage = this._liveAssistantStreamState.get(sessionId) || null;
+
+    if (streamEvent.type === 'message_start') {
+      const startingMessage = streamEvent.message;
+      if (!startingMessage || startingMessage.role !== 'assistant') {
+        return null;
+      }
+
+      currentAssistantMessage = {
+        type: 'assistant',
+        uuid: streamMessage.uuid || null,
+        session_id: streamMessage.session_id || null,
+        parent_tool_use_id: streamMessage.parent_tool_use_id ?? null,
+        message: {
+          ...startingMessage,
+          content: cloneMessageContent(startingMessage.content),
+        },
+      };
+      this._liveAssistantStreamState.set(sessionId, currentAssistantMessage);
+      return cloneAssistantSdkMessage(currentAssistantMessage);
+    }
+
+    if (!isAssistantSdkMessage(currentAssistantMessage)) {
+      return null;
+    }
+
+    currentAssistantMessage = {
+      ...currentAssistantMessage,
+      uuid: currentAssistantMessage.uuid || streamMessage.uuid || null,
+      session_id: currentAssistantMessage.session_id || streamMessage.session_id || null,
+      parent_tool_use_id: currentAssistantMessage.parent_tool_use_id ?? streamMessage.parent_tool_use_id ?? null,
+      message: {
+        ...currentAssistantMessage.message,
+        content: cloneMessageContent(currentAssistantMessage.message.content),
+      },
+    };
+
+    const currentContent = currentAssistantMessage.message.content;
+
+    if (streamEvent.type === 'content_block_start') {
+      currentContent[streamEvent.index] = streamEvent.content_block && typeof streamEvent.content_block === 'object'
+        ? { ...streamEvent.content_block }
+        : streamEvent.content_block;
+    } else if (streamEvent.type === 'content_block_delta') {
+      const currentBlock = currentContent[streamEvent.index];
+      if (!currentBlock || typeof currentBlock !== 'object') {
+        return null;
+      }
+
+      if (streamEvent.delta && streamEvent.delta.type === 'text_delta' && currentBlock.type === 'text') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          text: mergeStreamingText(currentBlock.text, streamEvent.delta.text),
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'thinking_delta' && currentBlock.type === 'thinking') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          thinking: mergeStreamingText(currentBlock.thinking, streamEvent.delta.thinking),
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'signature_delta' && currentBlock.type === 'thinking') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          signature: streamEvent.delta.signature || currentBlock.signature || '',
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'input_json_delta' && currentBlock.type === 'tool_use') {
+        const partialJson = mergeStreamingText(currentBlock.__coworkPartialJson, streamEvent.delta.partial_json);
+        let parsedInput;
+        try { parsedInput = JSON.parse(partialJson); } catch (_) { parsedInput = undefined; }
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          __coworkPartialJson: partialJson,
+          ...(parsedInput !== undefined ? { input: parsedInput } : {}),
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'citations_delta' && currentBlock.type === 'text') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          citations: [
+            ...(Array.isArray(currentBlock.citations) ? currentBlock.citations : []),
+            streamEvent.delta.citation,
+          ],
+        };
+      }
+    } else if (streamEvent.type === 'message_delta') {
+      currentAssistantMessage.message = {
+        ...currentAssistantMessage.message,
+        stop_reason: streamEvent.delta ? streamEvent.delta.stop_reason : currentAssistantMessage.message.stop_reason,
+        stop_sequence: streamEvent.delta ? streamEvent.delta.stop_sequence : currentAssistantMessage.message.stop_sequence,
+        context_management: streamEvent.context_management ?? currentAssistantMessage.message.context_management,
+        usage: {
+          ...(currentAssistantMessage.message.usage || {}),
+          ...(streamEvent.usage || {}),
+        },
+      };
+    } else if (streamEvent.type !== 'content_block_stop' && streamEvent.type !== 'message_stop') {
+      return null;
+    }
+
+    this._liveAssistantStreamState.set(sessionId, currentAssistantMessage);
+    return cloneAssistantSdkMessage(currentAssistantMessage);
+  }
+
+  // Public API: normalize a live event payload before dispatching to renderer.
+  // Returns an array of payloads (0 = drop, 1 = pass through, 2 = stream_event → synthetic assistant + original).
+  normalizeLiveEvent(channel, payload) {
+    if (!this._isLocalSessionEventChannel(channel) || !payload || typeof payload !== 'object') {
+      return [payload];
+    }
+
+    const sessionId = this._getLocalSessionEventSessionId(payload);
+    if (!sessionId) {
+      return [payload];
+    }
+
+    if (payload.type === 'start' || payload.type === 'close' || payload.type === 'stopped' || payload.type === 'deleted') {
+      this._clearLiveSessionState(sessionId);
+      return [payload];
+    }
+
+    if (LIVE_EVENT_METADATA_TYPES.has(payload.type)) {
+      this._applyMetadataMessage(sessionId, payload);
+      return [];
+    }
+
+    if (payload.type === 'transcript_loaded' && Array.isArray(payload.messages)) {
+      const normalizedMessages = [];
+      for (const message of payload.messages) {
+        if (message && typeof message === 'object' && LIVE_EVENT_METADATA_TYPES.has(message.type)) {
+          this._applyMetadataMessage(sessionId, message);
+          continue;
+        }
+        if (message && typeof message === 'object' && LIVE_EVENT_IGNORED_TYPES.has(message.type)) {
+          continue;
+        }
+        normalizedMessages.push(message);
+      }
+      return [this._attachCompatibilityState(sessionId, {
+        ...payload,
+        messages: mergeConsecutiveAssistantMessages(normalizedMessages),
+      })];
+    }
+
+    if (payload.type !== 'message' || !payload.message || typeof payload.message !== 'object') {
+      return [this._attachCompatibilityState(sessionId, payload)];
+    }
+
+    if (LIVE_EVENT_METADATA_TYPES.has(payload.message.type)) {
+      this._applyMetadataMessage(sessionId, payload.message);
+      return [];
+    }
+
+    if (payload.message.type === 'result') {
+      this._liveAssistantStreamState.delete(sessionId);
+      this._finalizeCompatibilityState(sessionId);
+      return [this._attachCompatibilityState(sessionId, payload)];
+    }
+
+    if (payload.message.type === 'stream_event') {
+      const syntheticAssistantMessage = this._buildSyntheticAssistantFromStreamEvent(sessionId, payload.message);
+      if (!syntheticAssistantMessage) {
+        return [this._attachCompatibilityState(sessionId, payload)];
+      }
+
+      const previousMessage = this._liveAssistantMessageCache.get(sessionId);
+      const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, syntheticAssistantMessage) || syntheticAssistantMessage;
+      this._liveAssistantMessageCache.set(sessionId, mergedAssistantMessage);
+
+      return [
+        this._attachCompatibilityState(sessionId, payload),
+        this._attachCompatibilityState(sessionId, {
+          ...payload,
+          message: mergedAssistantMessage,
+        }),
+      ];
+    }
+
+    if (!isAssistantSdkMessage(payload.message)) {
+      return [this._attachCompatibilityState(sessionId, payload)];
+    }
+
+    const previousMessage = this._liveAssistantMessageCache.get(sessionId);
+    if (previousMessage) {
+      const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, payload.message);
+      if (mergedAssistantMessage) {
+        this._liveAssistantMessageCache.set(sessionId, mergedAssistantMessage);
+        return [this._attachCompatibilityState(sessionId, {
+          ...payload,
+          message: mergedAssistantMessage,
+        })];
+      }
+    }
+
+    this._liveAssistantMessageCache.set(sessionId, payload.message);
+    return [this._attachCompatibilityState(sessionId, payload)];
+  }
 }
 
 // Phase 1: Message type filtering — constants and functions live in

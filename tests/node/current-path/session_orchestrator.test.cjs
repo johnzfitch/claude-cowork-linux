@@ -809,3 +809,119 @@ test('filterTranscriptMessages passes through non-array input', () => {
   assert.strictEqual(filterTranscriptMessages(null), null);
   assert.strictEqual(filterTranscriptMessages('string'), 'string');
 });
+
+// --- Phase 4: Live event dispatch tests ---
+
+const EVENT_CHANNEL = '$eipc_message$_uuid_$_claude.web_$_LocalAgentModeSessions_$_onEvent';
+
+test('normalizeLiveEvent drops metadata types and accumulates compatibility state', () => {
+  const orchestrator = createOrchestrator();
+  // queue-operation is metadata — should be accumulated, not dispatched
+  const result1 = orchestrator.normalizeLiveEvent(EVENT_CHANNEL, {
+    type: 'queue-operation',
+    sessionId: 'local_test',
+    operations: [{ id: 'op1' }],
+  });
+  assert.strictEqual(result1.length, 0, 'metadata should be dropped');
+
+  // A non-metadata event should carry the accumulated state
+  const result2 = orchestrator.normalizeLiveEvent(EVENT_CHANNEL, {
+    type: 'message',
+    sessionId: 'local_test',
+    message: { type: 'result', stop_reason: 'end_turn' },
+  });
+  assert.strictEqual(result2.length, 1);
+  assert.ok(result2[0].coworkCompatibilityState, 'should have compatibility state attached');
+});
+
+test('normalizeLiveEvent passes through non-onEvent channels', () => {
+  const orchestrator = createOrchestrator();
+  const payload = { type: 'assistant', sessionId: 'local_test' };
+  const result = orchestrator.normalizeLiveEvent('some_other_channel', payload);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0], payload, 'should return payload unchanged');
+});
+
+test('normalizeLiveEvent clears state on session lifecycle events', () => {
+  const orchestrator = createOrchestrator();
+  // Accumulate some state
+  orchestrator.normalizeLiveEvent(EVENT_CHANNEL, {
+    type: 'progress',
+    sessionId: 'local_test',
+    current: 1,
+    total: 5,
+  });
+  // 'start' should clear it
+  const result = orchestrator.normalizeLiveEvent(EVENT_CHANNEL, {
+    type: 'start',
+    sessionId: 'local_test',
+  });
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].type, 'start');
+  // Next message should have no compatibility state
+  const result2 = orchestrator.normalizeLiveEvent(EVENT_CHANNEL, {
+    type: 'message',
+    sessionId: 'local_test',
+    message: { type: 'assistant', role: 'assistant' },
+  });
+  assert.strictEqual(result2[0].coworkCompatibilityState, undefined);
+});
+
+test('normalizeLiveEvent synthesizes assistant from stream_event message_start', () => {
+  const orchestrator = createOrchestrator();
+  const result = orchestrator.normalizeLiveEvent(EVENT_CHANNEL, {
+    type: 'message',
+    sessionId: 'local_test',
+    message: {
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: {
+          type: 'message',
+          role: 'assistant',
+          id: 'msg_1',
+          content: [{ type: 'text', text: 'hello' }],
+        },
+      },
+    },
+  });
+  // Returns 2 payloads: original stream_event + synthetic assistant
+  assert.strictEqual(result.length, 2);
+  assert.strictEqual(result[1].message.type, 'assistant');
+  assert.strictEqual(result[1].message.message.content[0].text, 'hello');
+});
+
+test('normalizeLiveEvent merges consecutive assistant messages by ID', () => {
+  const orchestrator = createOrchestrator();
+  const mkAssistant = (text) => ({
+    type: 'message',
+    sessionId: 'local_test',
+    message: {
+      type: 'assistant',
+      message: { type: 'message', role: 'assistant', id: 'msg_1', content: [{ type: 'text', text }] },
+    },
+  });
+  orchestrator.normalizeLiveEvent(EVENT_CHANNEL, mkAssistant('hello'));
+  const result = orchestrator.normalizeLiveEvent(EVENT_CHANNEL, mkAssistant('hello world'));
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].message.message.content[0].text, 'hello world');
+});
+
+test('normalizeLiveEvent handles transcript_loaded with metadata extraction', () => {
+  const orchestrator = createOrchestrator();
+  const result = orchestrator.normalizeLiveEvent(EVENT_CHANNEL, {
+    type: 'transcript_loaded',
+    sessionId: 'local_test',
+    messages: [
+      { type: 'queue-operation', operations: [] },
+      { type: 'progress', current: 1, total: 5 },
+      { type: 'rate_limit_event' },
+      { type: 'assistant', message: { type: 'message', role: 'assistant', id: 'a', content: [{ type: 'text', text: 'hi' }] } },
+    ],
+  });
+  assert.strictEqual(result.length, 1);
+  // queue-operation and progress accumulated, rate_limit_event dropped, assistant kept
+  assert.strictEqual(result[0].messages.length, 1);
+  assert.strictEqual(result[0].messages[0].type, 'assistant');
+  assert.ok(result[0].coworkCompatibilityState, 'should carry accumulated metadata');
+});
