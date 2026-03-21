@@ -1,12 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const IGNORED_MESSAGE_TYPES = new Set([
-  'last-prompt',
-  'progress',
-  'queue-operation',
-  'rate_limit_event',
-]);
+const { TRANSCRIPT_IGNORED_TYPES } = require('./session_normalization.js');
 
 const RESUMABLE_MESSAGE_TYPES = new Set([
   'assistant',
@@ -15,11 +10,35 @@ const RESUMABLE_MESSAGE_TYPES = new Set([
   'user',
 ]);
 
-function sanitizeTranscriptProjectKey(inputPath) {
+function legacySanitizeTranscriptProjectKey(inputPath) {
   if (typeof inputPath !== 'string' || !inputPath.trim()) {
     return null;
   }
   return inputPath.replace(/[^A-Za-z0-9]/g, '-');
+}
+
+function sanitizeTranscriptProjectKey(inputPath) {
+  if (typeof inputPath !== 'string' || !inputPath.trim()) {
+    return null;
+  }
+  return 'b64-' + Buffer.from(inputPath, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function getTranscriptProjectKeyCandidates(inputPath) {
+  const preferredKeys = [];
+  const preferredKey = sanitizeTranscriptProjectKey(inputPath);
+  const legacyKey = legacySanitizeTranscriptProjectKey(inputPath);
+  for (const candidate of [preferredKey, legacyKey]) {
+    if (typeof candidate !== 'string' || !candidate || preferredKeys.includes(candidate)) {
+      continue;
+    }
+    preferredKeys.push(candidate);
+  }
+  return preferredKeys;
 }
 
 function parseTranscriptLine(line) {
@@ -54,7 +73,7 @@ function isConversationBearingMessage(message) {
   if (!messageType) {
     return false;
   }
-  if (IGNORED_MESSAGE_TYPES.has(messageType)) {
+  if (TRANSCRIPT_IGNORED_TYPES.has(messageType)) {
     return false;
   }
   if (RESUMABLE_MESSAGE_TYPES.has(messageType)) {
@@ -386,6 +405,7 @@ function chooseSessionTranscriptCandidate(options) {
   const {
     sessionDirectory,
     preferredProjectKey,
+    preferredProjectKeys,
     cliSessionId,
   } = options || {};
 
@@ -398,8 +418,20 @@ function chooseSessionTranscriptCandidate(options) {
     ? candidates.find((candidate) => candidate.cliSessionId === cliSessionId) || null
     : null;
 
-  const preferredCandidates = typeof preferredProjectKey === 'string' && preferredProjectKey
-    ? candidates.filter((candidate) => candidate.projectKey === preferredProjectKey)
+  const normalizedPreferredProjectKeys = Array.isArray(preferredProjectKeys)
+    ? preferredProjectKeys.filter((candidate) => typeof candidate === 'string' && candidate)
+    : [];
+  if (
+    typeof preferredProjectKey === 'string' &&
+    preferredProjectKey &&
+    !normalizedPreferredProjectKeys.includes(preferredProjectKey)
+  ) {
+    normalizedPreferredProjectKeys.unshift(preferredProjectKey);
+  }
+  const preferredProjectKeySet = new Set(normalizedPreferredProjectKeys);
+
+  const preferredCandidates = preferredProjectKeySet.size > 0
+    ? candidates.filter((candidate) => preferredProjectKeySet.has(candidate.projectKey))
     : [];
   const preferredCandidate = chooseBestTranscriptCandidate(preferredCandidates);
 
@@ -409,7 +441,7 @@ function chooseSessionTranscriptCandidate(options) {
   if (!currentCandidate) {
     return preferredCandidate;
   }
-  if (currentCandidate.projectKey === preferredCandidate.projectKey) {
+  if (preferredProjectKeySet.has(currentCandidate.projectKey) && preferredProjectKeySet.has(preferredCandidate.projectKey)) {
     return chooseBestTranscriptCandidate([currentCandidate, preferredCandidate]);
   }
   if (!currentCandidate.resumable && preferredCandidate.resumable) {
@@ -426,6 +458,7 @@ module.exports = {
   buildTranscriptContinuityPlan,
   chooseBestTranscriptCandidate,
   chooseSessionTranscriptCandidate,
+  getTranscriptProjectKeyCandidates,
   inspectTranscriptFile,
   inspectTranscriptText,
   isConversationBearingMessage,

@@ -1,12 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const IGNORED_LOCAL_SESSION_MESSAGE_TYPES = new Set([
-  'last-prompt',
-  'progress',
-  'queue-operation',
-  'rate_limit_event',
-]);
+const { filterTranscriptMessages } = require('./session_normalization.js');
 
 // Compute the macOS-style legacy path that the asar's minified code constructs
 // and the XDG path that Electron actually uses on Linux.
@@ -49,26 +44,7 @@ function isLocalSessionResultChannel(channel) {
     normalizedChannel.includes('gettranscript');
 }
 
-function filterTranscriptMessages(result) {
-  if (!Array.isArray(result)) {
-    return result;
-  }
-
-  return result.filter((message) => {
-    if (!message || typeof message !== 'object') {
-      return false;
-    }
-    if (IGNORED_LOCAL_SESSION_MESSAGE_TYPES.has(message.type)) {
-      return false;
-    }
-    if (message.type === 'message' && message.message && typeof message.message === 'object') {
-      if (IGNORED_LOCAL_SESSION_MESSAGE_TYPES.has(message.message.type)) {
-        return false;
-      }
-    }
-    return true;
-  });
-}
+// filterTranscriptMessages imported from session_orchestrator.js
 
 function isLocalSessionMutationChannel(channel) {
   if (typeof channel !== 'string') {
@@ -367,13 +343,13 @@ class AsarAdapter {
       return filterTranscriptMessages(result);
     }
     if (normalizedChannel.includes('getsession')) {
-      return this._sessionStore && typeof this._sessionStore.normalizeSessionRecord === 'function'
-        ? this._sessionStore.normalizeSessionRecord(result)
+      return this._sessionOrchestrator
+        ? this._sessionOrchestrator.normalizeSessionRecord(result)
         : result;
     }
     if (normalizedChannel.includes('getall') && Array.isArray(result)) {
-      return this._sessionStore && typeof this._sessionStore.normalizeSessionRecord === 'function'
-        ? result.map((entry) => this._sessionStore.normalizeSessionRecord(entry))
+      return this._sessionOrchestrator
+        ? result.map((entry) => this._sessionOrchestrator.normalizeSessionRecord(entry))
         : result;
     }
     return result;

@@ -23,6 +23,11 @@ const {
 
 // -- Helpers --
 
+// Verbose logging: only emitted when CLAUDE_COWORK_VERBOSE=1 (set by --perf).
+// Keeps production output clean while preserving diagnostics for debugging.
+const _verbose = process.env.CLAUDE_COWORK_VERBOSE === '1';
+function vlog(msg) { if (_verbose) console.log(msg); }
+
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const MIME_MAP = {
@@ -186,6 +191,9 @@ function whichApplicationForFile(filename) {
 // _$_Namespace_$_Method pattern regardless of UUID prefix.
 
 function createOverrideRegistry(getProcessState) {
+  // Mutable state shared across handler closures
+  const bridgeState = { enabled: false };
+
   return {
     // ClaudeCode — Code tab readiness
     'ClaudeCode_$_getStatus': async () => 'ready',
@@ -227,7 +235,7 @@ function createOverrideRegistry(getProcessState) {
 
     'FileSystem_$_openLocalFile': async (_event, sessionId, filePath, showInFolder) => {
       const decoded = decodeURIComponent(filePath);
-      console.log('[Cowork] openLocalFile:', decoded, 'showInFolder:', showInFolder);
+      vlog('[Cowork] openLocalFile: ' + decoded + ' showInFolder: ' + showInFolder);
       if (!path.isAbsolute(decoded)) return;
       try {
         if (showInFolder) {
@@ -246,7 +254,7 @@ function createOverrideRegistry(getProcessState) {
 
     'FileSystem_$_showInFolder': async (_event, filePath) => {
       const decoded = decodeURIComponent(filePath);
-      console.log('[Cowork] showInFolder:', decoded);
+      vlog('[Cowork] showInFolder: ' + decoded);
       try {
         // D-Bus FileManager1 isn't available on Hyprland/wlroots compositors.
         // Open the parent directory with xdg-open instead.
@@ -264,7 +272,7 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'FileSystem_$_writeFileDownloadAndOpen': async (_event, filename, url) => {
-      console.log('[Cowork] writeFileDownloadAndOpen:', filename);
+      vlog('[Cowork] writeFileDownloadAndOpen: ' + filename);
       try {
         const { app, net } = require('electron');
         // Validate filename
@@ -290,15 +298,210 @@ function createOverrideRegistry(getProcessState) {
           dest = path.join(downloadsDir, `${stem}_${i++}${ext}`);
         }
         fs.writeFileSync(dest, buffer);
-        console.log('[Cowork] Downloaded to:', dest);
+        vlog('[Cowork] Downloaded to: ' + dest);
         xdgOpen(dest);
       } catch (e) {
         console.error('[Cowork] writeFileDownloadAndOpen failed:', e.message);
       }
     },
 
+    // Menu — Linux has no native menu bar; serve popup from stored application menu
+    'MainWindowTitleBar_$_requestMainMenuPopup': async (event) => {
+      const menu = global.__coworkApplicationMenu;
+      if (!menu || typeof menu.popup !== 'function') return;
+      const { BrowserWindow } = require('electron');
+      const win = event?.sender ? BrowserWindow.fromWebContents(event.sender) : BrowserWindow.getFocusedWindow();
+      try { menu.popup({ window: win || undefined }); } catch (_) {}
+    },
+    'BrowserNavigation_$_requestMainMenuPopup': async (event) => {
+      const menu = global.__coworkApplicationMenu;
+      if (!menu || typeof menu.popup !== 'function') return;
+      const { BrowserWindow } = require('electron');
+      const win = event?.sender ? BrowserWindow.fromWebContents(event.sender) : BrowserWindow.getFocusedWindow();
+      try { menu.popup({ window: win || undefined }); } catch (_) {}
+    },
+
     // CoworkSpaces — not implemented on Linux
     'CoworkSpaces_$_getAllSpaces': async () => ([]),
+
+    // Startup — Linux has no macOS login items; report disabled
+    'Startup_$_isStartupOnLoginEnabled': async () => false,
+    'Startup_$_setStartupOnLoginEnabled': async (_event, enabled) => {
+      vlog('[ipc:setStartupOnLoginEnabled] enabled=' + enabled + ' (no-op on Linux)');
+      return null;
+    },
+    'Startup_$_isMenuBarEnabled': async () => false,
+    'Startup_$_setMenuBarEnabled': async (_event, enabled) => {
+      vlog('[ipc:setMenuBarEnabled] enabled=' + enabled + ' (no-op on Linux)');
+      return null;
+    },
+
+    // ================================================================
+    // LocalAgentModeSessions — Dispatch/Bridge handlers
+    // The asar's own bridge transport manages the CCR connection.
+    // These handlers provide the webapp-expected API surface so IPC
+    // calls don't fail with "No handler registered" errors.
+    // ================================================================
+
+    'LocalAgentModeSessions_$_abandonBridgeEnvironment': async (_event, ...args) => {
+      vlog('[ipc:abandonBridgeEnvironment] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_deleteBridgeAgentMemory': async (_event, ...args) => {
+      vlog('[ipc:deleteBridgeAgentMemory] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_deleteBridgeSession': async (_event, ...args) => {
+      vlog('[ipc:deleteBridgeSession] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_getBridgeConsent': async (_event, ...args) => {
+      vlog('[ipc:getBridgeConsent] called');
+      return { consented: true };
+    },
+
+    'LocalAgentModeSessions_$_getSessionsBridgeEnabled': async () => {
+      return bridgeState.enabled;
+    },
+
+    'LocalAgentModeSessions_$_kickBridgePoll': async (_event, ...args) => {
+      vlog('[ipc:kickBridgePoll] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_onBridgePermissionPreflight': async (_event, ...args) => {
+      vlog('[ipc:onBridgePermissionPreflight] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_resetBridge': async (_event, ...args) => {
+      vlog('[ipc:resetBridge] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_resetBridgeSession': async (_event, ...args) => {
+      vlog('[ipc:resetBridgeSession] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_respondBridgePermissionPreflight': async (_event, ...args) => {
+      vlog('[ipc:respondBridgePermissionPreflight] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_sessionsBridgeStatus': async () => {
+      return { status: bridgeState.enabled ? 'connected' : 'disconnected', enabled: bridgeState.enabled };
+    },
+
+    'LocalAgentModeSessions_$_setSessionsBridgeEnabled': async (_event, enabled) => {
+      bridgeState.enabled = !!enabled;
+      vlog('[ipc:setSessionsBridgeEnabled] enabled=' + bridgeState.enabled);
+      return null;
+    },
+
+    // ================================================================
+    // MCP handlers — Desktop MCP integration (not CLI MCP)
+    // ================================================================
+
+    'LocalAgentModeSessions_$_mcpCallTool': async (_event, ...args) => {
+      vlog('[ipc:mcpCallTool] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_mcpListResources': async (_event, ...args) => {
+      vlog('[ipc:mcpListResources] called');
+      return [];
+    },
+
+    'LocalAgentModeSessions_$_mcpReadResource': async (_event, ...args) => {
+      vlog('[ipc:mcpReadResource] called');
+      return null;
+    },
+
+    // ================================================================
+    // Permissions / Folders — Linux has no TCC or Chrome extension model
+    // ================================================================
+
+    'LocalAgentModeSessions_$_requestFolderTccAccess': async (_event, ...args) => {
+      vlog('[ipc:requestFolderTccAccess] called (auto-granted on Linux)');
+      return { granted: true };
+    },
+
+    'LocalAgentModeSessions_$_setChromePermissionMode': async (_event, mode) => {
+      vlog('[ipc:setChromePermissionMode] mode=' + mode);
+      return null;
+    },
+
+    // ================================================================
+    // Session management — event relay and session lifecycle
+    // ================================================================
+
+    'LocalAgentModeSessions_$_onCoworkFromMain': async (_event, ...args) => {
+      // Main process event relay to webapp — acknowledged
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_onRemoteSessionStart': async (_event, ...args) => {
+      vlog('[ipc:onRemoteSessionStart] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_openOutputsDir': async (_event, sessionId) => {
+      vlog('[ipc:openOutputsDir] sessionId=' + sessionId);
+      // Open the session's outputs directory in the file manager
+      const orchestrator = global.__coworkSessionOrchestrator;
+      const dirs = global.__coworkDirs;
+      if (dirs && typeof sessionId === 'string' && sessionId.trim()) {
+        const outputsDir = path.join(dirs.claudeLocalAgentRoot, 'outputs');
+        try {
+          if (fs.existsSync(outputsDir)) {
+            xdgOpen(outputsDir);
+            return null;
+          }
+        } catch (_) {}
+      }
+      // Fallback: open the local-agent-mode-sessions root
+      if (dirs) {
+        try { xdgOpen(dirs.claudeLocalAgentRoot); } catch (_) {}
+      }
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_setDraftSessionFolders': async (_event, folders) => {
+      vlog('[ipc:setDraftSessionFolders] folders=' + JSON.stringify(folders));
+      return null;
+    },
+
+    // ================================================================
+    // Plugin/Skill — directory listing and skill sync
+    // ================================================================
+
+    'LocalAgentModeSessions_$_respondDirectoryServers': async (_event, ...args) => {
+      vlog('[ipc:respondDirectoryServers] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_respondPluginSearch': async (_event, ...args) => {
+      vlog('[ipc:respondPluginSearch] called');
+      return null;
+    },
+
+    'LocalAgentModeSessions_$_syncSkills': async (_event, ...args) => {
+      vlog('[ipc:syncSkills] called');
+      return null;
+    },
+
+    // ================================================================
+    // Sharing — not supported on Linux desktop
+    // ================================================================
+
+    'LocalAgentModeSessions_$_shareSession': async (_event, sessionId) => {
+      vlog('[ipc:shareSession] sessionId=' + sessionId + ' (not supported on Linux)');
+      return null;
+    },
   };
 }
 
@@ -331,6 +534,16 @@ const PROACTIVE_ONLY_SUFFIXES = new Set([
   'ComputerUseTcc_$_getCurrentSessionGrants',
   'ComputerUseTcc_$_revokeGrant',
   'CoworkSpaces_$_getAllSpaces',
+  // Startup — Linux has no macOS login items. The asar's handler calls
+  // app.getLoginItemSettings() which crashes on Linux. The asar registers
+  // these on webContents.ipc.handle() which our patch intercepts, but
+  // contents.ipc.removeHandler() (unpatched) can clear the override before
+  // the settings page invokes them. Proactive registration on ipcMain
+  // provides a stable fallback protected from removal.
+  'Startup_$_isStartupOnLoginEnabled',
+  'Startup_$_setStartupOnLoginEnabled',
+  'Startup_$_isMenuBarEnabled',
+  'Startup_$_setMenuBarEnabled',
 ]);
 
 const EIPC_NAMESPACES = ['claude.web', 'claude.hybrid', 'claude.settings'];
@@ -360,7 +573,7 @@ function proactivelyRegisterOverrides(ipcMainHandle, ipcMainRemoveHandler, regis
       }
     }
   }
-  console.log('[Cowork] Proactively registered', _proactiveChannels.size, 'fallback handlers on ipcMain for UUID', uuid);
+  vlog('[Cowork] Proactively registered ' + _proactiveChannels.size + ' fallback handlers on ipcMain for UUID ' + uuid);
   return _proactiveChannels;
 }
 

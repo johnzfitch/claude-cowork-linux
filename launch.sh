@@ -2,6 +2,8 @@
 # Test launcher for claude-cowork-linux
 # Uses the AppImage's electron with a repacked app.asar (bakes in stubs/patches)
 
+set -o pipefail
+
 # Change to script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -42,6 +44,21 @@ if [ -d "stubs/cowork" ]; then
   cp -f stubs/cowork/*.js "linux-app-extracted/cowork/"
 fi
 
+# Install plugin permission shim so the asar can find it.
+# The asar resolves the shim from its own resources/ directory (inside the asar),
+# so we copy it into the extracted tree before repacking. Also copy to Electron's
+# resources dir as a fallback for process.resourcesPath lookups.
+if [ -f "stubs/cowork/cowork-plugin-shim.sh" ]; then
+  mkdir -p "linux-app-extracted/resources"
+  cp -f stubs/cowork/cowork-plugin-shim.sh "linux-app-extracted/resources/cowork-plugin-shim.sh"
+  chmod +x "linux-app-extracted/resources/cowork-plugin-shim.sh"
+  _RESOURCES_DIR="$(dirname "$ELECTRON_BIN")/resources"
+  if [ -d "$_RESOURCES_DIR" ]; then
+    cp -f stubs/cowork/cowork-plugin-shim.sh "$_RESOURCES_DIR/cowork-plugin-shim.sh"
+    chmod +x "$_RESOURCES_DIR/cowork-plugin-shim.sh"
+  fi
+fi
+
 # ============================================================
 # Linux UI Fixes (applied before every repack)
 # ============================================================
@@ -71,6 +88,16 @@ if [ -f "$INDEX_JS" ] && grep -q 'titleBarOverlay' "$INDEX_JS"; then
   sed -i 's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_]\+,trafficLightPosition:[A-Za-z0-9_]\+,//g' "$INDEX_JS"
   # About window: remove titleBarStyle:"hiddenInset" (keep other options)
   sed -i 's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g' "$INDEX_JS"
+fi
+
+# Fix origin validation: the asar's nue() function rejects file:// preloads
+# when app.isPackaged is false (which it always is when running via `electron .asar`).
+# This causes the mainWindow/findInPage preloads to crash before exposing `process`
+# via contextBridge, breaking the renderer shell. Drop the isPackaged requirement
+# for file:// origins — the content is inside our asar, so there's no security risk.
+if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!0' "$INDEX_JS"; then
+  echo "Patching origin validation for file:// preloads..."
+  sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
 fi
 
 # Only repack if stub is newer than asar (or asar doesn't exist)
@@ -125,10 +152,19 @@ if [[ -d "$CLAUDE_CODE_DIR" ]]; then
 fi
 
 # --devtools flag opens DevTools + asset dumper on launch
+# --perf flag enables Chromium tracing + Node inspector for profiling
 _args=()
+_perf=false
+_dev=false
 for arg in "$@"; do
   if [[ "$arg" == "--devtools" ]]; then
     export CLAUDE_DEVTOOLS=1
+    _dev=true
+  elif [[ "$arg" == "--perf" ]]; then
+    _perf=true
+    _dev=true
+  elif [[ "$arg" == "--dev" ]]; then
+    _dev=true
   else
     _args+=("$arg")
   fi
@@ -175,13 +211,48 @@ if ! dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesk
   PASSWORD_STORE="basic"
 fi
 
+# Build electron args
+_electron_args=(
+  "./${ASAR_FILE}"
+  --no-sandbox
+  --password-store="$PASSWORD_STORE"
+  --enable-features=GlobalShortcutsPortal
+)
+
+if [[ "$_perf" == true ]]; then
+  export CLAUDE_DEVTOOLS=1
+  export CLAUDE_COWORK_IPC_TAP=1
+  export CLAUDE_COWORK_TRACE_IO=1
+  export CLAUDE_COWORK_VERBOSE=1
+  _electron_args+=(
+    --inspect=9229
+    --remote-debugging-port=9222
+  )
+  echo ""
+  echo "  PERF MODE"
+  echo "  Main process:  chrome://inspect (port 9229) -> Profiler tab"
+  echo "  Renderer:      DevTools will open -> Performance tab -> Record"
+  echo "  IPC tap:       $LOG_DIR/ipc-tap.log"
+  echo "  Trace IO:      Enabled (stdin/stdout logging)"
+  echo ""
+fi
+
 # Run electron with the repacked app.asar
-echo "Launching Claude Desktop (electron: $ELECTRON_BIN, password-store: $PASSWORD_STORE)..."
-exec "$ELECTRON_BIN" \
-  "./${ASAR_FILE}" \
-  --no-sandbox \
-  --disable-gpu \
-  --password-store="$PASSWORD_STORE" \
-  --enable-features=GlobalShortcutsPortal \
-  "$@" \
-  2>&1 | tee -a "$LOG_DIR/startup.log"
+if [[ "$_dev" == true ]]; then
+  # Foreground: terminal stays attached (--dev, --devtools, --perf)
+  echo "Launching Claude Desktop (foreground, electron: $ELECTRON_BIN)..."
+  "$ELECTRON_BIN" \
+    "${_electron_args[@]}" \
+    "$@" \
+    2>&1 | tee -a "$LOG_DIR/startup.log"
+  exit "${PIPESTATUS[0]}"
+else
+  # Default: launch headless, detach from terminal
+  echo "Launching Claude Desktop..."
+  nohup "$ELECTRON_BIN" \
+    "${_electron_args[@]}" \
+    "$@" \
+    >> "$LOG_DIR/startup.log" 2>&1 &
+  disown
+  echo "PID $! — logs: $LOG_DIR/startup.log"
+fi

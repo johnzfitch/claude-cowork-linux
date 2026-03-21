@@ -82,10 +82,15 @@ claude-launcher-fixed.sh
 # Internal docs (may contain paths, session IDs, etc.)
 docs/plans/
 docs/logs/
+docs/handoff-*.md
 docs/ARCHITECTURE.md
 ARCHITECTURE.md
+PLAN-*.md
 auth_code_reference.txt
 auth_findings_summary.md
+
+# Tests that depend on local webapp dumps
+tests/node/current-path/webapp_conformance.test.cjs
 
 # Dev artifacts
 AGENTS.md
@@ -100,6 +105,7 @@ local-*
 
 # Local Claude Code config
 .claude/
+.mcp.json
 
 # OS files
 .DS_Store
@@ -112,3 +118,6 @@ Thumbs.db
 .idea/
 .vscode/
 install-oneclick.sh.backup*
+__pycache__/
+FAST-PASS-AUDIT.md
+LONG_AUDIT.md

@@ -42,7 +42,6 @@ test('createDirs uses XDG defaults when env vars are unset', () => {
   assert.deepEqual(dirs.claudeVmRoots, [
     '/home/tester/.config/Claude/claude-code-vm',
     '/home/tester/.local/share/claude-cowork/claude-code-vm',
-    '/home/tester/Library/Application Support/Claude/claude-code-vm',
   ]);
 });
 

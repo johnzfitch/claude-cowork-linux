@@ -2,7 +2,7 @@
 #
 # Claude Desktop for Linux - Installer
 #
-# Usage: ./install.sh [path/to/Claude.dmg|zip]
+# Usage: ./install.sh [--force] [path/to/Claude.dmg|zip]
 #        curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh | bash
 #
 # This script:
@@ -27,6 +27,7 @@ set -euo pipefail
 VERSION="4.0.0"
 REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
 INSTALL_DIR="$HOME/.local/share/claude-desktop"
+INSTALL_FORCE=0
 
 # Minimum expected archive size (100MB) — applies to both DMG and ZIP
 MIN_ARCHIVE_SIZE=100000000
@@ -53,6 +54,14 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 die() { log_error "$@"; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+confirm_destructive_removal() {
+    local target="$1"
+    local reason="$2"
+
+    [[ -e "$target" ]] || return 0
+    log_info "$reason Replacing..."
+}
 
 format_size() {
     local size=$1
@@ -144,13 +153,12 @@ install_dependencies() {
 setup_repo() {
     if git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         log_info "Updating existing installation..."
-        git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || log_info "Local modifications present, using existing version"
+        git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null \
+            || log_info "Local repo has modifications, stubs will be synced from source"
         log_success "Repository updated"
     else
-        # Remove stale non-git install dir if present
         if [[ -d "$INSTALL_DIR" ]]; then
-            log_warn "Removing previous (non-git) installation at $INSTALL_DIR"
-            rm -rf "$INSTALL_DIR"
+            log_info "Existing non-git install dir found, will overlay"
         fi
         log_info "Cloning claude-cowork-linux to $INSTALL_DIR..."
         mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -186,10 +194,10 @@ show_archive_info() {
 
     # Try to get version/sha from fetch-dmg.js for comparison
     local fetch_script=""
-    if [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
-        fetch_script="$INSTALL_DIR/fetch-dmg.js"
-    elif [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
+    if [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
         fetch_script="$(dirname "$0")/fetch-dmg.js"
+    elif [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
+        fetch_script="$INSTALL_DIR/fetch-dmg.js"
     fi
     if [[ -n "$fetch_script" ]] && command_exists node; then
         local json
@@ -208,10 +216,11 @@ fetch_archive_via_node() {
     local archive_path="$1"
     local fetch_script
 
-    if [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
-        fetch_script="$INSTALL_DIR/fetch-dmg.js"
-    elif [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
+    # Prefer script dir (invoked source) over install dir (may be stale)
+    if [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
         fetch_script="$(dirname "$0")/fetch-dmg.js"
+    elif [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
+        fetch_script="$INSTALL_DIR/fetch-dmg.js"
     else
         log_warn "fetch-dmg.js not found, skipping auto-download"
         return 1
@@ -219,8 +228,10 @@ fetch_archive_via_node() {
 
     log_info "Fetching latest download URL..."
     local archive_url
-    archive_url=$(node "$fetch_script" --url 2>/dev/null) || {
-        log_warn "Failed to fetch download URL via Node.js"
+    local fetch_err
+    archive_url=$(node "$fetch_script" --url 2>&1) || {
+        fetch_err="$archive_url"
+        log_warn "Failed to fetch download URL: ${fetch_err}"
         return 1
     }
 
@@ -345,11 +356,7 @@ extract_archive() {
     local asar_file="$claude_app/Contents/Resources/app.asar"
     [[ -f "$asar_file" ]] || die "app.asar not found at: $asar_file"
 
-    # Extract asar into linux-app-extracted/
-    if [[ -d "$target_dir" ]]; then
-        log_info "Removing previous linux-app-extracted..."
-        rm -rf "$target_dir"
-    fi
+    # Extract on top of existing tree (overwrites stale files, preserves extras)
     log_info "Extracting app.asar..."
     asar extract "$asar_file" "$target_dir" || die "Failed to extract app.asar"
 
@@ -393,12 +400,20 @@ extract_archive() {
 
 install_stubs() {
     local target_dir="$INSTALL_DIR/linux-app-extracted"
+    local script_dir
+    script_dir=$(cd "$(dirname "$0")" && pwd)
 
-    log_info "Installing stubs..."
+    # Prefer stubs from the script directory (where install.sh was invoked)
+    # over the install directory (may be stale if git pull failed).
+    local stub_src="$script_dir"
+    if [[ ! -d "$stub_src/stubs" ]]; then
+        stub_src="$INSTALL_DIR"
+    fi
 
-    # Copy stubs from the repo into the extracted app's node_modules
-    local swift_src="$INSTALL_DIR/stubs/@ant/claude-swift/js/index.js"
-    local native_src="$INSTALL_DIR/stubs/@ant/claude-native/index.js"
+    log_info "Installing stubs from $stub_src..."
+
+    local swift_src="$stub_src/stubs/@ant/claude-swift/js/index.js"
+    local native_src="$stub_src/stubs/@ant/claude-native/index.js"
 
     [[ -f "$swift_src" ]] || die "Swift stub not found: $swift_src"
     [[ -f "$native_src" ]] || die "Native stub not found: $native_src"
@@ -409,19 +424,24 @@ install_stubs() {
     cp "$swift_src" "$target_dir/node_modules/@ant/claude-swift/js/index.js"
     cp "$native_src" "$target_dir/node_modules/@ant/claude-native/index.js"
 
-    # Copy frame-fix files if present in repo
+    # Copy frame-fix files
     for f in frame-fix-wrapper.js frame-fix-entry.js; do
-        if [[ -f "$INSTALL_DIR/stubs/frame-fix/$f" ]]; then
-            cp "$INSTALL_DIR/stubs/frame-fix/$f" "$target_dir/$f"
-        elif [[ -f "$INSTALL_DIR/$f" ]]; then
-            cp "$INSTALL_DIR/$f" "$target_dir/$f"
+        if [[ -f "$stub_src/stubs/frame-fix/$f" ]]; then
+            cp "$stub_src/stubs/frame-fix/$f" "$target_dir/$f"
         fi
     done
 
     # Copy cowork orchestration modules
-    if [[ -d "$INSTALL_DIR/stubs/cowork" ]]; then
+    if [[ -d "$stub_src/stubs/cowork" ]]; then
         mkdir -p "$target_dir/cowork"
-        cp -f "$INSTALL_DIR"/stubs/cowork/*.js "$target_dir/cowork/"
+        cp -f "$stub_src"/stubs/cowork/*.js "$target_dir/cowork/"
+    fi
+
+    # Also sync stubs into the install dir's stubs/ so future launches
+    # from the install dir (via claude-desktop launcher) use current code
+    if [[ "$stub_src" != "$INSTALL_DIR" && -d "$INSTALL_DIR" ]]; then
+        log_info "Syncing stubs to install dir..."
+        cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
     fi
 
     log_success "Stubs installed"
@@ -433,12 +453,15 @@ install_stubs() {
 
 apply_patches() {
     local index_js="$INSTALL_DIR/linux-app-extracted/.vite/build/index.js"
+    local script_dir
+    script_dir=$(cd "$(dirname "$0")" && pwd)
     local patch_script=""
 
-    if [[ -f "$INSTALL_DIR/enable-cowork.py" ]]; then
+    # Prefer script dir (invoked source) over install dir (may be stale)
+    if [[ -f "$script_dir/enable-cowork.py" ]]; then
+        patch_script="$script_dir/enable-cowork.py"
+    elif [[ -f "$INSTALL_DIR/enable-cowork.py" ]]; then
         patch_script="$INSTALL_DIR/enable-cowork.py"
-    elif [[ -f "$(dirname "$0")/enable-cowork.py" ]]; then
-        patch_script="$(dirname "$0")/enable-cowork.py"
     fi
 
     if [[ -n "$patch_script" && -f "$index_js" ]]; then
@@ -471,8 +494,8 @@ mkdir -p "\$LOG_DIR"
 cd "\$COWORK_DIR"
 
 case "\${1:-}" in
-    --devtools) shift; export CLAUDE_DEVTOOLS=1; exec ./launch.sh "\$@" 2>&1 | tee -a "\$LOG_DIR/startup.log" ;;
-    --debug)    shift; export CLAUDE_TRACE=1; exec ./launch.sh "\$@" 2>&1 | tee -a "\$LOG_DIR/startup.log" ;;
+    --devtools) shift; export CLAUDE_DEVTOOLS=1; exec ./launch.sh "\$@" ;;
+    --debug)    shift; export CLAUDE_TRACE=1; exec ./launch.sh "\$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
     *)
         nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \
@@ -814,15 +837,28 @@ doctor() {
 # ============================================================
 
 main() {
-    # Handle --doctor flag
-    if [[ "${1:-}" == "--doctor" ]]; then
-        doctor
-        exit $?
-    fi
+    local archive_arg=""
+    for arg in "$@"; do
+        case "$arg" in
+            --doctor)
+                doctor
+                exit $?
+                ;;
+            --force|--yes)
+                INSTALL_FORCE=1
+                ;;
+            *)
+                if [[ -n "$archive_arg" ]]; then
+                    die "Unexpected argument: $arg"
+                fi
+                archive_arg="$arg"
+                ;;
+        esac
+    done
 
     # Positional arg → CLAUDE_ARCHIVE (CLAUDE_DMG kept for backward compat)
-    if [[ -n "${1:-}" && -z "${CLAUDE_ARCHIVE:-}" && -z "${CLAUDE_DMG:-}" ]]; then
-        export CLAUDE_ARCHIVE="$1"
+    if [[ -n "$archive_arg" && -z "${CLAUDE_ARCHIVE:-}" && -z "${CLAUDE_DMG:-}" ]]; then
+        export CLAUDE_ARCHIVE="$archive_arg"
     fi
 
     echo ""
@@ -890,6 +926,7 @@ main() {
     echo "  claude-desktop --debug      Enable trace logging"
     echo "  claude-desktop --devtools   Open with DevTools"
     echo "  claude-desktop --doctor     Run preflight diagnostics"
+    echo "  bash install.sh --force     Skip confirmation before replacing old installs"
     echo ""
     echo "Update:"
     echo "  cd $INSTALL_DIR && git pull && bash install.sh"

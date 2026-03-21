@@ -300,19 +300,20 @@ function removeFlagArgs(args, flagNames) {
   return nextArgs;
 }
 
-function buildBridgeSpawnArgs(args, remoteSessionId) {
+function buildBridgeSpawnArgs(args, remoteSessionId, sdkUrl) {
   // Build CLI arguments for bridge session spawns.
   // Removes asar-specific flags and adds bridge-specific flags.
   const preservedArgs = removeFlagArgs(args, [
     '--resume',
     '--print',
     '--session-id',
+    '--sdk-url',
     '--input-format',
     '--output-format',
     '--replay-user-messages',
   ]);
 
-  return [
+  const bridgeArgs = [
     '--print',
     '--session-id',
     remoteSessionId,
@@ -321,8 +322,13 @@ function buildBridgeSpawnArgs(args, remoteSessionId) {
     '--output-format',
     'stream-json',
     '--replay-user-messages',
-    ...preservedArgs,
   ];
+
+  if (typeof sdkUrl === 'string' && sdkUrl.trim()) {
+    bridgeArgs.push('--sdk-url', sdkUrl);
+  }
+
+  return [...bridgeArgs, ...preservedArgs];
 }
 
 function deriveOrganizationUuidFromMetadataPath(metadataPath) {
@@ -336,6 +342,76 @@ function deriveOrganizationUuidFromMetadataPath(metadataPath) {
   return typeof organizationUuid === 'string' && organizationUuid.trim()
     ? organizationUuid.trim()
     : null;
+}
+
+// ============================================================================
+// BRIDGE-STATE READER
+// ============================================================================
+// Reads bridge-state.json written by Claude Desktop's bridge infrastructure.
+// There's one dispatch session per environment — all task spawns share it.
+// Returns the first remoteSessionId (cse_*) found, regardless of which
+// task session is being spawned.
+
+function readRemoteSessionIdFromBridgeState(deps) {
+  const {
+    bridgeStatePath,
+    readFileSync = fs.readFileSync,
+    trace = () => {},
+  } = deps || {};
+
+  const defaultBridgePath = path.join(
+    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+    'Claude', 'bridge-state.json'
+  );
+  const filePath = typeof bridgeStatePath === 'string' && bridgeStatePath.trim()
+    ? bridgeStatePath
+    : defaultBridgePath;
+
+  // Single read attempt — the file is either present or not.
+  // Retrying with Atomics.wait blocked the main process ~400ms for the
+  // common non-dispatch case where the file simply doesn't exist.
+  let raw;
+  try {
+    raw = readFileSync(filePath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      trace('[bridge-creds] bridge-state.json: missing (' + filePath + ')');
+    } else {
+      trace('[bridge-creds] bridge-state.json: read error: ' + err.message);
+    }
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    trace('[bridge-creds] bridge-state.json: parse-error: ' + err.message);
+    return null;
+  }
+
+  // Real schema: dict keyed by "userId:orgId", values are session entries
+  const entries = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? Object.entries(parsed).filter(([, v]) => v && typeof v === 'object')
+    : (Array.isArray(parsed) ? parsed.map((v, i) => [String(i), v]) : []);
+
+  if (entries.length > 0) {
+    const fieldNames = Object.keys(entries[0][1]).sort();
+    trace('[bridge-creds] bridge-state.json schema: entryCount=' + entries.length
+      + ', fieldNames=[' + fieldNames.join(',') + ']');
+  }
+
+  for (const [key, entry] of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (typeof entry.remoteSessionId === 'string' && entry.remoteSessionId.startsWith('cse_')) {
+      trace('[bridge-creds] found remoteSessionId=' + entry.remoteSessionId
+        + ' (from key=' + key + ', localSessionId=' + (entry.localSessionId || 'n/a') + ')');
+      return entry.remoteSessionId;
+    }
+  }
+
+  trace('[bridge-creds] bridge-state.json: no cse_* entry found');
+  return null;
 }
 
 // ============================================================================
@@ -368,6 +444,10 @@ class SessionOrchestrator {
         watchManager: this._fileWatchManager,
       }) : null
     );
+    // Phase 4: Live event dispatch state (per-session maps)
+    this._liveAssistantMessageCache = new Map();
+    this._liveAssistantStreamState = new Map();
+    this._liveSessionCompatibilityState = new Map();
   }
 
   prepareVmSpawn(context) {
@@ -523,10 +603,52 @@ class SessionOrchestrator {
       }
     }
 
+    // Step 8: Update sessions API with OAuth token if available
+    const spawnOAuthToken = translatedEnvVars.CLAUDE_CODE_OAUTH_TOKEN;
+    if (
+      spawnOAuthToken && typeof spawnOAuthToken === 'string' && spawnOAuthToken.trim() &&
+      this._deps.sessionsApi && typeof this._deps.sessionsApi.updateAuthToken === 'function'
+    ) {
+      this._deps.sessionsApi.updateAuthToken(spawnOAuthToken);
+      trace('Injected spawn-time OAuth token into sessions API');
+    }
+
+    // Step 9: Attempt bridge session resolution for dispatch mode.
+    // bridge-state.json has one entry per dispatch environment — all task
+    // spawns share the same remoteSessionId (cse_*).
+    const metadataPath = deriveSessionMetadataPath(hostConfigDir);
+    const bridgeSession = this._resolveBridgeSession({
+      metadataPath,
+      translatedEnvVars,
+      trace,
+    });
+    
+    // If bridge session is available, mark dispatch mode but do NOT modify
+    // CLI args. The asar has its own bridge transport ([transport:bridge],
+    // [transport:sse]) that connects to CCR, receives work items, and
+    // relays CLI stdout events back. The CLI just runs normally with
+    // --resume and produces output on stdout. The remote session ID
+    // (cse_*) is NOT a CLI concept — it's managed by the asar's bridge.
+    //
+    // The asar already sets USE_CCR_V2, ENVIRONMENT_KIND, etc. in its
+    // spawn env vars, so our injection is defense-in-depth only.
+    if (bridgeSession) {
+      Object.assign(translatedEnvVars, {
+        CLAUDE_CODE_ENTRYPOINT: translatedEnvVars.CLAUDE_CODE_ENTRYPOINT || 'claude-desktop',
+        CLAUDE_CODE_ENVIRONMENT_KIND: 'bridge',
+        CLAUDE_CODE_IS_COWORK: '1',
+        CLAUDE_CODE_USE_CCR_V2: '1',
+        CLAUDE_CODE_USE_COWORK_PLUGINS: '1',
+      });
+      trace('[bridge-creds] dispatch detected: remoteSessionId='
+        + bridgeSession.remoteSessionId
+        + ' (asar bridge transport handles CCR relay, CLI args untouched)');
+    }
+
     // Inject user's local skills as an additional --plugin-dir so Cowork
     // sessions can access skills installed outside the server-provisioned set.
-    // Only inject when CLAUDE_CODE_IS_COWORK is in the spawn envVars (set by
-    // the asar for Cowork sessions, not present during unit tests).
+    // Bridge-mode spawns are marked above because the asar does not always set
+    // the cowork flags before we prepare the CLI invocation.
     if (translatedEnvVars && translatedEnvVars.CLAUDE_CODE_IS_COWORK) {
       const localSkillsDir = GLOBAL_CLAUDE_DIR + path.sep + 'skills';
       if (fs.existsSync(localSkillsDir)) {
@@ -540,7 +662,7 @@ class SessionOrchestrator {
       }
     }
 
-    // Step 8: Resolve working directory for CLI spawn
+    // Step 10: Resolve working directory for CLI spawn
     const hostCwdPath = resolveHostCwdPath({
       args: hostArgs,
       canonicalizePathForHostAccess,
@@ -548,51 +670,6 @@ class SessionOrchestrator {
       sharedCwdPath,
       trace,
     });
-
-    // Step 9: Update sessions API with OAuth token if available
-    const spawnOAuthToken = translatedEnvVars.CLAUDE_CODE_OAUTH_TOKEN;
-    if (
-      spawnOAuthToken && typeof spawnOAuthToken === 'string' && spawnOAuthToken.trim() &&
-      this._deps.sessionsApi && typeof this._deps.sessionsApi.updateAuthToken === 'function'
-    ) {
-      this._deps.sessionsApi.updateAuthToken(spawnOAuthToken);
-      trace('Injected spawn-time OAuth token into sessions API');
-    }
-
-    // Step 10: Attempt bridge session resolution (remote session API)
-    const metadataPath = deriveSessionMetadataPath(hostConfigDir);
-    const localSessionInfo = this._getLocalSessionInfo(metadataPath);
-    const bridgeSession = this._resolveBridgeSession({
-      hostArgs,
-      hostCwdPath,
-      localSessionInfo,
-      metadataPath,
-      trace,
-    });
-    
-    // If bridge session is available, configure CLI for bridge mode
-    if (bridgeSession) {
-      if (typeof bridgeSession.sessionAccessToken !== 'string' || !bridgeSession.sessionAccessToken.trim()) {
-        trace('WARNING: Bridge session resolved but sessionAccessToken is empty; falling through to legacy path');
-      } else {
-        hostArgs = buildBridgeSpawnArgs(hostArgs, bridgeSession.remoteSessionId);
-        Object.assign(translatedEnvVars, {
-          CLAUDE_CODE_ENTRYPOINT: translatedEnvVars.CLAUDE_CODE_ENTRYPOINT || 'claude-desktop',
-          CLAUDE_CODE_ENVIRONMENT_KIND: 'bridge',
-          CLAUDE_CODE_IS_COWORK: '1',
-          CLAUDE_CODE_OAUTH_TOKEN: '',
-          CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2: '1',
-          CLAUDE_CODE_SESSION_ACCESS_TOKEN: bridgeSession.sessionAccessToken,
-          CLAUDE_CODE_USE_COWORK_PLUGINS: '1',
-        });
-        trace(
-          'Prepared bridge spawn for local session '
-            + bridgeSession.localSessionId
-            + ' via remote session '
-            + bridgeSession.remoteSessionId
-        );
-      }
-    }
 
     // Step 11: Check for resume arguments and session metadata
     // Only strip --resume when we have positive evidence the transcript is
@@ -627,6 +704,7 @@ class SessionOrchestrator {
       args: hostArgs,
       envVars: translatedEnvVars,
       sharedCwdPath: hostCwdPath,
+      bridgeSession: bridgeSession || null,
     };
   }
 
@@ -892,94 +970,30 @@ class SessionOrchestrator {
 
   _resolveBridgeSession(context) {
     const {
-      hostArgs,
-      hostCwdPath,
-      localSessionInfo,
-      metadataPath,
       trace = () => {},
     } = context || {};
 
-    const sessionData = localSessionInfo && localSessionInfo.sessionData && typeof localSessionInfo.sessionData === 'object'
-      ? localSessionInfo.sessionData
-      : null;
-    if (!sessionData || typeof sessionData.sessionId !== 'string' || !sessionData.sessionId.trim()) {
-      return null;
-    }
-
-    const persistedRemoteSessionId = typeof sessionData.remoteSessionId === 'string' && sessionData.remoteSessionId.trim()
-      ? sessionData.remoteSessionId
-      : null;
-    const persistedRemoteSessionAccessToken = typeof sessionData.remoteSessionAccessToken === 'string' && sessionData.remoteSessionAccessToken.trim()
-      ? sessionData.remoteSessionAccessToken
-      : null;
-    if (persistedRemoteSessionId && persistedRemoteSessionAccessToken) {
-      return {
-        localSessionId: sessionData.sessionId,
-        remoteSessionId: persistedRemoteSessionId,
-        sessionAccessToken: persistedRemoteSessionAccessToken,
-        source: 'metadata',
-      };
-    }
-
-    if (!this._deps.sessionsApi || typeof this._deps.sessionsApi.ensureSession !== 'function') {
-      return null;
-    }
-
-    const ensureResult = this._deps.sessionsApi.ensureSession({
-      cwd: typeof hostCwdPath === 'string' && hostCwdPath.trim() ? hostCwdPath : sessionData.cwd,
-      localSessionId: sessionData.sessionId,
-      model: findFlagValue(hostArgs, '--model') || sessionData.model || null,
-      organizationUuid: deriveOrganizationUuidFromMetadataPath(metadataPath),
-      permissionMode: findFlagValue(hostArgs, '--permission-mode') || sessionData.permissionMode || 'default',
-      remoteSessionAccessToken: persistedRemoteSessionAccessToken,
-      remoteSessionId: persistedRemoteSessionId,
-      title: sessionData.title || null,
-      userSelectedFolders: Array.isArray(sessionData.userSelectedFolders) ? sessionData.userSelectedFolders : [],
+    // Read bridge-state.json — find any cse_* remoteSessionId.
+    // There's one dispatch session per environment; all task spawns share it.
+    const remoteSessionId = readRemoteSessionIdFromBridgeState({
+      bridgeStatePath: this._deps.bridgeStatePath || null,
+      readFileSync: this._deps.readFileSync || undefined,
+      trace,
+      waitMs: this._deps.bridgeStateRetryDelayMs || undefined,
     });
-    if (!ensureResult || ensureResult.success !== true) {
-      if (ensureResult && ensureResult.skipped) {
-        return null;
-      }
-      trace(
-        'WARNING: Failed to resolve remote session for '
-          + sessionData.sessionId
-          + ': '
-          + (ensureResult && ensureResult.error ? ensureResult.error : 'unknown error')
-      );
-      return null;
-    }
-    if (
-      typeof ensureResult.remoteSessionId !== 'string' ||
-      !ensureResult.remoteSessionId.trim() ||
-      typeof ensureResult.sessionAccessToken !== 'string' ||
-      !ensureResult.sessionAccessToken.trim()
-    ) {
-      trace('WARNING: Sessions API returned incomplete bridge session identity for ' + sessionData.sessionId);
+
+    if (!remoteSessionId) {
+      trace('[bridge-creds] skipped: no bridge-state entry (degrading to non-bridge spawn)');
       return null;
     }
 
-    const identityPatch = {
-      remoteSessionAccessToken: ensureResult.sessionAccessToken,
-      remoteSessionId: ensureResult.remoteSessionId,
-    };
-    if (this._sessionStore && typeof this._sessionStore.persistSessionIdentityForMetadataPath === 'function') {
-      const persistenceResult = this._sessionStore.persistSessionIdentityForMetadataPath(metadataPath, identityPatch);
-      if (!persistenceResult.success) {
-        trace('WARNING: Failed to persist remote session identity: ' + persistenceResult.error);
-      }
-    } else if (metadataPath) {
-      const persistedSessionData = readSessionDataFromMetadata(metadataPath, trace) || {};
-      persistSessionDataToMetadata(metadataPath, {
-        ...persistedSessionData,
-        ...identityPatch,
-      }, trace);
-    }
-
+    // Don't call /bridge ourselves — the CLI's initEnvLessBridgeCore handles
+    // its own OAuth token exchange and bridge credential fetching internally.
+    // We just need to tell the CLI which session to use and that it should
+    // activate the CCR v2 transport.
     return {
-      localSessionId: sessionData.sessionId,
-      remoteSessionId: ensureResult.remoteSessionId,
-      sessionAccessToken: ensureResult.sessionAccessToken,
-      source: ensureResult.source || 'created',
+      remoteSessionId,
+      source: 'bridge_state',
     };
   }
 
@@ -1064,6 +1078,680 @@ class SessionOrchestrator {
       retryAttempt: typeof retryCount === 'number' ? retryCount : 0,
     };
   }
+
+  // --- Phase 2: Session record normalization ---
+  // Public API — delegates to sessionStore which owns the implementation.
+  // Callers should use this instead of sessionStore.normalizeSessionRecord() directly.
+  normalizeSessionRecord(sessionData) {
+    if (!this._sessionStore || typeof this._sessionStore.normalizeSessionRecord !== 'function') {
+      return sessionData;
+    }
+    return this._sessionStore.normalizeSessionRecord(sessionData);
+  }
+
+  // --- Phase 4: Live event dispatch normalization ---
+
+  _isLocalSessionEventChannel(channel) {
+    return typeof channel === 'string' && (
+      channel.includes('LocalAgentModeSessions_$_onEvent') ||
+      channel.includes('LocalSessions_$_onEvent')
+    );
+  }
+
+  _getLocalSessionEventSessionId(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    if (typeof payload.sessionId === 'string') {
+      return payload.sessionId;
+    }
+    if (typeof payload.session_id === 'string') {
+      return payload.session_id;
+    }
+    if (payload.message && typeof payload.message === 'object') {
+      if (typeof payload.message.sessionId === 'string') {
+        return payload.message.sessionId;
+      }
+      if (typeof payload.message.session_id === 'string') {
+        return payload.message.session_id;
+      }
+    }
+    return null;
+  }
+
+  _getOrCreateCompatibilityState(sessionId) {
+    if (!this._liveSessionCompatibilityState.has(sessionId)) {
+      this._liveSessionCompatibilityState.set(sessionId, {
+        queueOperations: [],
+        queueSize: null,
+        progress: null,
+        lastPrompt: null,
+        updatedAt: 0,
+      });
+    }
+    return this._liveSessionCompatibilityState.get(sessionId);
+  }
+
+  _cloneCompatibilityState(sessionId) {
+    const state = this._liveSessionCompatibilityState.get(sessionId);
+    if (!state) {
+      return null;
+    }
+    return {
+      queueOperations: cloneSerializable(state.queueOperations),
+      queueSize: state.queueSize,
+      progress: cloneSerializable(state.progress),
+      lastPrompt: cloneSerializable(state.lastPrompt),
+      updatedAt: state.updatedAt,
+    };
+  }
+
+  _mergeQueueOperationState(state, queuePayload) {
+    if (!state || !queuePayload || typeof queuePayload !== 'object') {
+      return false;
+    }
+
+    const rawPayload = cloneSerializable(queuePayload);
+    if (Array.isArray(rawPayload.operations)) {
+      state.queueOperations = rawPayload.operations.map((entry) => cloneSerializable(entry));
+      state.queueSize = state.queueOperations.length;
+      return true;
+    }
+
+    const extractId = (v) => {
+      if (!v || typeof v !== 'object') return null;
+      const c = v.id ?? v.operation_id ?? v.request_id ?? v.uuid ?? v.name ?? null;
+      return typeof c === 'string' || typeof c === 'number' ? String(c) : null;
+    };
+
+    const operation = rawPayload.operation && typeof rawPayload.operation === 'object'
+      ? cloneSerializable(rawPayload.operation)
+      : rawPayload;
+    const operationId = extractId(operation);
+    const action = String(operation.action ?? operation.subtype ?? operation.operation ?? '').toLowerCase();
+    if (action.includes('remove') || action.includes('dequeue') || action.includes('complete') || action.includes('finish')) {
+      if (operationId) {
+        state.queueOperations = state.queueOperations.filter((entry) => extractId(entry) !== operationId);
+      } else if (state.queueOperations.length > 0) {
+        state.queueOperations = state.queueOperations.slice(1);
+      }
+    } else if (operationId) {
+      const existingIndex = state.queueOperations.findIndex((entry) => extractId(entry) === operationId);
+      if (existingIndex >= 0) {
+        state.queueOperations[existingIndex] = operation;
+      } else {
+        state.queueOperations.push(operation);
+      }
+    } else {
+      state.queueOperations.push(operation);
+    }
+
+    const queueSize = rawPayload.queue_size ?? rawPayload.size ?? rawPayload.pending ?? null;
+    state.queueSize = typeof queueSize === 'number' ? queueSize : state.queueOperations.length;
+    return true;
+  }
+
+  _applyMetadataMessage(sessionId, sdkMessage) {
+    if (typeof sessionId !== 'string' || !sdkMessage || typeof sdkMessage !== 'object') {
+      return false;
+    }
+
+    const messageType = sdkMessage.type;
+    if (!LIVE_EVENT_METADATA_TYPES.has(messageType)) {
+      return false;
+    }
+
+    const state = this._getOrCreateCompatibilityState(sessionId);
+    let updated = false;
+
+    if (messageType === 'queue-operation') {
+      updated = this._mergeQueueOperationState(state, sdkMessage);
+    } else if (messageType === 'progress') {
+      state.progress = {
+        current: typeof sdkMessage.current === 'number' ? sdkMessage.current : (typeof sdkMessage.completed === 'number' ? sdkMessage.completed : null),
+        total: typeof sdkMessage.total === 'number' ? sdkMessage.total : (typeof sdkMessage.max === 'number' ? sdkMessage.max : null),
+        phase: typeof sdkMessage.phase === 'string' ? sdkMessage.phase : (typeof sdkMessage.status === 'string' ? sdkMessage.status : null),
+        raw: cloneSerializable(sdkMessage),
+      };
+      updated = true;
+    } else if (messageType === 'last-prompt') {
+      const promptValue = sdkMessage.prompt ?? sdkMessage.last_prompt ?? sdkMessage.text ?? sdkMessage.value ?? sdkMessage.message ?? null;
+      state.lastPrompt = {
+        text: typeof promptValue === 'string' ? promptValue : null,
+        raw: cloneSerializable(sdkMessage),
+      };
+      updated = true;
+    }
+
+    if (updated) {
+      state.updatedAt = Date.now();
+    }
+    return updated;
+  }
+
+  _finalizeCompatibilityState(sessionId) {
+    const state = this._liveSessionCompatibilityState.get(sessionId);
+    if (!state) {
+      return;
+    }
+    if (state.progress && typeof state.progress === 'object' && !state.progress.phase) {
+      state.progress = { ...state.progress, phase: 'completed' };
+    }
+    state.queueOperations = [];
+    state.queueSize = 0;
+    state.updatedAt = Date.now();
+  }
+
+  _attachCompatibilityState(sessionId, payload) {
+    const compatibilityState = this._cloneCompatibilityState(sessionId);
+    if (!compatibilityState || !payload || typeof payload !== 'object') {
+      return payload;
+    }
+    return { ...payload, coworkCompatibilityState: compatibilityState };
+  }
+
+  _clearLiveSessionState(sessionId) {
+    this._liveAssistantMessageCache.delete(sessionId);
+    this._liveAssistantStreamState.delete(sessionId);
+    this._liveSessionCompatibilityState.delete(sessionId);
+  }
+
+  _buildSyntheticAssistantFromStreamEvent(sessionId, streamMessage) {
+    if (!streamMessage || typeof streamMessage !== 'object' || streamMessage.type !== 'stream_event') {
+      return null;
+    }
+
+    const streamEvent = streamMessage.event;
+    if (!streamEvent || typeof streamEvent !== 'object') {
+      return null;
+    }
+
+    let currentAssistantMessage = this._liveAssistantStreamState.get(sessionId) || null;
+
+    if (streamEvent.type === 'message_start') {
+      const startingMessage = streamEvent.message;
+      if (!startingMessage || startingMessage.role !== 'assistant') {
+        return null;
+      }
+
+      currentAssistantMessage = {
+        type: 'assistant',
+        uuid: streamMessage.uuid || null,
+        session_id: streamMessage.session_id || null,
+        parent_tool_use_id: streamMessage.parent_tool_use_id ?? null,
+        message: {
+          ...startingMessage,
+          content: cloneMessageContent(startingMessage.content),
+        },
+      };
+      this._liveAssistantStreamState.set(sessionId, currentAssistantMessage);
+      return cloneAssistantSdkMessage(currentAssistantMessage);
+    }
+
+    if (!isAssistantSdkMessage(currentAssistantMessage)) {
+      return null;
+    }
+
+    currentAssistantMessage = {
+      ...currentAssistantMessage,
+      uuid: currentAssistantMessage.uuid || streamMessage.uuid || null,
+      session_id: currentAssistantMessage.session_id || streamMessage.session_id || null,
+      parent_tool_use_id: currentAssistantMessage.parent_tool_use_id ?? streamMessage.parent_tool_use_id ?? null,
+      message: {
+        ...currentAssistantMessage.message,
+        content: cloneMessageContent(currentAssistantMessage.message.content),
+      },
+    };
+
+    const currentContent = currentAssistantMessage.message.content;
+
+    if (streamEvent.type === 'content_block_start') {
+      currentContent[streamEvent.index] = streamEvent.content_block && typeof streamEvent.content_block === 'object'
+        ? { ...streamEvent.content_block }
+        : streamEvent.content_block;
+    } else if (streamEvent.type === 'content_block_delta') {
+      const currentBlock = currentContent[streamEvent.index];
+      if (!currentBlock || typeof currentBlock !== 'object') {
+        return null;
+      }
+
+      if (streamEvent.delta && streamEvent.delta.type === 'text_delta' && currentBlock.type === 'text') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          text: mergeStreamingText(currentBlock.text, streamEvent.delta.text),
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'thinking_delta' && currentBlock.type === 'thinking') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          thinking: mergeStreamingText(currentBlock.thinking, streamEvent.delta.thinking),
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'signature_delta' && currentBlock.type === 'thinking') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          signature: streamEvent.delta.signature || currentBlock.signature || '',
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'input_json_delta' && currentBlock.type === 'tool_use') {
+        const partialJson = mergeStreamingText(currentBlock.__coworkPartialJson, streamEvent.delta.partial_json);
+        let parsedInput;
+        try { parsedInput = JSON.parse(partialJson); } catch (_) { parsedInput = undefined; }
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          __coworkPartialJson: partialJson,
+          ...(parsedInput !== undefined ? { input: parsedInput } : {}),
+        };
+      } else if (streamEvent.delta && streamEvent.delta.type === 'citations_delta' && currentBlock.type === 'text') {
+        currentContent[streamEvent.index] = {
+          ...currentBlock,
+          citations: [
+            ...(Array.isArray(currentBlock.citations) ? currentBlock.citations : []),
+            streamEvent.delta.citation,
+          ],
+        };
+      }
+    } else if (streamEvent.type === 'message_delta') {
+      currentAssistantMessage.message = {
+        ...currentAssistantMessage.message,
+        stop_reason: streamEvent.delta ? streamEvent.delta.stop_reason : currentAssistantMessage.message.stop_reason,
+        stop_sequence: streamEvent.delta ? streamEvent.delta.stop_sequence : currentAssistantMessage.message.stop_sequence,
+        context_management: streamEvent.context_management ?? currentAssistantMessage.message.context_management,
+        usage: {
+          ...(currentAssistantMessage.message.usage || {}),
+          ...(streamEvent.usage || {}),
+        },
+      };
+    } else if (streamEvent.type !== 'content_block_stop' && streamEvent.type !== 'message_stop') {
+      return null;
+    }
+
+    this._liveAssistantStreamState.set(sessionId, currentAssistantMessage);
+    return cloneAssistantSdkMessage(currentAssistantMessage);
+  }
+
+  // Public API: normalize a live event payload before dispatching to renderer.
+  // Returns an array of payloads (0 = drop, 1 = pass through, 2 = stream_event → synthetic assistant + original).
+  normalizeLiveEvent(channel, payload) {
+    if (!this._isLocalSessionEventChannel(channel) || !payload || typeof payload !== 'object') {
+      return [payload];
+    }
+
+    const sessionId = this._getLocalSessionEventSessionId(payload);
+    if (!sessionId) {
+      return [payload];
+    }
+
+    if (payload.type === 'start' || payload.type === 'close' || payload.type === 'stopped' || payload.type === 'deleted') {
+      this._clearLiveSessionState(sessionId);
+      return [payload];
+    }
+
+    if (LIVE_EVENT_METADATA_TYPES.has(payload.type)) {
+      this._applyMetadataMessage(sessionId, payload);
+      return [];
+    }
+
+    if (payload.type === 'transcript_loaded' && Array.isArray(payload.messages)) {
+      const normalizedMessages = [];
+      for (const message of payload.messages) {
+        if (message && typeof message === 'object' && LIVE_EVENT_METADATA_TYPES.has(message.type)) {
+          this._applyMetadataMessage(sessionId, message);
+          continue;
+        }
+        if (message && typeof message === 'object' && LIVE_EVENT_IGNORED_TYPES.has(message.type)) {
+          continue;
+        }
+        normalizedMessages.push(message);
+      }
+      return [this._attachCompatibilityState(sessionId, {
+        ...payload,
+        messages: mergeConsecutiveAssistantMessages(normalizedMessages),
+      })];
+    }
+
+    if (payload.type !== 'message' || !payload.message || typeof payload.message !== 'object') {
+      return [this._attachCompatibilityState(sessionId, payload)];
+    }
+
+    if (LIVE_EVENT_METADATA_TYPES.has(payload.message.type)) {
+      this._applyMetadataMessage(sessionId, payload.message);
+      return [];
+    }
+
+    if (payload.message.type === 'result') {
+      this._liveAssistantStreamState.delete(sessionId);
+      this._finalizeCompatibilityState(sessionId);
+      return [this._attachCompatibilityState(sessionId, payload)];
+    }
+
+    if (payload.message.type === 'stream_event') {
+      const syntheticAssistantMessage = this._buildSyntheticAssistantFromStreamEvent(sessionId, payload.message);
+      if (!syntheticAssistantMessage) {
+        return [this._attachCompatibilityState(sessionId, payload)];
+      }
+
+      const previousMessage = this._liveAssistantMessageCache.get(sessionId);
+      const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, syntheticAssistantMessage) || syntheticAssistantMessage;
+      this._liveAssistantMessageCache.set(sessionId, mergedAssistantMessage);
+
+      return [
+        this._attachCompatibilityState(sessionId, payload),
+        this._attachCompatibilityState(sessionId, {
+          ...payload,
+          message: mergedAssistantMessage,
+        }),
+      ];
+    }
+
+    if (!isAssistantSdkMessage(payload.message)) {
+      return [this._attachCompatibilityState(sessionId, payload)];
+    }
+
+    const previousMessage = this._liveAssistantMessageCache.get(sessionId);
+    if (previousMessage) {
+      const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, payload.message);
+      if (mergedAssistantMessage) {
+        this._liveAssistantMessageCache.set(sessionId, mergedAssistantMessage);
+        return [this._attachCompatibilityState(sessionId, {
+          ...payload,
+          message: mergedAssistantMessage,
+        })];
+      }
+    }
+
+    this._liveAssistantMessageCache.set(sessionId, payload.message);
+    return [this._attachCompatibilityState(sessionId, payload)];
+  }
+}
+
+// Phase 1: Message type filtering — constants and functions live in
+// session_normalization.js (leaf module with zero project imports).
+const {
+  LIVE_EVENT_IGNORED_TYPES,
+  LIVE_EVENT_METADATA_TYPES,
+  TRANSCRIPT_IGNORED_TYPES,
+  SDK_STDOUT_IGNORED_TYPES,
+  isIgnoredLiveEventType,
+  filterTranscriptMessages,
+  getIgnoredSdkMessageType,
+} = require('./session_normalization.js');
+
+// =============================================================================
+// PHASE 3: Consolidated SDK Message Transformation (NORM-102)
+// =============================================================================
+
+function cloneSerializable(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return value;
+  }
+}
+
+function isAssistantSdkMessage(message) {
+  return !!(
+    message &&
+    typeof message === 'object' &&
+    message.type === 'assistant' &&
+    message.message &&
+    typeof message.message === 'object' &&
+    message.message.type === 'message' &&
+    message.message.role === 'assistant' &&
+    Array.isArray(message.message.content)
+  );
+}
+
+function cloneMessageContent(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.map((block) => {
+    if (!block || typeof block !== 'object') {
+      return block;
+    }
+    const clonedBlock = { ...block };
+    delete clonedBlock.__coworkPartialJson;
+    return clonedBlock;
+  });
+}
+
+function cloneAssistantSdkMessage(message) {
+  if (!isAssistantSdkMessage(message)) {
+    return null;
+  }
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content: cloneMessageContent(message.message.content),
+    },
+  };
+}
+
+function mergeStreamingText(previousValue, nextValue) {
+  if (typeof previousValue !== 'string' || !previousValue) {
+    return typeof nextValue === 'string' ? nextValue : previousValue;
+  }
+  if (typeof nextValue !== 'string' || !nextValue) {
+    return previousValue;
+  }
+  if (nextValue.startsWith(previousValue)) {
+    return nextValue;
+  }
+  if (previousValue.startsWith(nextValue) || previousValue.endsWith(nextValue)) {
+    return previousValue;
+  }
+  return previousValue + nextValue;
+}
+
+function findMergeableAssistantBlockIndex(previousBlocks, nextBlock, fallbackIndex) {
+  if (!Array.isArray(previousBlocks) || !nextBlock || typeof nextBlock !== 'object') {
+    return -1;
+  }
+
+  if (nextBlock.id) {
+    const byIdIndex = previousBlocks.findIndex((block) => block && typeof block === 'object' && block.id === nextBlock.id);
+    if (byIdIndex !== -1) {
+      return byIdIndex;
+    }
+  }
+
+  const fallbackBlock = previousBlocks[fallbackIndex];
+  if (fallbackBlock && typeof fallbackBlock === 'object' && fallbackBlock.type === nextBlock.type) {
+    return fallbackIndex;
+  }
+
+  return -1;
+}
+
+function mergeAssistantContentBlock(previousBlock, nextBlock) {
+  if (!previousBlock || typeof previousBlock !== 'object') {
+    return nextBlock && typeof nextBlock === 'object' ? { ...nextBlock } : nextBlock;
+  }
+  if (!nextBlock || typeof nextBlock !== 'object') {
+    return { ...previousBlock };
+  }
+  if (previousBlock.type !== nextBlock.type) {
+    return { ...nextBlock };
+  }
+
+  const mergedBlock = {
+    ...previousBlock,
+    ...nextBlock,
+  };
+
+  if (mergedBlock.type === 'text') {
+    mergedBlock.text = mergeStreamingText(previousBlock.text, nextBlock.text);
+    if (Array.isArray(previousBlock.citations) || Array.isArray(nextBlock.citations)) {
+      mergedBlock.citations = [
+        ...(Array.isArray(previousBlock.citations) ? previousBlock.citations : []),
+        ...(Array.isArray(nextBlock.citations) ? nextBlock.citations : []),
+      ];
+    }
+  } else if (mergedBlock.type === 'thinking') {
+    mergedBlock.thinking = mergeStreamingText(previousBlock.thinking, nextBlock.thinking);
+    mergedBlock.signature = nextBlock.signature || previousBlock.signature || '';
+  } else if (mergedBlock.type === 'tool_use') {
+    if (previousBlock.input && nextBlock.input && typeof previousBlock.input === 'object' && typeof nextBlock.input === 'object') {
+      mergedBlock.input = {
+        ...previousBlock.input,
+        ...nextBlock.input,
+      };
+    } else if (nextBlock.input === undefined) {
+      mergedBlock.input = previousBlock.input;
+    }
+  } else if (mergedBlock.type === 'tool_result') {
+    if (Array.isArray(previousBlock.content) || Array.isArray(nextBlock.content)) {
+      mergedBlock.content = [
+        ...(Array.isArray(previousBlock.content) ? previousBlock.content : []),
+        ...(Array.isArray(nextBlock.content) ? nextBlock.content : []),
+      ];
+    }
+  }
+
+  if ('__coworkPartialJson' in previousBlock || '__coworkPartialJson' in nextBlock) {
+    mergedBlock.__coworkPartialJson = mergeStreamingText(previousBlock.__coworkPartialJson, nextBlock.__coworkPartialJson);
+  }
+
+  return mergedBlock;
+}
+
+function mergeAssistantContent(previousContent, nextContent) {
+  const mergedContent = cloneMessageContent(previousContent);
+  const normalizedNextContent = cloneMessageContent(nextContent);
+
+  for (let index = 0; index < normalizedNextContent.length; index += 1) {
+    const nextBlock = normalizedNextContent[index];
+    if (!nextBlock || typeof nextBlock !== 'object') {
+      mergedContent.push(nextBlock);
+      continue;
+    }
+
+    const targetIndex = findMergeableAssistantBlockIndex(mergedContent, nextBlock, index);
+    if (targetIndex === -1) {
+      mergedContent.push({ ...nextBlock });
+      continue;
+    }
+
+    mergedContent[targetIndex] = mergeAssistantContentBlock(mergedContent[targetIndex], nextBlock);
+  }
+
+  return mergedContent;
+}
+
+function mergeAssistantSdkMessages(previousMessage, nextMessage) {
+  if (!isAssistantSdkMessage(previousMessage) || !isAssistantSdkMessage(nextMessage)) {
+    return null;
+  }
+
+  const previousId = previousMessage.message && previousMessage.message.id;
+  const nextId = nextMessage.message && nextMessage.message.id;
+  if (!previousId || !nextId || previousId !== nextId) {
+    return null;
+  }
+
+  return {
+    ...previousMessage,
+    ...nextMessage,
+    uuid: previousMessage.uuid || nextMessage.uuid,
+    session_id: previousMessage.session_id || nextMessage.session_id,
+    parent_tool_use_id: previousMessage.parent_tool_use_id ?? nextMessage.parent_tool_use_id ?? null,
+    message: {
+      ...previousMessage.message,
+      ...nextMessage.message,
+      content: mergeAssistantContent(previousMessage.message.content, nextMessage.message.content),
+    },
+  };
+}
+
+function mergeConsecutiveAssistantMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return messages;
+  }
+
+  const mergedMessages = [];
+  for (const message of messages) {
+    const previousMessage = mergedMessages[mergedMessages.length - 1];
+    const mergedAssistantMessage = mergeAssistantSdkMessages(previousMessage, message);
+    if (mergedAssistantMessage) {
+      mergedMessages[mergedMessages.length - 1] = mergedAssistantMessage;
+      continue;
+    }
+    mergedMessages.push(message);
+  }
+  return mergedMessages;
+}
+
+function getSdkMessageSessionId(message) {
+  if (!message || typeof message !== 'object') {
+    return null;
+  }
+  if (typeof message.sessionId === 'string') {
+    return message.sessionId;
+  }
+  if (typeof message.session_id === 'string') {
+    return message.session_id;
+  }
+  if (message.message && typeof message.message === 'object') {
+    if (typeof message.message.sessionId === 'string') {
+      return message.message.sessionId;
+    }
+    if (typeof message.message.session_id === 'string') {
+      return message.message.session_id;
+    }
+  }
+  return null;
+}
+
+function inferLocalSessionIdFromMessages(messages) {
+  if (!Array.isArray(messages)) {
+    return null;
+  }
+  for (const message of messages) {
+    const sessionId = getSdkMessageSessionId(message);
+    if (typeof sessionId === 'string' && sessionId.startsWith('local_')) {
+      return sessionId;
+    }
+  }
+  return null;
+}
+
+function transformSdkMessages(messages, sessionIdOverride) {
+  if (!Array.isArray(messages)) {
+    return messages;
+  }
+
+  const sessionId = typeof sessionIdOverride === 'string' && sessionIdOverride.startsWith('local_')
+    ? sessionIdOverride
+    : inferLocalSessionIdFromMessages(messages);
+  const normalizedMessages = [];
+
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') {
+      continue;
+    }
+
+    if (LIVE_EVENT_METADATA_TYPES.has(message.type)) {
+      continue;
+    }
+    if (LIVE_EVENT_IGNORED_TYPES.has(message.type)) {
+      continue;
+    }
+
+    if (message.type === 'message' && message.message && typeof message.message === 'object') {
+      if (LIVE_EVENT_METADATA_TYPES.has(message.message.type)) {
+        continue;
+      }
+      if (LIVE_EVENT_IGNORED_TYPES.has(message.message.type)) {
+        continue;
+      }
+    }
+
+    normalizedMessages.push(message);
+  }
+
+  return mergeConsecutiveAssistantMessages(normalizedMessages);
 }
 
 // Global Claude Code config directory (skills, commands, settings, etc.)
@@ -1127,7 +1815,11 @@ function symlinkGlobalConfig(sessionClaudeDir, trace = () => {}) {
 }
 
 function createSessionOrchestrator(deps) {
-  return new SessionOrchestrator(deps);
+  const orchestrator = new SessionOrchestrator(deps);
+  // Expose for patchEventDispatch in frame-fix-wrapper.js (bootstraps before
+  // the orchestrator exists, upgrades to full normalization once available).
+  global.__coworkSessionOrchestrator = orchestrator;
+  return orchestrator;
 }
 
 module.exports = {
@@ -1136,4 +1828,21 @@ module.exports = {
   createSessionOrchestrator,
   removeResumeArgs,
   symlinkGlobalConfig,
+  // Bridge credential helpers
+  readRemoteSessionIdFromBridgeState,
+  // Phase 1: Message type filtering
+  LIVE_EVENT_IGNORED_TYPES,
+  LIVE_EVENT_METADATA_TYPES,
+  TRANSCRIPT_IGNORED_TYPES,
+  SDK_STDOUT_IGNORED_TYPES,
+  isIgnoredLiveEventType,
+  filterTranscriptMessages,
+  getIgnoredSdkMessageType,
+  // Phase 3: SDK message transformation
+  transformSdkMessages,
+  mergeConsecutiveAssistantMessages,
+  mergeAssistantSdkMessages,
+  isAssistantSdkMessage,
+  cloneAssistantSdkMessage,
+  cloneSerializable,
 };

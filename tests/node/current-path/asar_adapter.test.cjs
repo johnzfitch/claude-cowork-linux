@@ -104,9 +104,9 @@ test('filterTranscriptMessages strips queue/progress/last-prompt metadata from t
   ]);
 });
 
-test('wrapHandler normalizes getSession and getAll results through the session store', async () => {
+test('wrapHandler normalizes getSession and getAll results through the orchestrator', async () => {
   const adapter = createAsarAdapter({
-    sessionStore: {
+    sessionOrchestrator: {
       normalizeSessionRecord(sessionRecord) {
         return {
           ...sessionRecord,

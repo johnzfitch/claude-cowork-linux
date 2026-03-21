@@ -4,6 +4,7 @@
   "description": "Linux port of Claude Desktop Cowork (Local Agent Mode)",
   "private": true,
   "devDependencies": {
-    "@electron/asar": "^3.2.0"
+    "@electron/asar": "^3.2.0",
+    "devtron": "^1.4.0"
   }
 }

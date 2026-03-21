@@ -1,5 +1,8 @@
 name: Publish to AUR
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [master]
@@ -20,7 +23,7 @@ jobs:
           pkgname: claude-cowork-linux
           pkgbuild: ./PKGBUILD
           commit_username: johnzfitch
-          commit_email: zack@johnzfitch.com
+          commit_email: zack@internetuniverse.org
           ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
           commit_message: "Update to ${{ github.sha }}"
           force_push: false

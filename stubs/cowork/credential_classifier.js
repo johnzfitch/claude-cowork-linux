@@ -101,45 +101,51 @@ function classifyEnvEntry(key, value) {
   return 'safe';
 }
 
+// Fast pre-check regex: if none of these patterns appear, the string
+// cannot contain credentials and we can skip all 4 replacement passes.
+// This covers: known token prefixes, sensitive env var key names,
+// Authorization/Cookie headers, and long alphanumeric runs (potential tokens).
+const _FAST_CREDENTIAL_CHECK = /sk-ant-|clt-|eyJ|ghp_|ghs_|gho_|xox[bp]-|AKIA|sk-proj-|token|secret|key|credential|auth|password|cookie|Authorization|Cookie/i;
+
 function redactCredentials(text) {
   // PRIVACY PROTECTION: Redact credentials from any text before logging.
   // This is the primary defense against credential leakage in logs and traces.
   //
-  // Handles multiple formats:
-  //   1. Environment variables: ANTHROPIC_API_KEY=sk-ant-123... → ANTHROPIC_API_KEY=[REDACTED]
-  //   2. JSON objects: {"token": "eyJ..."} → {"token": "[REDACTED]"}
-  //   3. HTTP headers: Authorization: Bearer sk-ant-123 → Authorization: Bearer [REDACTED]
-  //   4. Bare tokens: sk-ant-sid123456... → [REDACTED]
-  //
   // IMPORTANT: This function is called on ALL trace() and log() output to ensure
   // OAuth tokens never appear in logs (required by Anthropic Acceptable Use Policy).
-  let result = String(text);
-  
+  const result = String(text);
+
+  // Fast path: skip all regex work if no sensitive patterns are present.
+  // Most trace() calls are mundane log lines with no credentials.
+  if (!_FAST_CREDENTIAL_CHECK.test(result)) return result;
+
+  let out = result;
+
   // Pattern 1: Environment variable style (KEY=value)
-  result = result.replace(/([A-Z_][A-Z0-9_]*=)([^\s&"]+)/g, (match, prefix, value) => {
+  out = out.replace(/([A-Z_][A-Z0-9_]*=)([^\s&"]+)/g, (match, prefix, value) => {
     const key = prefix.slice(0, -1);
     if (classifyEnvEntry(key, value) !== 'safe') return prefix + '[REDACTED]';
     return match;
   });
-  
+
   // Pattern 2: JSON style ("key": "value")
-  result = result.replace(/("[^"]*"\s*:\s*")([^"]+)(")/g, (match, pre, value, post) => {
+  out = out.replace(/("[^"]*"\s*:\s*")([^"]+)(")/g, (match, pre, value, post) => {
     const key = pre.match(/"([^"]*)"/)?.[1] || '';
     if (classifyEnvEntry(key, value) !== 'safe') return pre + '[REDACTED]' + post;
     return match;
   });
-  
+
   // Pattern 3: HTTP Authorization and Cookie headers
-  result = result.replace(/(Authorization:\s*(?:Bearer\s+|Basic\s+))([^\s\r\n]+)/gi, '$1[REDACTED]');
-  result = result.replace(/(Cookie:\s*)([^\r\n]+)/gi, '$1[REDACTED]');
-  
+  out = out.replace(/(Authorization:\s*(?:Bearer\s+|Basic\s+))([^\s\r\n]+)/gi, '$1[REDACTED]');
+  out = out.replace(/(Cookie:\s*)([^\r\n]+)/gi, '$1[REDACTED]');
+
   // Pattern 4: Bare high-entropy tokens (last resort catch-all)
-  result = result.replace(/\b([A-Za-z0-9_-]{32,})\b/g, (match) => {
+  out = out.replace(/\b([A-Za-z0-9_-]{32,})\b/g, (match) => {
     if (isLikelyCredentialValue(match)) return '[REDACTED]';
     return match;
   });
-  
-  return result;
+
+  return out;
 }
 
 module.exports = {

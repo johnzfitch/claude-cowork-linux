@@ -1,5 +1,6 @@
 const {
   chooseSessionTranscriptCandidate,
+  getTranscriptProjectKeyCandidates,
   sanitizeTranscriptProjectKey,
 } = require('./transcript_store.js');
 
@@ -23,6 +24,10 @@ function getPreferredProjectKey(sessionData) {
   return sanitizeTranscriptProjectKey(getPreferredSessionRoot(sessionData));
 }
 
+function getPreferredProjectKeys(sessionData) {
+  return getTranscriptProjectKeyCandidates(getPreferredSessionRoot(sessionData));
+}
+
 function cloneSessionData(sessionData) {
   if (!sessionData || typeof sessionData !== 'object' || Array.isArray(sessionData)) {
     return {};
@@ -38,9 +43,11 @@ function planSessionResume(options) {
 
   const normalizedSessionData = cloneSessionData(sessionData);
   const preferredProjectKey = getPreferredProjectKey(normalizedSessionData);
+  const preferredProjectKeys = getPreferredProjectKeys(normalizedSessionData);
   const transcriptCandidate = chooseSessionTranscriptCandidate({
     sessionDirectory,
     preferredProjectKey,
+    preferredProjectKeys,
     cliSessionId: normalizedSessionData.cliSessionId,
   });
 

@@ -218,6 +218,63 @@ test('describeLinuxMenuApiShape treats function-valued Menu as present', () => {
   ]);
 });
 
+test('installLinuxMenuInterceptors stores menu in global.__coworkApplicationMenu', () => {
+  const app = new EventEmitter();
+  const fakeWindow = {
+    setMenuBarVisibility() {},
+  };
+  const electronModule = {
+    app,
+    BrowserWindow: {
+      getAllWindows() { return [fakeWindow]; },
+    },
+    Menu: {
+      setApplicationMenu() {},
+    },
+  };
+
+  const helpers = loadFrameFixHelpers();
+  helpers.installLinuxMenuInterceptors(electronModule);
+
+  const fakeMenu = { label: 'File', popup() {} };
+  electronModule.Menu.setApplicationMenu(fakeMenu);
+  assert.equal(helpers.global.__coworkApplicationMenu, fakeMenu);
+});
+
+test('LIVE_EVENT_IGNORED_TYPES includes progress and last-prompt alongside queue-operation', () => {
+  // Validate the canonical set in session_normalization.js (single source of truth).
+  const { LIVE_EVENT_IGNORED_TYPES } = require('../../../stubs/cowork/session_normalization.js');
+  const expectedTypes = ['queue-operation', 'progress', 'last-prompt', 'rate_limit_event'];
+  for (const type of expectedTypes) {
+    assert.ok(LIVE_EVENT_IGNORED_TYPES.has(type), `missing type: ${type}`);
+  }
+  assert.strictEqual(LIVE_EVENT_IGNORED_TYPES.size, expectedTypes.length, 'unexpected extra types in set');
+});
+
+test('isIgnoredLiveEventType only filters onEvent channels', () => {
+  // Validate the channel guard in the consolidated isIgnoredLiveEventType.
+  const { isIgnoredLiveEventType } = require('../../../stubs/cowork/session_normalization.js');
+  // Should filter onEvent channels with a matching payload type
+  assert.strictEqual(
+    isIgnoredLiveEventType('$eipc_message$_uuid_$_ns_$_LocalAgentModeSessions_$_onEvent', { type: 'progress' }),
+    'progress',
+  );
+  assert.strictEqual(
+    isIgnoredLiveEventType('$eipc_message$_uuid_$_ns_$_LocalSessions_$_onEvent', { type: 'rate_limit_event' }),
+    'rate_limit_event',
+  );
+  // Should NOT filter non-onEvent channels
+  assert.strictEqual(
+    isIgnoredLiveEventType('$eipc_message$_uuid_$_ns_$_LocalAgentModeSessions_$_getSession', { type: 'progress' }),
+    null,
+  );
+  // Should NOT filter non-ignored types
+  assert.strictEqual(
+    isIgnoredLiveEventType('$eipc_message$_uuid_$_ns_$_LocalAgentModeSessions_$_onEvent', { type: 'assistant' }),
+    null,
+  );
+});
+
 test('registerElectronAppListener degrades safely when electron app is unavailable', () => {
   const helpers = loadFrameFixHelpers({
     require(request) {

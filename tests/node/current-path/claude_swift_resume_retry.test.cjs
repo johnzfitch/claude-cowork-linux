@@ -107,6 +107,7 @@ function runSwiftRetryHarness(options) {
     env: {
       ...process.env,
       HOME: tempHome,
+      XDG_CONFIG_HOME: path.join(tempHome, '.config'),
       FLATLINE_ATTEMPT_FILE: attemptFile,
     },
     encoding: 'utf8',
@@ -128,23 +129,10 @@ function runSwiftBridgeHarness(options) {
 
   const script = `
     const fs = require('fs');
-    global.__coworkSessionsApiRequestSync = (request) => {
-      if (request.method === 'POST' && /\\/v1\\/sessions$/.test(request.url)) {
-        return {
-          statusCode: 200,
-          body: JSON.stringify({
-            id: 'remote-created',
-            session_access_token: 'bridge-token',
-          }),
-        };
-      }
-      if (request.method === 'GET' && /\\/v1\\/sessions\\//.test(request.url)) {
-        return {
-          statusCode: 404,
-          body: JSON.stringify({ error: 'not found' }),
-        };
-      }
-      throw new Error('Unexpected sessions API request: ' + request.method + ' ' + request.url);
+    // No API mock needed — bridge resolution reads bridge-state.json only,
+    // CLI self-bootstraps its own /bridge call via CLAUDE_CODE_USE_CCR_V2
+    global.__coworkSessionsApiRequestSync = () => {
+      throw new Error('Unexpected sessions API request — orchestrator should not call API');
     };
 
     const addon = require(${JSON.stringify(modulePath)});
@@ -201,6 +189,7 @@ function runSwiftBridgeHarness(options) {
     env: {
       ...process.env,
       HOME: tempHome,
+      XDG_CONFIG_HOME: path.join(tempHome, '.config'),
       CLAUDE_COWORK_SESSIONS_API_AUTH_TOKEN: 'desktop-oauth-token',
       CLAUDE_COWORK_SESSIONS_API_BASE_URL: 'https://bridge.test',
     },
@@ -208,7 +197,7 @@ function runSwiftBridgeHarness(options) {
   });
 }
 
-test('claude-swift provisions a remote session, persists it on the local session, and spawns with bridge flags', (t) => {
+test('claude-swift provisions a remote session via bridge-state.json and /bridge API, spawns with bridge flags', (t) => {
   const tempRoot = createTempDir(t);
   const { tempHome, tempRepoRoot, modulePath } = setupPackedStubFixture(tempRoot);
   const workspaceDir = path.join(tempRoot, 'workspace');
@@ -230,6 +219,13 @@ test('claude-swift provisions a remote session, persists it on the local session
     cwd: workspaceDir,
     userSelectedFolders: [workspaceDir],
   }, null, 2) + '\n', 'utf8');
+
+  // Bridge-state.json maps local -> remote session
+  const bridgeStateDir = path.join(tempHome, '.config', 'Claude');
+  fs.mkdirSync(bridgeStateDir, { recursive: true });
+  fs.writeFileSync(path.join(bridgeStateDir, 'bridge-state.json'), JSON.stringify({
+    'user:org': { remoteSessionId: 'cse_remote-created', localSessionId: 'local_ditto_org' },
+  }), 'utf8');
   fs.writeFileSync(workerPath, `
     const fs = require('fs');
     fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2), null, 2));
@@ -240,6 +236,7 @@ test('claude-swift provisions a remote session, persists it on the local session
       CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN || null,
       CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2: process.env.CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2 || null,
       CLAUDE_CODE_SESSION_ACCESS_TOKEN: process.env.CLAUDE_CODE_SESSION_ACCESS_TOKEN || null,
+      CLAUDE_CODE_USE_CCR_V2: process.env.CLAUDE_CODE_USE_CCR_V2 || null,
       CLAUDE_CODE_USE_COWORK_PLUGINS: process.env.CLAUDE_CODE_USE_COWORK_PLUGINS || null,
     }, null, 2));
     process.stdout.write(JSON.stringify({
@@ -273,29 +270,19 @@ test('claude-swift provisions a remote session, persists it on the local session
 
   assert.equal(result.exits.length, 1);
   assert.equal(result.exits[0].code, 0);
-  assert.deepEqual(spawnedArgs, [
-    '--print',
-    '--session-id',
-    'remote-created',
-    '--input-format',
-    'stream-json',
-    '--output-format',
-    'stream-json',
-    '--replay-user-messages',
-    '--model',
-    'claude-opus-4-6',
-  ]);
+  // Args: untouched — asar's bridge transport handles CCR relay, CLI runs normally
+  assert.ok(spawnedArgs.includes('--resume'), '--resume preserved');
+  assert.ok(spawnedArgs.includes('legacy-cli-session'), '--resume value preserved');
+  assert.equal(spawnedArgs.indexOf('--session-id'), -1, 'no --session-id (cse_* managed by asar bridge)');
+  assert.equal(spawnedArgs.indexOf('--fork-session'), -1, 'no --fork-session');
+  // Env: v2 transport, OAuth preserved for CLI self-bootstrap
   assert.equal(spawnedEnv.CLAUDE_CODE_ENTRYPOINT, 'claude-desktop');
   assert.equal(spawnedEnv.CLAUDE_CODE_ENVIRONMENT_KIND, 'bridge');
-  assert.equal(spawnedEnv.CLAUDE_CODE_OAUTH_TOKEN, null);
-  assert.equal(spawnedEnv.CLAUDE_CODE_SESSION_ACCESS_TOKEN, 'bridge-token');
-  assert.equal(spawnedEnv.CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2, '1');
   assert.equal(spawnedEnv.CLAUDE_CODE_IS_COWORK, '1');
+  assert.equal(spawnedEnv.CLAUDE_CODE_USE_CCR_V2, '1');
   assert.equal(spawnedEnv.CLAUDE_CODE_USE_COWORK_PLUGINS, '1');
   assert.equal(result.metadata.sessionId, 'local_demo_session');
   assert.equal(result.metadata.cliSessionId, 'legacy-cli-session');
-  assert.equal(result.metadata.remoteSessionId, 'remote-created');
-  assert.equal(result.metadata.remoteSessionAccessToken, 'bridge-token');
 });
 
 test('claude-swift exposes the quick access overlay and dictation methods expected by the packed app', (t) => {

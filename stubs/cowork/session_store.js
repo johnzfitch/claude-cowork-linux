@@ -4,6 +4,7 @@ const path = require('path');
 
 const {
   chooseSessionTranscriptCandidate,
+  getTranscriptProjectKeyCandidates,
   sanitizeTranscriptProjectKey,
 } = require('./transcript_store.js');
 
@@ -140,11 +141,29 @@ function isSyntheticSessionCwd(targetPath, sessionData) {
   return processNames.some((processName) => targetPath === path.join('/home', processName));
 }
 
+// Cache for listLocalSessionMetadataFiles — the recursive readdirSync was the
+// #1 profiler hot spot (1.2s, scanning 1600+ files on every IPC round-trip).
+// Cache with 5s TTL; invalidated on session create/delete.
+let _metadataFileCache = null;
+let _metadataFileCacheRoot = null;
+let _metadataFileCacheTs = 0;
+const METADATA_CACHE_TTL_MS = 5000;
+
+// Also cache the basename→path index for O(1) lookups instead of .find()
+let _metadataFileIndex = null;
+
+function invalidateMetadataFileCache() {
+  _metadataFileCache = null;
+  _metadataFileIndex = null;
+  _metadataFileCacheTs = 0;
+}
+
 function listLocalSessionMetadataFiles(rootPath) {
-  // Recursively scan directory for session metadata files (*.json).
-  // Used during app startup to discover all existing sessions.
-  //
-  // Returns array of absolute paths to .json files.
+  const now = Date.now();
+  if (_metadataFileCache && _metadataFileCacheRoot === rootPath && (now - _metadataFileCacheTs) < METADATA_CACHE_TTL_MS) {
+    return _metadataFileCache;
+  }
+
   const pendingPaths = [rootPath];
   const metadataFiles = [];
 
@@ -169,6 +188,16 @@ function listLocalSessionMetadataFiles(rootPath) {
     }
   }
 
+  _metadataFileCache = metadataFiles;
+  _metadataFileCacheRoot = rootPath;
+  _metadataFileCacheTs = now;
+
+  // Build basename index for O(1) lookups
+  _metadataFileIndex = new Map();
+  for (const filePath of metadataFiles) {
+    _metadataFileIndex.set(path.basename(filePath), filePath);
+  }
+
   return metadataFiles;
 }
 
@@ -181,6 +210,15 @@ function findSessionMetadataPath(localAgentRoot, sessionId) {
   }
 
   const targetName = sessionId + '.json';
+
+  // Ensure cache is warm (populates _metadataFileIndex)
+  listLocalSessionMetadataFiles(localAgentRoot);
+
+  if (_metadataFileIndex) {
+    return _metadataFileIndex.get(targetName) || null;
+  }
+
+  // Fallback (should not reach here)
   const metadataFiles = listLocalSessionMetadataFiles(localAgentRoot);
   return metadataFiles.find((filePath) => path.basename(filePath) === targetName) || null;
 }
@@ -308,6 +346,20 @@ class SessionStore {
     this._activeSessionByRoot = new Map();
     this._sessionObservedAt = new Map();
     this._activeSessionId = null;
+    // Per-session caches to avoid repeated filesystem + normalize work
+    // on every IPC round-trip. TTL keeps them fresh without manual invalidation.
+    this._normalizedCache = new Map();   // sessionId -> { ts, data }
+    this._sessionInfoCache = new Map();  // sessionId -> { ts, info }
+  }
+
+  _getCached(cache, key, ttlMs) {
+    const entry = cache.get(key);
+    if (entry && (Date.now() - entry.ts) < ttlMs) return entry.data;
+    return undefined;
+  }
+
+  _setCache(cache, key, data) {
+    cache.set(key, { ts: Date.now(), data });
   }
 
   getSessionDirectory(sessionId) {
@@ -319,8 +371,16 @@ class SessionStore {
       return sessionData;
     }
 
-    const metadataPath = findSessionMetadataPath(this._localAgentRoot, sessionData.sessionId);
-    return this.normalizeSessionRecordForMetadataPath(metadataPath, sessionData);
+    const sid = sessionData.sessionId;
+    if (typeof sid === 'string') {
+      const cached = this._getCached(this._normalizedCache, sid, 2000);
+      if (cached) return cached;
+    }
+
+    const metadataPath = findSessionMetadataPath(this._localAgentRoot, sid);
+    const result = this.normalizeSessionRecordForMetadataPath(metadataPath, sessionData);
+    if (typeof sid === 'string') this._setCache(this._normalizedCache, sid, result);
+    return result;
   }
 
   getSessionInfo(sessionId) {
@@ -328,8 +388,13 @@ class SessionStore {
       return null;
     }
 
+    const cached = this._getCached(this._sessionInfoCache, sessionId, 2000);
+    if (cached) return cached;
+
     const metadataPath = findSessionMetadataPath(this._localAgentRoot, sessionId);
-    return this.getSessionInfoByMetadataPath(metadataPath);
+    const result = this.getSessionInfoByMetadataPath(metadataPath);
+    if (result) this._setCache(this._sessionInfoCache, sessionId, result);
+    return result;
   }
 
   getSessionInfoByMetadataPath(metadataPath) {
@@ -348,9 +413,11 @@ class SessionStore {
     const preferredRoot = getPreferredSessionRoot(normalizedSessionData);
     const sessionDirectory = metadataPath.replace(/\.json$/i, '');
     const preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+    const preferredProjectKeys = getTranscriptProjectKeyCandidates(preferredRoot);
     const transcriptCandidate = chooseSessionTranscriptCandidate({
       sessionDirectory,
       preferredProjectKey,
+      preferredProjectKeys,
       cliSessionId: normalizedSessionData.cliSessionId,
     });
 
@@ -483,9 +550,11 @@ class SessionStore {
 
     let preferredRoot = getPreferredSessionRoot(nextSessionData);
     let preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+    let preferredProjectKeys = getTranscriptProjectKeyCandidates(preferredRoot);
     let transcriptCandidate = chooseSessionTranscriptCandidate({
       sessionDirectory,
       preferredProjectKey,
+      preferredProjectKeys,
       cliSessionId: nextSessionData.cliSessionId,
     });
 
@@ -498,9 +567,11 @@ class SessionStore {
         nextSessionData.userSelectedFolders = [recoveredRoot];
         preferredRoot = recoveredRoot;
         preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+        preferredProjectKeys = getTranscriptProjectKeyCandidates(preferredRoot);
         transcriptCandidate = chooseSessionTranscriptCandidate({
           sessionDirectory,
           preferredProjectKey,
+          preferredProjectKeys,
           cliSessionId: nextSessionData.cliSessionId,
         });
       }
@@ -656,19 +727,12 @@ class SessionStore {
       };
     }
 
-    for (const metadataPath of listLocalSessionMetadataFiles(this._localAgentRoot)) {
-      let serializedValue;
-      try {
-        serializedValue = fs.readFileSync(metadataPath, 'utf8');
-      } catch (_) {
-        continue;
-      }
-
-      const normalizedValue = this.normalizeSerializedMetadata(metadataPath, serializedValue);
-      if (normalizedValue !== serializedValue) {
-        originalWriteFileSync(metadataPath, normalizedValue, 'utf8');
-      }
-    }
+    // Normalize session metadata lazily on first read, not eagerly at startup.
+    // The write-time guards (fs.writeFileSync/writeFile wrappers above) ensure
+    // all future writes are normalized. For reads of not-yet-normalized files,
+    // normalizeSerializedMetadata runs at access time via getSessionInfo/
+    // observeSessionRead. The eager loop was reading all 68 session files
+    // (with full JSON parse + stringify comparison) on every app launch.
   }
 }
 
@@ -684,4 +748,5 @@ module.exports = {
   isLocalSessionMetadataFilePath,
   getSessionDirectory,
   detectJsonIndentation,
+  invalidateMetadataFileCache,
 };

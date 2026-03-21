@@ -97,7 +97,7 @@ function createDirs(options) {
   const xdgRuntimeDir = resolveAbsoluteDirectory(env.XDG_RUNTIME_DIR, path.join(xdgStateHome, 'runtime'));
 
   // Legacy macOS path for migration/compatibility
-  const legacyClaudeAppSupportRoot = path.join(homeDir, 'Library', 'Application Support', 'Claude');
+  // Legacy macOS path removed — ~/Library/Application Support/Claude never exists on Linux
 
   // Claude Desktop paths (shared between macOS and Linux builds)
   const claudeConfigRoot = path.join(xdgConfigHome, 'Claude');
@@ -130,7 +130,6 @@ function createDirs(options) {
     claudeVmRoots: [
       path.join(claudeConfigRoot, 'claude-code-vm'),
       path.join(coworkDataRoot, 'claude-code-vm'),
-      path.join(legacyClaudeAppSupportRoot, 'claude-code-vm'),
     ],
     coworkConfigRoot,
     coworkDataRoot,
@@ -140,7 +139,7 @@ function createDirs(options) {
     coworkSessionsStateRoot,
     coworkLogsDir,
     legacyCoworkLogsDir,
-    legacyClaudeAppSupportRoot,
+    // legacyClaudeAppSupportRoot removed — macOS path doesn't exist on Linux
   };
 }
 
@@ -172,10 +171,16 @@ function translateVmPathStrict(sessionsBase, vmPath) {
     throw new Error('Not a VM path: ' + vmPath);
   }
   const sessionPath = vmPath.substring('/sessions/'.length);
-  if (sessionPath.includes('..') || !isPathSafe(sessionsBase, sessionPath)) {
+  const normalizedSessionPath = path.normalize(sessionPath);
+  if (
+    path.isAbsolute(normalizedSessionPath) ||
+    normalizedSessionPath === '..' ||
+    normalizedSessionPath.startsWith('..' + path.sep) ||
+    !isPathSafe(sessionsBase, normalizedSessionPath)
+  ) {
     throw new Error('Path traversal blocked: ' + vmPath);
   }
-  return path.join(sessionsBase, sessionPath);
+  return path.join(sessionsBase, normalizedSessionPath);
 }
 
 function canonicalizeHostPath(hostPath) {

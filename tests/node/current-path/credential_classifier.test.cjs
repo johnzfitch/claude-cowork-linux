@@ -151,14 +151,13 @@ describe('redactCredentials', () => {
     assert.ok(!result.includes('[REDACTED]'), 'Should NOT redact simple PATH');
   });
 
-  it('has known limitation: long varied paths may be redacted', () => {
-    // Known limitation: very long paths with high character diversity
-    // (entropy > 3.5) can be false-flagged as credentials.
-    // This is acceptable as it errs on the side of safety.
+  it('does NOT redact long PATH values (fixed false positive)', () => {
+    // Previously a known limitation: long paths with high character diversity
+    // were false-flagged as credentials. Fixed by fast-path check that skips
+    // regex passes when no sensitive patterns are present.
     const input = 'PATH=/usr/local/bin:/usr/bin:/home/user/.local/bin';
     const result = redactCredentials(input);
-    // This is currently redacted - documenting known behavior
-    assert.ok(result.includes('[REDACTED]'));
+    assert.ok(!result.includes('[REDACTED]'), 'Should NOT redact PATH values');
   });
 
   it('does NOT redact version strings', () => {

@@ -236,6 +236,25 @@ test('buildAuthHeaders CRLF guard rejects tokens with null bytes', () => {
   assert.deepStrictEqual(headers, {});
 });
 
+test('invalid auth tokens fail fast before any sessions API request is attempted', () => {
+  let requestCount = 0;
+  const api = createSessionsApi({
+    authToken: 'token-with\r\ninjection',
+    baseUrl: 'https://api.example.com',
+    requestSync: () => {
+      requestCount += 1;
+      return { body: '{"ok":true}', statusCode: 200 };
+    },
+  });
+
+  assert.equal(api.isConfigured(), false);
+  const result = api.postEvents('session-123', [{ type: 'assistant', content: 'hello' }]);
+  assert.equal(result.success, false);
+  assert.equal(result.error, 'Sessions API auth token is invalid');
+  assert.equal(result.skipped, true);
+  assert.equal(requestCount, 0);
+});
+
 test('readAuthTokenFromFileDescriptor rejects fd > 9', () => {
   assert.strictEqual(readAuthTokenFromFileDescriptor(10), null);
   assert.strictEqual(readAuthTokenFromFileDescriptor(9999), null);

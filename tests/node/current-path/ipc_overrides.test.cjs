@@ -198,7 +198,45 @@ test('override registry covers all known broken handlers', () => {
     'FileSystem_$_whichApplication',
     'FileSystem_$_showInFolder',
     'FileSystem_$_getSystemPath',
+    'MainWindowTitleBar_$_requestMainMenuPopup',
+    'BrowserNavigation_$_requestMainMenuPopup',
     'CoworkSpaces_$_getAllSpaces',
+    // Phase 4: Dispatch/Bridge
+    'LocalAgentModeSessions_$_abandonBridgeEnvironment',
+    'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
+    'LocalAgentModeSessions_$_deleteBridgeSession',
+    'LocalAgentModeSessions_$_getBridgeConsent',
+    'LocalAgentModeSessions_$_getSessionsBridgeEnabled',
+    'LocalAgentModeSessions_$_kickBridgePoll',
+    'LocalAgentModeSessions_$_onBridgePermissionPreflight',
+    'LocalAgentModeSessions_$_resetBridge',
+    'LocalAgentModeSessions_$_resetBridgeSession',
+    'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
+    'LocalAgentModeSessions_$_sessionsBridgeStatus',
+    'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
+    // Phase 4: MCP
+    'LocalAgentModeSessions_$_mcpCallTool',
+    'LocalAgentModeSessions_$_mcpListResources',
+    'LocalAgentModeSessions_$_mcpReadResource',
+    // Phase 4: Permissions/Folders
+    'LocalAgentModeSessions_$_requestFolderTccAccess',
+    'LocalAgentModeSessions_$_setChromePermissionMode',
+    // Phase 4: Session Management
+    'LocalAgentModeSessions_$_onCoworkFromMain',
+    'LocalAgentModeSessions_$_onRemoteSessionStart',
+    'LocalAgentModeSessions_$_openOutputsDir',
+    'LocalAgentModeSessions_$_setDraftSessionFolders',
+    // Phase 4: Plugin/Skill
+    'LocalAgentModeSessions_$_respondDirectoryServers',
+    'LocalAgentModeSessions_$_respondPluginSearch',
+    'LocalAgentModeSessions_$_syncSkills',
+    // Phase 4: Sharing
+    'LocalAgentModeSessions_$_shareSession',
+    // Startup
+    'Startup_$_isStartupOnLoginEnabled',
+    'Startup_$_setStartupOnLoginEnabled',
+    'Startup_$_isMenuBarEnabled',
+    'Startup_$_setMenuBarEnabled',
   ];
   for (const suffix of expectedSuffixes) {
     const handler = matchOverride('test_$_' + suffix, registry);
@@ -289,6 +327,48 @@ test('matchOverride rejects $store$ channels that partially match override suffi
   assert.ok(handler2, 'should match the actual method channel');
 });
 
+test('requestMainMenuPopup calls popup on stored global menu', async () => {
+  // Mock electron in require cache so the handler's require('electron') resolves
+  const Module = require('module');
+  const origResolve = Module._resolveFilename;
+  const mockKey = '__mock_electron_for_menu_test__';
+  Module._resolveFilename = function(request, ...args) {
+    if (request === 'electron') return mockKey;
+    return origResolve.call(this, request, ...args);
+  };
+  require.cache[mockKey] = {
+    id: mockKey, filename: mockKey, loaded: true,
+    exports: {
+      BrowserWindow: {
+        fromWebContents() { return null; },
+        getFocusedWindow() { return null; },
+      },
+    },
+  };
+
+  try {
+    const popupCalls = [];
+    global.__coworkApplicationMenu = {
+      popup(opts) { popupCalls.push(opts); },
+    };
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+    const handler = matchOverride('claude.web_$_MainWindowTitleBar_$_requestMainMenuPopup', registry);
+    await handler({ sender: null });
+    assert.equal(popupCalls.length, 1);
+  } finally {
+    delete global.__coworkApplicationMenu;
+    delete require.cache[mockKey];
+    Module._resolveFilename = origResolve;
+  }
+});
+
+test('requestMainMenuPopup is a no-op when global menu is not set', async () => {
+  delete global.__coworkApplicationMenu;
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('claude.web_$_BrowserNavigation_$_requestMainMenuPopup', registry);
+  await assert.doesNotReject(async () => handler({ sender: null }));
+});
+
 test('override handlers return fresh objects for object results (not shared references)', async () => {
   const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
   const handler = matchOverride('claude.web_$_ComputerUseTcc_$_getState', registry);
@@ -296,4 +376,203 @@ test('override handlers return fresh objects for object results (not shared refe
   const b = await handler();
   assert.notEqual(a, b, 'handlers should return new objects each call');
   assert.deepEqual(a, b);
+});
+
+// ================================================================
+// Phase 4: Dispatch/Bridge handler tests
+// ================================================================
+
+test('getBridgeConsent returns consented shape', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
+  const result = await handler(null);
+  assert.deepEqual(result, { consented: true });
+});
+
+test('getSessionsBridgeEnabled defaults to false, persists after set', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const getHandler = matchOverride('test_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled', registry);
+  const setHandler = matchOverride('test_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
+  assert.equal(await getHandler(), false);
+  await setHandler(null, true);
+  assert.equal(await getHandler(), true);
+  await setHandler(null, false);
+  assert.equal(await getHandler(), false);
+});
+
+test('sessionsBridgeStatus reflects enabled state', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const statusHandler = matchOverride('test_$_LocalAgentModeSessions_$_sessionsBridgeStatus', registry);
+  const setHandler = matchOverride('test_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
+  const initial = await statusHandler();
+  assert.equal(initial.status, 'disconnected');
+  assert.equal(initial.enabled, false);
+  await setHandler(null, true);
+  const updated = await statusHandler();
+  assert.equal(updated.status, 'connected');
+  assert.equal(updated.enabled, true);
+});
+
+test('bridge no-op handlers return null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const noOpSuffixes = [
+    'LocalAgentModeSessions_$_abandonBridgeEnvironment',
+    'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
+    'LocalAgentModeSessions_$_deleteBridgeSession',
+    'LocalAgentModeSessions_$_kickBridgePoll',
+    'LocalAgentModeSessions_$_onBridgePermissionPreflight',
+    'LocalAgentModeSessions_$_resetBridge',
+    'LocalAgentModeSessions_$_resetBridgeSession',
+    'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
+    'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
+  ];
+  for (const suffix of noOpSuffixes) {
+    const handler = matchOverride('test_$_' + suffix, registry);
+    assert.ok(handler, 'missing handler: ' + suffix);
+    const result = await handler(null);
+    assert.equal(result, null, suffix + ' should return null');
+  }
+});
+
+// ================================================================
+// Phase 4: MCP handler tests
+// ================================================================
+
+test('mcpCallTool returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_mcpCallTool', registry);
+  const result = await handler(null, 'toolName', { arg: 'value' });
+  assert.equal(result, null);
+});
+
+test('mcpListResources returns empty array', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_mcpListResources', registry);
+  const result = await handler(null);
+  assert.deepEqual(result, []);
+});
+
+test('mcpReadResource returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_mcpReadResource', registry);
+  const result = await handler(null, 'resource-uri');
+  assert.equal(result, null);
+});
+
+// ================================================================
+// Phase 4: Permissions handler tests
+// ================================================================
+
+test('requestFolderTccAccess returns granted on Linux', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_requestFolderTccAccess', registry);
+  const result = await handler(null, '/some/path');
+  assert.deepEqual(result, { granted: true });
+});
+
+test('setChromePermissionMode returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_setChromePermissionMode', registry);
+  const result = await handler(null, 'auto');
+  assert.equal(result, null);
+});
+
+// ================================================================
+// Phase 4: Session management handler tests
+// ================================================================
+
+test('onCoworkFromMain returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_onCoworkFromMain', registry);
+  const result = await handler(null, { type: 'test' });
+  assert.equal(result, null);
+});
+
+test('onRemoteSessionStart returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_onRemoteSessionStart', registry);
+  const result = await handler(null, 'session-123');
+  assert.equal(result, null);
+});
+
+test('openOutputsDir returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_openOutputsDir', registry);
+  const result = await handler(null, 'session-123');
+  assert.equal(result, null);
+});
+
+test('setDraftSessionFolders returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_setDraftSessionFolders', registry);
+  const result = await handler(null, ['/home/user/project']);
+  assert.equal(result, null);
+});
+
+// ================================================================
+// Phase 4: Plugin/Skill handler tests
+// ================================================================
+
+test('respondDirectoryServers returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_respondDirectoryServers', registry);
+  const result = await handler(null);
+  assert.equal(result, null);
+});
+
+test('respondPluginSearch returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_respondPluginSearch', registry);
+  const result = await handler(null);
+  assert.equal(result, null);
+});
+
+test('syncSkills returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_syncSkills', registry);
+  const result = await handler(null);
+  assert.equal(result, null);
+});
+
+// ================================================================
+// Phase 4: Sharing handler test
+// ================================================================
+
+test('shareSession returns null on Linux', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_shareSession', registry);
+  const result = await handler(null, 'session-123');
+  assert.equal(result, null);
+});
+
+// ================================================================
+// Startup handler tests
+// ================================================================
+
+test('isStartupOnLoginEnabled returns false on Linux', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_Startup_$_isStartupOnLoginEnabled', registry);
+  const result = await handler();
+  assert.equal(result, false);
+});
+
+test('isMenuBarEnabled returns false on Linux', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_Startup_$_isMenuBarEnabled', registry);
+  const result = await handler();
+  assert.equal(result, false);
+});
+
+test('setStartupOnLoginEnabled returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_Startup_$_setStartupOnLoginEnabled', registry);
+  const result = await handler(null, true);
+  assert.equal(result, null);
+});
+
+test('setMenuBarEnabled returns null', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  const handler = matchOverride('test_$_Startup_$_setMenuBarEnabled', registry);
+  const result = await handler(null, true);
+  assert.equal(result, null);
 });

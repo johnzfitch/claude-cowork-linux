@@ -26,10 +26,7 @@
  *
  * Based on reverse engineering of swift_addon.node via pyghidra-lite
  */
-console.log('[claude-swift-stub] LOADING MODULE - this confirms our stub is being used');
-console.log('[claude-swift-stub] process.platform at load time:', process.platform);
-console.log('[claude-swift-stub] Stack at load:', new Error().stack.split('\n').slice(1, 5).join('\n'));
-console.log('[claude-swift-stub] Module filename:', __filename);
+console.log('[claude-swift-stub] Module loaded: ' + __filename);
 const EventEmitter = require("events");
 const { spawn: nodeSpawn, spawnSync: nodeSpawnSync, execFileSync } = require("child_process");
 const fs = require("fs");
@@ -111,7 +108,9 @@ const BLOCKED_ENV_KEY_PATTERN = /oauth[_.]?token|bearer[_.]?token|session_?cooki
 
 // Keys that must pass through filterEnv even though they match the pattern above.
 // CLAUDE_CODE_OAUTH_TOKEN is the legitimate auth mechanism — the CLI needs it.
-const CREDENTIAL_EXEMPT_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
+const CREDENTIAL_EXEMPT_KEYS = new Set([
+  'CLAUDE_CODE_OAUTH_TOKEN',
+]);
 
 function filterEnv(baseEnv, additionalEnv) {
   const filtered = {};
@@ -1203,7 +1202,7 @@ class SwiftAddonStub extends EventEmitter {
         }
 
         console.log('[claude-swift] vm.spawn() id=' + id + ' cmd=' + preparedSpawn.command);
-        return self.spawn(
+        const spawnResult = self.spawn(
           id,
           processName,
           preparedSpawn.command,
@@ -1215,6 +1214,8 @@ class SwiftAddonStub extends EventEmitter {
           allowedDomains,
           preparedSpawn.sharedCwdPath
         );
+
+        return spawnResult;
       },
 
       kill: (id, signal) => {
@@ -1467,6 +1468,10 @@ class SwiftAddonStub extends EventEmitter {
       const authKeys = Object.keys(envVars).filter(k => /ANTHROPIC|AUTH|TOKEN|API_KEY|OAUTH/i.test(k));
       if (authKeys.length > 0) {
         trace('spawn envVars auth keys from asar: ' + authKeys.join(', '));
+        const oauthVal = envVars.CLAUDE_CODE_OAUTH_TOKEN;
+        if (typeof oauthVal === 'string') {
+          trace('spawn OAUTH_TOKEN: present (len=' + oauthVal.length + ')');
+        }
       }
       trace('spawn envVars keys from asar: ' + Object.keys(envVars).join(', '));
     }

@@ -19,6 +19,86 @@ const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegis
 console.log('[Frame Fix] Wrapper v2.5 loaded');
 if (process.env.CLAUDE_DEVTOOLS === '1') console.log('[Frame Fix] DevTools mode enabled');
 
+// ── Bridge forwardEvent patch ──────────────────────────────────────────
+// The asar's sessions-bridge class has a forwardEvent method that drops
+// "result" and "stream_event" types. On macOS the VM's MITM proxy
+// forwards those to CCR instead. On Linux there's no proxy, so we patch
+// forwardEvent to stop dropping them — the bridge transport (already
+// connected) will POST them to CCR directly.
+//
+// Detection: the bridge class extends EventEmitter and subscribes to
+// "remote_session_start" immediately after creation. We intercept that
+// subscription to find the instance and patch its forwardEvent.
+(function patchBridgeForwardEvent() {
+  const EventEmitter = require('events').EventEmitter;
+  const origOn = EventEmitter.prototype.on;
+  let patched = false;
+
+  EventEmitter.prototype.on = function patchedOn(event) {
+    if (!patched && event === 'remote_session_start' && typeof this.forwardEvent === 'function') {
+      patched = true;
+      const originalForwardEvent = this.forwardEvent.bind(this);
+      const bridge = this;
+
+      this.forwardEvent = async function patchedForwardEvent(e) {
+        // The original filter drops result/stream_event. We need those
+        // forwarded on Linux since there's no VM proxy to handle it.
+        const session = bridge.activeSessions && bridge.activeSessions.get(e.sessionId);
+        const msg = e.message;
+        const msgType = msg && msg.type;
+        console.log('[bridge-patch] forwardEvent called: type=' + e.type
+          + ' msgType=' + msgType
+          + ' sessionId=' + e.sessionId
+          + ' hasSession=' + !!session
+          + ' hasTransport=' + !!(session && session.transport));
+        if (!session || e.type !== 'message' || !e.message) {
+          return originalForwardEvent(e);
+        }
+
+        // For types the original would NOT drop, call the original
+        if (msgType !== 'result' && msgType !== 'stream_event') {
+          return originalForwardEvent(e);
+        }
+
+        // For result/stream_event: POST via the bridge transport directly
+        if (!session.transport) {
+          console.warn('[bridge-patch] No transport for session ' + e.sessionId + ', dropping ' + msgType);
+          return;
+        }
+
+        // Build event with userMessageUuid if present (matches original logic)
+        let eventPayload = msg;
+        if (e.userMessageUuid && msgType !== 'user') {
+          eventPayload = { ...msg, user_message_uuid: e.userMessageUuid };
+        }
+
+        // Serialize writes through the session's writeQueue (same pattern
+        // as the original forwardEvent) to prevent interleaving.
+        session.writeQueue = (session.writeQueue || Promise.resolve()).then(async () => {
+          try {
+            if (!session.transport) return;
+            if (session.transport.closed) {
+              console.warn('[bridge-patch] transport closed for ' + e.sessionId);
+              return;
+            }
+            await session.transport.write(eventPayload);
+            console.log('[bridge-patch] write OK: ' + msgType + ' session=' + e.sessionId);
+          } catch (err) {
+            console.warn('[bridge-patch] Failed to write ' + msgType + ' for session '
+              + e.sessionId + ': ' + (err && err.message));
+          }
+        });
+        await session.writeQueue;
+      };
+
+      console.log('[bridge-patch] forwardEvent patched on sessions-bridge instance');
+      // Restore original .on to avoid overhead on all future subscriptions
+      EventEmitter.prototype.on = origOn;
+    }
+    return origOn.apply(this, arguments);
+  };
+})();
+
 // ── Asset Dumper (--devtools only) ──────────────────────────────────────
 // Saves JS/CSS/JSON from claude.ai and *.anthropic.com to:
 //   ~/.local/state/claude-cowork/logs/webapp-assets/
@@ -270,12 +350,18 @@ function installLinuxMenuInterceptors(electronModule) {
 
   if (app && typeof app.setApplicationMenu !== 'function') {
     app.setApplicationMenu = function(menu) {
+      global.__coworkApplicationMenu = menu;
       hideLinuxMenuBars(electronModule);
       return undefined;
     };
   }
 
   menuApi.setApplicationMenu = function(menu) {
+    global.__coworkApplicationMenu = menu;
+    // Call the original so Electron's native binding stays intact
+    if (originalSetAppMenu) {
+      try { originalSetAppMenu(menu); } catch (_) {}
+    }
     hideLinuxMenuBars(electronModule);
     return undefined;
   };
@@ -333,6 +419,20 @@ try {
 const REAL_PLATFORM = process.platform;
 const REAL_ARCH = process.arch;
 const DIRS = createDirs();
+
+// ── Global shortcut default ───────────────────────────────────────────
+// The asar defaults to Alt+Space on darwin, Ctrl+Alt+Space on Linux.
+// Since we spoof darwin, it picks Alt+Space which conflicts with most
+// Linux WM launchers. Set the Linux default if the user hasn't chosen one.
+try {
+  const configPath = path.join(DIRS.claudeConfigRoot, 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (!cfg.globalShortcut) {
+    cfg.globalShortcut = 'Ctrl+Alt+Space';
+    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
+    console.log('[Frame Fix] Set default global shortcut to Ctrl+Alt+Space');
+  }
+} catch (_) {}
 
 const vmBundleDir = DIRS.claudeVmBundlesDir;
 const vmTmpDir = path.join(vmBundleDir, 'tmp');
@@ -399,11 +499,35 @@ try {
   // non-darwin branch does (returns the command unchanged).
   const disclaimerDir = path.join(path.dirname(process.resourcesPath), 'Helpers');
   const disclaimerBin = path.join(disclaimerDir, 'disclaimer');
-  if (!fs.existsSync(disclaimerBin)) {
+  {
     try {
       fs.mkdirSync(disclaimerDir, { recursive: true, mode: 0o755 });
-      fs.writeFileSync(disclaimerBin, '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
-      console.log('[disclaimer] Created passthrough: ' + disclaimerBin);
+      // The disclaimer wrapper must resolve macOS binary paths to Linux equivalents.
+      // The asar constructs paths like claude.app/Contents/MacOS/claude because
+      // we spoof darwin. Without this redirect, exec hits "Exec format error"
+      // on the arm64 Mach-O binary and marketplace/plugin operations fail (exit 126).
+      fs.writeFileSync(disclaimerBin, [
+        '#!/bin/sh',
+        'CMD="$1"',
+        'shift',
+        'case "$CMD" in',
+        '  *claude.app/Contents/MacOS/claude|*claude.app/Contents/MacOS/Claude)',
+        '    for c in \\',
+        '      "$HOME/.local/bin/claude" \\',
+        '      "$HOME/.local/share/mise/shims/claude" \\',
+        '      "$HOME/.asdf/shims/claude" \\',
+        '      "/usr/local/bin/claude" \\',
+        '      "/usr/bin/claude"; do',
+        '      [ -x "$c" ] && exec "$c" "$@"',
+        '    done',
+        '    echo "disclaimer: no Linux claude binary found" >&2',
+        '    exit 1',
+        '    ;;',
+        'esac',
+        'exec "$CMD" "$@"',
+        '',
+      ].join('\n'), { mode: 0o755 });
+      console.log('[disclaimer] Installed platform-aware wrapper: ' + disclaimerBin);
     } catch (de) {
       console.warn('[disclaimer] Could not create passthrough: ' + de.message);
     }
@@ -454,69 +578,39 @@ fs.renameSync = function(oldPath, newPath) {
 // 1. PLATFORM SPOOFING - Immediate, before any app code
 // ============================================================
 
-// Helper to check if call is from system/electron internals
-function isAppCodeCall(stack) {
-  return stack.includes('/.vite/build/index.js') ||
-         stack.includes('/app.asar/.vite/build/index.js') ||
-         stack.includes('/app.asar/') ||
-         stack.includes('/linux-app-extracted/');
-}
+// ── Platform spoofing (performance-critical) ──────────────────────────
+// App code must see darwin/arm64; Electron/Node internals need the real
+// platform. The old approach used new Error().stack on every access —
+// stack trace generation is extremely expensive in V8 and process.platform
+// is read thousands of times per second (CSS, feature detection, Node APIs).
+//
+// New approach: default to 'darwin' (the common case — app code dominates
+// runtime reads) and only use the real platform during the brief module-
+// loading phase when Electron internals call it. A reentrant guard flips
+// to real values when OUR code is executing (frame-fix-wrapper, stubs).
+let _inOurCode = false;
 
-function isSystemCall(stack) {
-  if (isAppCodeCall(stack)) {
-    return false;
-  }
-  return stack.includes('node:internal') ||
-         stack.includes('internal/modules') ||
-         stack.includes('node:electron') ||
-         stack.includes('electron/js2c') ||
-         stack.includes('electron.asar') ||
-         stack.includes('frame-fix-wrapper');
+function withRealPlatform(fn) {
+  _inOurCode = true;
+  try { return fn(); }
+  finally { _inOurCode = false; }
 }
 
 Object.defineProperty(process, 'platform', {
-  get() {
-    const stack = new Error().stack || '';
-    // System/Electron internals need real platform
-    if (isSystemCall(stack)) {
-      return REAL_PLATFORM;
-    }
-    // App code sees darwin (for event logging, feature detection, etc)
-    return 'darwin';
-  },
+  get() { return _inOurCode ? REAL_PLATFORM : 'darwin'; },
   configurable: true
 });
 
 Object.defineProperty(process, 'arch', {
-  get() {
-    const stack = new Error().stack || '';
-    if (isSystemCall(stack)) {
-      return REAL_ARCH;
-    }
-    return 'arm64';
-  },
+  get() { return _inOurCode ? REAL_ARCH : 'arm64'; },
   configurable: true
 });
 
-// Also spoof os.platform() and os.arch()
 const originalOsPlatform = os.platform;
 const originalOsArch = os.arch;
 
-os.platform = function() {
-  const stack = new Error().stack || '';
-  if (isSystemCall(stack)) {
-    return originalOsPlatform.call(os);
-  }
-  return 'darwin';
-};
-
-os.arch = function() {
-  const stack = new Error().stack || '';
-  if (isSystemCall(stack)) {
-    return originalOsArch.call(os);
-  }
-  return 'arm64';
-};
+os.platform = function() { return _inOurCode ? originalOsPlatform.call(os) : 'darwin'; };
+os.arch = function() { return _inOurCode ? originalOsArch.call(os) : 'arm64'; };
 
 // Spoof macOS version
 const originalGetSystemVersion = process.getSystemVersion;
@@ -545,7 +639,7 @@ const SESSIONS_BASE = DIRS.claudeSessionsBase;
 
 console.log('[Cowork] Linux support enabled - VM will be emulated');
 
-const IGNORED_LIVE_MESSAGE_TYPES = new Set(['queue-operation', 'rate_limit_event']);
+const { isIgnoredLiveEventType } = require('./cowork/session_normalization.js');
 
 function parseRequestedProcessId(args) {
   for (const arg of args) {
@@ -597,23 +691,9 @@ async function getCoworkProcessRunningState(processId) {
   return { running: false, exitCode: 0 };
 }
 
+// Delegates to consolidated isIgnoredLiveEventType in session_normalization.js
 function getIgnoredLiveMessageType(channel, payload) {
-  if (typeof channel !== 'string') {
-    return null;
-  }
-  if (!channel.includes('LocalAgentModeSessions_$_onEvent') && !channel.includes('LocalSessions_$_onEvent')) {
-    return null;
-  }
-  if (!payload || typeof payload !== 'object') {
-    return null;
-  }
-
-  if (payload.type === 'message' && payload.message && typeof payload.message === 'object') {
-    const messageType = payload.message.type;
-    return IGNORED_LIVE_MESSAGE_TYPES.has(messageType) ? messageType : null;
-  }
-
-  return IGNORED_LIVE_MESSAGE_TYPES.has(payload.type) ? payload.type : null;
+  return isIgnoredLiveEventType(channel, payload);
 }
 
 function logIgnoredLiveMessage(channel, payload, messageType) {
@@ -682,6 +762,48 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
   process.on(sig, () => gracefulQuit(`Received ${sig}`));
 }
 
+// ============================================================
+// SINGLE-INSTANCE LOCK + PROTOCOL URL FORWARDING
+// ============================================================
+// The asar takes the macOS codepath (open-url event) because we
+// spoof darwin. But Linux doesn't have macOS's Apple Event URL
+// routing — launching claude:// URLs spawns a NEW Electron process.
+// Fix: acquire a single-instance lock ourselves. When a second
+// instance launches (e.g. from a claude:// protocol redirect after
+// Google auth), extract the URL from argv, emit 'open-url' on the
+// app (which the asar IS listening for), and quit the duplicate.
+try {
+  const { app } = require('electron');
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    // We're the second instance — the first will get 'second-instance'
+    console.log('[SingleInstance] Another instance is running, quitting');
+    app.quit();
+  } else {
+    app.on('second-instance', (_event, argv, _workingDirectory) => {
+      // Find the claude:// URL in the argv of the second instance
+      const url = argv.find(a => a.startsWith('claude://'));
+      if (url) {
+        console.log('[SingleInstance] Forwarding protocol URL to open-url handler');
+        // Emit open-url so the asar's existing handler processes it
+        app.emit('open-url', { preventDefault() {} }, url);
+      }
+      // Focus the existing window
+      const { BrowserWindow } = require('electron');
+      const wins = BrowserWindow.getAllWindows();
+      if (wins.length > 0) {
+        const win = wins[0];
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      }
+    });
+    console.log('[SingleInstance] Lock acquired, protocol URL forwarding enabled');
+  }
+} catch (e) {
+  console.error('[SingleInstance] Failed to set up single-instance lock:', e.message);
+}
+
 Module.prototype.require = function(id) {
   // Intercept claude-swift to inject our Linux implementation
   if (id && id.includes('@ant/claude-swift')) {
@@ -724,8 +846,21 @@ Module.prototype.require = function(id) {
 
   const module = originalRequire.apply(this, arguments);
 
-  if (id === 'electron') {
+  if (id === 'electron' && !global.__coworkElectronPatched) {
+    global.__coworkElectronPatched = true;
     console.log('[Frame Fix] Intercepting electron module');
+
+    // Spoof user agent to macOS so the webapp shows the correct branding
+    // and auth flows (Google OAuth checks UA for platform compatibility).
+    // Without this, the webapp sees "Linux" in the UA and falls through
+    // to "Claude for Windows" or breaks Google auth.
+    const app = resolveElectronApp(module);
+    if (app) {
+      const electronVersion = process.versions.electron || '33.0.0';
+      const chromeVersion = process.versions.chrome || '130.0.0.0';
+      app.userAgentFallback = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/' + (app.getVersion ? app.getVersion() : '1.0.0') + ' Chrome/' + chromeVersion + ' Electron/' + electronVersion + ' Safari/537.36';
+      console.log('[Frame Fix] User agent spoofed to macOS');
+    }
 
     // Intercept ipcMain.handle to inject our VM handlers
     const { ipcMain } = module;
@@ -767,6 +902,26 @@ Module.prototype.require = function(id) {
           if (isProactiveChannel(channel)) return; // Already registered proactively
           return originalHandle(channel, overrideHandler);
         }
+
+        // Debounce connect-to-mcp-server: the renderer fires duplicate connect
+        // requests because mcp-server-auto-reconnect and mcpConfigChange both
+        // arrive within ~1ms, each triggering a connect call. The asar's handler
+        // already deduplicates (won't double-launch), but the IPC round-trips
+        // add noise and latency. Coalesce calls for the same server within 2s.
+        if (channel === 'connect-to-mcp-server') {
+          const _mcpConnectTimes = new Map();
+          const wrappedHandler = async function(event, serverName) {
+            const now = Date.now();
+            const lastConnect = _mcpConnectTimes.get(serverName);
+            if (lastConnect && (now - lastConnect) < 2000) {
+              return; // Already connecting this server
+            }
+            _mcpConnectTimes.set(serverName, now);
+            return handler(event, serverName);
+          };
+          return originalHandle(channel, wrappedHandler);
+        }
+
         return originalHandle(channel, asarAdapter.wrapHandler(channel, handler));
       };
 
@@ -815,6 +970,11 @@ Module.prototype.require = function(id) {
       });
     }
 
+    // MCP reconnect dedup: suppress auto-reconnect sends that overlap with
+    // mcpConfigChange (both fire within ~1ms, causing the renderer to send
+    // duplicate connect-to-mcp-server calls for each server).
+    let _lastMcpConfigChangeTs = 0;
+
     function patchEventDispatch(contents) {
       if (!contents || _sendPatched.has(contents) || typeof contents.send !== 'function') {
         return;
@@ -822,11 +982,26 @@ Module.prototype.require = function(id) {
       _sendPatched.add(contents);
       const originalSend = contents.send.bind(contents);
       contents.send = function(channel, ...args) {
+        // Fallback filter — always available, even before orchestrator
         const ignoredType = getIgnoredLiveMessageType(channel, args[0]);
         if (ignoredType) {
           logIgnoredLiveMessage(channel, args[0], ignoredType);
           return false;
         }
+
+        // MCP dedup: track mcpConfigChange timing and suppress overlapping
+        // auto-reconnect sends. Both arrive within ~1ms; the config change
+        // already tells the renderer which servers need reconnection.
+        if (typeof channel === 'string') {
+          if (channel.includes('mcpConfigChange')) {
+            _lastMcpConfigChangeTs = Date.now();
+          } else if (channel === 'mcp-server-auto-reconnect') {
+            if (Date.now() - _lastMcpConfigChangeTs < 500) {
+              return false;
+            }
+          }
+        }
+
         return originalSend(channel, ...args);
       };
     }
@@ -885,6 +1060,51 @@ Module.prototype.require = function(id) {
       }
     }
     installLinuxMenuInterceptors(module);
+
+    // ── Portal GlobalShortcuts (Wayland) ────────────────────────────────
+    // Electron's globalShortcut.register() uses X11 XGrabKey which silently
+    // fails on Wayland. Wrap it to route through xdg-desktop-portal instead.
+    // On X11, leave the original alone — it works natively.
+    if (REAL_PLATFORM === 'linux'
+        && (process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland')
+        && module.globalShortcut) {
+      try {
+        const { createPortalShortcuts } = require('./cowork/portal_shortcuts.js');
+        const portal = createPortalShortcuts();
+        if (portal.isAvailable()) {
+          const origRegister = module.globalShortcut.register.bind(module.globalShortcut);
+          const origUnregister = module.globalShortcut.unregister.bind(module.globalShortcut);
+          const origUnregisterAll = module.globalShortcut.unregisterAll.bind(module.globalShortcut);
+          const origIsRegistered = module.globalShortcut.isRegistered.bind(module.globalShortcut);
+
+          module.globalShortcut.register = function(accelerator, callback) {
+            portal.register(accelerator, callback);
+            return true; // Match Electron's sync return
+          };
+          module.globalShortcut.unregister = function(accelerator) {
+            portal.unregister(accelerator);
+          };
+          module.globalShortcut.unregisterAll = function() {
+            portal.unregisterAll();
+          };
+          module.globalShortcut.isRegistered = function(accelerator) {
+            return portal.isRegistered(accelerator);
+          };
+
+          // Clean up on quit
+          const quitApp = resolveElectronApp(module);
+          if (quitApp) {
+            quitApp.on('will-quit', () => portal.destroy());
+          }
+
+          console.log('[Frame Fix] Global shortcuts routed through xdg-desktop-portal');
+        } else {
+          console.log('[Frame Fix] GlobalShortcuts portal not available, using Electron default');
+        }
+      } catch (e) {
+        console.warn('[Frame Fix] Portal shortcuts setup failed:', e.message);
+      }
+    }
 
   }
 
