@@ -998,52 +998,6 @@ Module.prototype.require = function(id) {
         };
         console.log('[Cowork] webContents.ipc.handle() patched for override interception');
       }
-
-      // Patch webContents.ipc.on() to fix origin validation for file:// preloads.
-      // The asar's DesktopIntl_getInitialLocale handler uses sendSync (ipc.on) and
-      // validates senderFrame.url origin. Since we run via `electron .asar` rather
-      // than a packaged app, app.isPackaged=false, so the file:// origin check
-      // fails. The preload crashes before contextBridge.exposeInMainWorld("process")
-      // runs, causing "process is not defined" in renderers.
-      //
-      // Fix: wrap the handler so origin validation sees a passing origin.
-      if (contents.ipc && typeof contents.ipc.on === 'function' && !contents.ipc.__coworkOnPatched) {
-        contents.ipc.__coworkOnPatched = true;
-        const origIpcOn = contents.ipc.on.bind(contents.ipc);
-        contents.ipc.on = function(channel, listener) {
-          if (typeof channel === 'string' && channel.includes('DesktopIntl_$_')) {
-            const wrappedListener = function(event, ...args) {
-              // Proxy senderFrame so origin validation (nue) passes for file:// URLs
-              const sf = event.senderFrame;
-              if (sf && sf.url && sf.url.startsWith('file:')) {
-                const proxiedEvent = new Proxy(event, {
-                  get(target, prop) {
-                    if (prop === 'senderFrame') {
-                      return new Proxy(sf, {
-                        get(frame, frameProp) {
-                          if (frameProp === 'url') return 'https://claude.ai/local-shell';
-                          return typeof frame[frameProp] === 'function'
-                            ? frame[frameProp].bind(frame)
-                            : frame[frameProp];
-                        },
-                      });
-                    }
-                    return target[prop];
-                  },
-                  set(target, prop, value) {
-                    target[prop] = value;
-                    return true;
-                  },
-                });
-                return listener.call(this, proxiedEvent, ...args);
-              }
-              return listener.call(this, event, ...args);
-            };
-            return origIpcOn(channel, wrappedListener);
-          }
-          return origIpcOn(channel, listener);
-        };
-      }
     }, 'web-contents-created');
 
     // Also patch on browser-window-created for certainty

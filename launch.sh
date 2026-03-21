@@ -90,6 +90,16 @@ if [ -f "$INDEX_JS" ] && grep -q 'titleBarOverlay' "$INDEX_JS"; then
   sed -i 's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g' "$INDEX_JS"
 fi
 
+# Fix origin validation: the asar's nue() function rejects file:// preloads
+# when app.isPackaged is false (which it always is when running via `electron .asar`).
+# This causes the mainWindow/findInPage preloads to crash before exposing `process`
+# via contextBridge, breaking the renderer shell. Drop the isPackaged requirement
+# for file:// origins — the content is inside our asar, so there's no security risk.
+if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!0' "$INDEX_JS"; then
+  echo "Patching origin validation for file:// preloads..."
+  sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
+fi
+
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
 _needs_repack=false
