@@ -585,11 +585,8 @@ fs.renameSync = function(oldPath, newPath) {
 Object.defineProperty(process, 'platform', { get() { return 'darwin'; }, configurable: true });
 Object.defineProperty(process, 'arch', { get() { return 'arm64'; }, configurable: true });
 
-const originalOsPlatform = os.platform;
-const originalOsArch = os.arch;
-
-os.platform = function() { return _inOurCode ? originalOsPlatform.call(os) : 'darwin'; };
-os.arch = function() { return _inOurCode ? originalOsArch.call(os) : 'arm64'; };
+os.platform = function() { return 'darwin'; };
+os.arch = function() { return 'arm64'; };
 
 // Spoof macOS version
 const originalGetSystemVersion = process.getSystemVersion;
