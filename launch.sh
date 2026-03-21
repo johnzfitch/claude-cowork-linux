@@ -216,7 +216,6 @@ _electron_args=(
   "./${ASAR_FILE}"
   --no-sandbox
   --password-store="$PASSWORD_STORE"
-  --enable-features=GlobalShortcutsPortal
 )
 
 if [[ "$_perf" == true ]]; then
