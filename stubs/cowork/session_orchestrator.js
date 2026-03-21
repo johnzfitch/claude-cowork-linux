@@ -690,14 +690,16 @@ class SessionOrchestrator {
       trace,
     });
     
-    // If bridge session is available, configure CLI for dispatch mode.
-    // --resume <ccId> and --session-id <cse_*> are independent codepaths:
-    //   --resume: local transcript hydration + desktop writing bubble
-    //   --session-id: remote CCR routing via v2 transport
-    // --fork-session is required when combining --resume with --session-id.
-    // Keep ALL original args intact, just append bridge flags for CCR.
+    // If bridge session is available, mark dispatch mode but do NOT modify
+    // CLI args. The asar has its own bridge transport ([transport:bridge],
+    // [transport:sse]) that connects to CCR, receives work items, and
+    // relays CLI stdout events back. The CLI just runs normally with
+    // --resume and produces output on stdout. The remote session ID
+    // (cse_*) is NOT a CLI concept — it's managed by the asar's bridge.
+    //
+    // The asar already sets USE_CCR_V2, ENVIRONMENT_KIND, etc. in its
+    // spawn env vars, so our injection is defense-in-depth only.
     if (bridgeSession) {
-      hostArgs.push('--session-id', bridgeSession.remoteSessionId, '--fork-session');
       Object.assign(translatedEnvVars, {
         CLAUDE_CODE_ENTRYPOINT: translatedEnvVars.CLAUDE_CODE_ENTRYPOINT || 'claude-desktop',
         CLAUDE_CODE_ENVIRONMENT_KIND: 'bridge',
@@ -705,9 +707,9 @@ class SessionOrchestrator {
         CLAUDE_CODE_USE_CCR_V2: '1',
         CLAUDE_CODE_USE_COWORK_PLUGINS: '1',
       });
-      trace('[bridge-creds] env injection: USE_CCR_V2=1, ENVIRONMENT_KIND=bridge'
-        + ', session-id=' + bridgeSession.remoteSessionId
-        + ' (original args preserved, --session-id + --fork-session appended)');
+      trace('[bridge-creds] dispatch detected: remoteSessionId='
+        + bridgeSession.remoteSessionId
+        + ' (asar bridge transport handles CCR relay, CLI args untouched)');
     }
 
     // Step 11: Check for resume arguments and session metadata

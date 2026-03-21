@@ -209,13 +209,11 @@ test('prepareVmSpawn activates v2 bridge transport when bridge-state.json has cs
   });
 
   assert.equal(result.success, true);
-  // Args: --session-id + --fork-session appended for CCR, original --resume preserved
-  const sessionIdIdx = result.args.indexOf('--session-id');
-  assert.ok(sessionIdIdx !== -1, '--session-id should be appended');
-  assert.equal(result.args[sessionIdIdx + 1], 'cse_remote-created');
-  assert.ok(result.args.includes('--fork-session'), '--fork-session required with --resume + --session-id');
-  assert.ok(result.args.includes('--resume'), '--resume preserved for desktop transcript tracking');
-  // Env: v2 transport flags, OAuth token preserved
+  // Args: untouched — asar's bridge transport handles CCR, CLI runs normally
+  assert.ok(result.args.includes('--resume'), '--resume preserved');
+  assert.equal(result.args.indexOf('--session-id'), -1, 'no --session-id (cse_* is not a CLI concept)');
+  assert.equal(result.args.indexOf('--fork-session'), -1, 'no --fork-session');
+  // Env: dispatch flags (defense-in-depth, asar already sets these)
   assert.equal(result.envVars.CLAUDE_CODE_ENVIRONMENT_KIND, 'bridge');
   assert.equal(result.envVars.CLAUDE_CODE_USE_CCR_V2, '1');
   assert.equal(result.envVars.CLAUDE_CODE_IS_COWORK, '1');

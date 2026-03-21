@@ -299,14 +299,12 @@ test('_resolveBridgeSession activates v2 transport when bridge-state has cse_* e
   assert.equal(result.envVars.CLAUDE_CODE_ENVIRONMENT_KIND, 'bridge');
   assert.equal(result.envVars.CLAUDE_CODE_USE_CCR_V2, '1');
   assert.equal(result.envVars.CLAUDE_CODE_IS_COWORK, '1');
-  // OAuth token preserved — CLI uses it to self-bootstrap /bridge
+  // OAuth token preserved
   assert.equal(result.envVars.CLAUDE_CODE_OAUTH_TOKEN, 'test-oauth');
-  // --session-id + --fork-session appended for CCR, original --resume preserved
-  const sessionIdIdx = result.args.indexOf('--session-id');
-  assert.ok(sessionIdIdx !== -1, '--session-id should be appended');
-  assert.equal(result.args[sessionIdIdx + 1], 'cse_dispatch_1');
-  assert.ok(result.args.includes('--fork-session'), '--fork-session required with --resume + --session-id');
-  assert.ok(result.args.includes('--resume'), '--resume preserved for desktop transcript tracking');
+  // Args untouched — asar's bridge transport handles CCR relay
+  assert.ok(result.args.includes('--resume'), '--resume preserved');
+  assert.equal(result.args.indexOf('--session-id'), -1, 'no --session-id (cse_* managed by asar bridge)');
+  assert.equal(result.args.indexOf('--fork-session'), -1, 'no --fork-session');
   assert.ok(result.bridgeSession);
   assert.equal(result.bridgeSession.source, 'bridge_state');
 });
