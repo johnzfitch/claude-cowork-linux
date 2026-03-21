@@ -214,10 +214,10 @@ show_archive_info() {
 
     # Try to get version/sha from fetch-dmg.js for comparison
     local fetch_script=""
-    if [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
-        fetch_script="$INSTALL_DIR/fetch-dmg.js"
-    elif [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
+    if [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
         fetch_script="$(dirname "$0")/fetch-dmg.js"
+    elif [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
+        fetch_script="$INSTALL_DIR/fetch-dmg.js"
     fi
     if [[ -n "$fetch_script" ]] && command_exists node; then
         local json
@@ -236,10 +236,11 @@ fetch_archive_via_node() {
     local archive_path="$1"
     local fetch_script
 
-    if [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
-        fetch_script="$INSTALL_DIR/fetch-dmg.js"
-    elif [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
+    # Prefer script dir (invoked source) over install dir (may be stale)
+    if [[ -f "$(dirname "$0")/fetch-dmg.js" ]]; then
         fetch_script="$(dirname "$0")/fetch-dmg.js"
+    elif [[ -f "$INSTALL_DIR/fetch-dmg.js" ]]; then
+        fetch_script="$INSTALL_DIR/fetch-dmg.js"
     else
         log_warn "fetch-dmg.js not found, skipping auto-download"
         return 1
@@ -247,8 +248,10 @@ fetch_archive_via_node() {
 
     log_info "Fetching latest download URL..."
     local archive_url
-    archive_url=$(node "$fetch_script" --url 2>/dev/null) || {
-        log_warn "Failed to fetch download URL via Node.js"
+    local fetch_err
+    archive_url=$(node "$fetch_script" --url 2>&1) || {
+        fetch_err="$archive_url"
+        log_warn "Failed to fetch download URL: ${fetch_err}"
         return 1
     }
 
