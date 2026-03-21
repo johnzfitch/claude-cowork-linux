@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -13,6 +14,11 @@ const {
 const {
   createSessionStore,
 } = require('../../../stubs/cowork/session_store.js');
+const {
+  sanitizeTranscriptProjectKey,
+} = require('../../../stubs/cowork/transcript_store.js');
+
+const SESSION_ORCHESTRATOR_MODULE_PATH = require.resolve('../../../stubs/cowork/session_orchestrator.js');
 
 function createTempDir(t) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-session-orchestrator-'));
@@ -81,7 +87,7 @@ test('prepareVmSpawn replaces stale --resume target with the best resumable tran
   fs.mkdirSync(sessionsBase, { recursive: true });
   const sessionDirectory = path.join(tempRoot, 'local_session');
   const configDir = path.join(sessionDirectory, '.claude');
-  const preferredProjectKey = '-home-zack-dev-claude-cowork-linux';
+  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
 
   writeTranscript(sessionDirectory, 'wrong-project', 'stale-cli-session', [
     '{"type":"queue-operation","operation":"enqueue"}',
@@ -116,7 +122,7 @@ test('prepareVmSpawn removes --resume when transcript candidate is not resumable
   fs.mkdirSync(sessionsBase, { recursive: true });
   const sessionDirectory = path.join(tempRoot, 'local_session');
   const configDir = path.join(sessionDirectory, '.claude');
-  const preferredProjectKey = '-home-zack-dev-claude-cowork-linux';
+  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
 
   writeTranscript(sessionDirectory, preferredProjectKey, 'queue-only-session', [
     '{"type":"queue-operation","operation":"enqueue"}',
@@ -222,13 +228,71 @@ test('prepareVmSpawn activates v2 bridge transport when bridge-state.json has cs
   assert.equal(result.bridgeSession.source, 'bridge_state');
 });
 
+test('prepareVmSpawn injects local skills plugin-dir for bridge cowork spawns', (t) => {
+  const tempRoot = createTempDir(t);
+  const tempHome = path.join(tempRoot, 'home');
+  const xdgConfigHome = path.join(tempRoot, 'xdg');
+  const bridgePath = path.join(tempRoot, 'bridge-state.json');
+  const localSkillsDir = path.join(tempHome, '.claude', 'skills');
+
+  fs.mkdirSync(localSkillsDir, { recursive: true });
+  fs.mkdirSync(xdgConfigHome, { recursive: true });
+  fs.writeFileSync(bridgePath, JSON.stringify({
+    'user:org': { remoteSessionId: 'cse_remote-created', localSessionId: 'local_ditto_org' },
+  }), 'utf8');
+
+  const script = `
+    const path = require('path');
+    const { createSessionOrchestrator } = require(${JSON.stringify(SESSION_ORCHESTRATOR_MODULE_PATH)});
+    const orchestrator = createSessionOrchestrator({
+      appSupportRoot: '/app/support',
+      bridgeStatePath: ${JSON.stringify(bridgePath)},
+      canonicalizePathForHostAccess: (inputPath) => inputPath,
+      canonicalizeVmPathStrict: (inputPath) => inputPath,
+      createMountSymlinks: () => true,
+      filterEnv: (baseEnv, additionalEnv) => ({ ...baseEnv, ...additionalEnv }),
+      findSessionName: () => null,
+      resolveClaudeBinaryPath: () => '/usr/local/bin/claude-real',
+      sessionsBase: '/tmp/cowork-session-tests',
+      trace: () => {},
+      translateVmPathStrict: (inputPath) => inputPath,
+    });
+    const result = orchestrator.prepareVmSpawn({
+      processId: 'proc-bridge-plugin',
+      command: '/usr/local/bin/claude',
+      args: ['--resume', 'legacy-cli-session'],
+      envVars: {},
+      additionalMounts: null,
+      sharedCwdPath: null,
+    });
+    process.stdout.write(JSON.stringify(result));
+  `;
+
+  const child = spawnSync(process.execPath, ['-e', script], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: tempHome,
+      XDG_CONFIG_HOME: xdgConfigHome,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+  const result = JSON.parse(child.stdout);
+  assert.equal(result.envVars.CLAUDE_CODE_IS_COWORK, '1');
+  assert.equal(result.envVars.CLAUDE_CODE_USE_COWORK_PLUGINS, '1');
+  assert.ok(result.args.includes('--plugin-dir'));
+  assert.ok(result.args.includes(localSkillsDir));
+});
+
 test('prepareFlatlineRetry clears only cliSessionId and removes --resume for the fresh retry', (t) => {
   const tempRoot = createTempDir(t);
   const sessionId = 'local_demo_session';
   const metadataPath = path.join(tempRoot, sessionId + '.json');
   const sessionDirectory = metadataPath.replace(/\.json$/, '');
   const configDir = path.join(sessionDirectory, '.claude');
-  const preferredProjectKey = '-home-zack-dev-canonical-workspace';
+  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/canonical-workspace');
 
   fs.mkdirSync(configDir, { recursive: true });
   writeTranscript(sessionDirectory, preferredProjectKey, 'resume-cli-session', [

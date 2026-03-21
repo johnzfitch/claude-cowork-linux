@@ -2,6 +2,8 @@
 # Test launcher for claude-cowork-linux
 # Uses the AppImage's electron with a repacked app.asar (bakes in stubs/patches)
 
+set -o pipefail
+
 # Change to script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -177,7 +179,7 @@ fi
 
 # Run electron with the repacked app.asar
 echo "Launching Claude Desktop (electron: $ELECTRON_BIN, password-store: $PASSWORD_STORE)..."
-exec "$ELECTRON_BIN" \
+"$ELECTRON_BIN" \
   "./${ASAR_FILE}" \
   --no-sandbox \
   --disable-gpu \
@@ -185,3 +187,4 @@ exec "$ELECTRON_BIN" \
   --enable-features=GlobalShortcutsPortal \
   "$@" \
   2>&1 | tee -a "$LOG_DIR/startup.log"
+exit "${PIPESTATUS[0]}"

@@ -22,9 +22,9 @@ cd "$SCRIPT_DIR"
 step "1. Environment Check"
 
 # Check problematic vars are disabled
-if env | grep -qE "^CLAUDE_DEV_TOOLS=|^CLAUDE_USE_WAYLAND=|^ENABLE_WAYLAND=|^DISABLE_DBUS_CONFIG="; then
+if env | grep -qE "^CLAUDE_DEVTOOLS=|^CLAUDE_USE_WAYLAND=|^ENABLE_WAYLAND=|^DISABLE_DBUS_CONFIG="; then
     fail "Problematic env vars still set. Run: source ~/.zshrc"
-    env | grep -E "^CLAUDE_DEV_TOOLS=|^CLAUDE_USE_WAYLAND=|^ENABLE_WAYLAND=|^DISABLE_DBUS_CONFIG=" || true
+    env | grep -E "^CLAUDE_DEVTOOLS=|^CLAUDE_USE_WAYLAND=|^ENABLE_WAYLAND=|^DISABLE_DBUS_CONFIG=" || true
     echo ""
     warn "Fix: source ~/.zshrc (or open new terminal)"
 else

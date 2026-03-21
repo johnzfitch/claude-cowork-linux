@@ -4,6 +4,7 @@ const path = require('path');
 
 const {
   chooseSessionTranscriptCandidate,
+  getTranscriptProjectKeyCandidates,
   sanitizeTranscriptProjectKey,
 } = require('./transcript_store.js');
 
@@ -348,9 +349,11 @@ class SessionStore {
     const preferredRoot = getPreferredSessionRoot(normalizedSessionData);
     const sessionDirectory = metadataPath.replace(/\.json$/i, '');
     const preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+    const preferredProjectKeys = getTranscriptProjectKeyCandidates(preferredRoot);
     const transcriptCandidate = chooseSessionTranscriptCandidate({
       sessionDirectory,
       preferredProjectKey,
+      preferredProjectKeys,
       cliSessionId: normalizedSessionData.cliSessionId,
     });
 
@@ -483,9 +486,11 @@ class SessionStore {
 
     let preferredRoot = getPreferredSessionRoot(nextSessionData);
     let preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+    let preferredProjectKeys = getTranscriptProjectKeyCandidates(preferredRoot);
     let transcriptCandidate = chooseSessionTranscriptCandidate({
       sessionDirectory,
       preferredProjectKey,
+      preferredProjectKeys,
       cliSessionId: nextSessionData.cliSessionId,
     });
 
@@ -498,9 +503,11 @@ class SessionStore {
         nextSessionData.userSelectedFolders = [recoveredRoot];
         preferredRoot = recoveredRoot;
         preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+        preferredProjectKeys = getTranscriptProjectKeyCandidates(preferredRoot);
         transcriptCandidate = chooseSessionTranscriptCandidate({
           sessionDirectory,
           preferredProjectKey,
+          preferredProjectKeys,
           cliSessionId: nextSessionData.cliSessionId,
         });
       }

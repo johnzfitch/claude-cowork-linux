@@ -11,6 +11,9 @@ const {
   isRemoteConversationMissingError,
   planSessionResume,
 } = require('../../../stubs/cowork/resume_coordinator.js');
+const {
+  sanitizeTranscriptProjectKey,
+} = require('../../../stubs/cowork/transcript_store.js');
 
 function createTempSessionDir(t) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-resume-coordinator-'));
@@ -42,7 +45,7 @@ test('getPreferredProjectKey derives the transcript project key from selected wo
   const sessionData = createSessionData();
   assert.equal(
     getPreferredProjectKey(sessionData),
-    '-home-zack-dev-claude-cowork-linux',
+    sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux'),
   );
 });
 

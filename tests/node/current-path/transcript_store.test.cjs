@@ -7,6 +7,7 @@ const path = require('path');
 const {
   buildTranscriptContinuityPlan,
   chooseSessionTranscriptCandidate,
+  getTranscriptProjectKeyCandidates,
   inspectTranscriptText,
   listConversationEntriesFromTranscriptFile,
   listTranscriptCandidatesForSession,
@@ -58,6 +59,13 @@ test('inspectTranscriptText marks metadata-only transcripts as not resumable', (
   assert.equal(inspection.conversationEntryCount, 0);
 });
 
+test('sanitizeTranscriptProjectKey no longer collides for structurally different paths', () => {
+  assert.notEqual(
+    sanitizeTranscriptProjectKey('/tmp/a-b'),
+    sanitizeTranscriptProjectKey('/tmp/a/b'),
+  );
+});
+
 test('listTranscriptCandidatesForSession inspects transcript conversation counts', (t) => {
   const sessionDir = createTempSessionDir(t);
   const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
@@ -83,6 +91,29 @@ test('listTranscriptCandidatesForSession inspects transcript conversation counts
   assert.equal(good.conversationEntryCount, 1);
   assert.equal(bad.resumable, false);
   assert.equal(bad.conversationEntryCount, 0);
+});
+
+test('chooseSessionTranscriptCandidate still finds legacy transcript directories for the preferred workspace', (t) => {
+  const sessionDir = createTempSessionDir(t);
+  const preferredRoot = '/home/zack/dev/claude-cowork-linux';
+  const preferredProjectKey = sanitizeTranscriptProjectKey(preferredRoot);
+  const legacyProjectKey = '-home-zack-dev-claude-cowork-linux';
+
+  writeTranscript(sessionDir, legacyProjectKey, 'legacy-cli-session', [
+    '{"type":"user","message":{"role":"user","content":"recover context"}}',
+    '{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"restored"}]}}',
+  ]);
+
+  const chosen = chooseSessionTranscriptCandidate({
+    sessionDirectory: sessionDir,
+    preferredProjectKey,
+    preferredProjectKeys: getTranscriptProjectKeyCandidates(preferredRoot),
+    cliSessionId: 'legacy-cli-session',
+  });
+
+  assert.ok(chosen);
+  assert.equal(chosen.cliSessionId, 'legacy-cli-session');
+  assert.equal(chosen.projectKey, legacyProjectKey);
 });
 
 test('chooseSessionTranscriptCandidate prefers resumable preferred-project transcript over stale current candidate', (t) => {

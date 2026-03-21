@@ -12,6 +12,9 @@ const {
   getSessionDirectory,
   isLocalSessionMetadataFilePath,
 } = require('../../../stubs/cowork/session_store.js');
+const {
+  sanitizeTranscriptProjectKey,
+} = require('../../../stubs/cowork/transcript_store.js');
 
 function createTempRoot(t) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-session-store-'));
@@ -54,7 +57,7 @@ test('normalizeSessionRecord repairs synthetic cwd and cliSessionId from transcr
   const sessionId = 'local_demo_session';
   const metadataPath = writeSessionFixture(localAgentRoot, sessionId, 'user/org');
   const sessionDirectory = metadataPath.replace(/\.json$/, '');
-  const preferredProjectKey = '-home-zack-dev-claude-cowork-linux';
+  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
 
   writeTranscript(sessionDirectory, 'wrong-project', 'stale-cli-session', [
     '{"type":"queue-operation","operation":"enqueue"}',
@@ -83,7 +86,7 @@ test('normalizeSerializedMetadata rewrites synthetic cwd and stale cliSessionId 
   const sessionId = 'local_demo_session';
   const metadataPath = writeSessionFixture(localAgentRoot, sessionId, 'user/org');
   const sessionDirectory = metadataPath.replace(/\.json$/, '');
-  const preferredProjectKey = '-home-zack-dev-claude-cowork-linux';
+  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
 
   writeTranscript(sessionDirectory, 'wrong-project', 'stale-cli-session', [
     '{"type":"queue-operation","operation":"enqueue"}',
@@ -218,7 +221,7 @@ test('resolveMutationSessionId prefers the session that was just opened for the 
   const duplicateSessionId = 'local_duplicate_session';
   const activeMetadataPath = writeSessionFixture(localAgentRoot, activeSessionId, 'user/org');
   const duplicateMetadataPath = writeSessionFixture(localAgentRoot, duplicateSessionId, 'user/org');
-  const projectKey = '-home-zack-dev-claude-cowork-linux';
+  const projectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
 
   const activeSerialized = JSON.stringify({
     sessionId: activeSessionId,

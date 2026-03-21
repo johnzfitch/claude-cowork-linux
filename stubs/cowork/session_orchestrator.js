@@ -603,33 +603,7 @@ class SessionOrchestrator {
       }
     }
 
-    // Inject user's local skills as an additional --plugin-dir so Cowork
-    // sessions can access skills installed outside the server-provisioned set.
-    // Only inject when CLAUDE_CODE_IS_COWORK is in the spawn envVars (set by
-    // the asar for Cowork sessions, not present during unit tests).
-    if (translatedEnvVars && translatedEnvVars.CLAUDE_CODE_IS_COWORK) {
-      const localSkillsDir = GLOBAL_CLAUDE_DIR + path.sep + 'skills';
-      if (fs.existsSync(localSkillsDir)) {
-        const alreadyIncluded = hostArgs.some((arg, i) =>
-          i > 0 && hostArgs[i - 1] === '--plugin-dir' && arg === localSkillsDir
-        );
-        if (!alreadyIncluded) {
-          hostArgs.push('--plugin-dir', localSkillsDir);
-          trace('Injected local skills --plugin-dir: ' + localSkillsDir);
-        }
-      }
-    }
-
-    // Step 8: Resolve working directory for CLI spawn
-    const hostCwdPath = resolveHostCwdPath({
-      args: hostArgs,
-      canonicalizePathForHostAccess,
-      configDirPath: hostConfigDir,
-      sharedCwdPath,
-      trace,
-    });
-
-    // Step 9: Update sessions API with OAuth token if available
+    // Step 8: Update sessions API with OAuth token if available
     const spawnOAuthToken = translatedEnvVars.CLAUDE_CODE_OAUTH_TOKEN;
     if (
       spawnOAuthToken && typeof spawnOAuthToken === 'string' && spawnOAuthToken.trim() &&
@@ -639,7 +613,7 @@ class SessionOrchestrator {
       trace('Injected spawn-time OAuth token into sessions API');
     }
 
-    // Step 10: Attempt bridge session resolution for dispatch mode.
+    // Step 9: Attempt bridge session resolution for dispatch mode.
     // bridge-state.json has one entry per dispatch environment — all task
     // spawns share the same remoteSessionId (cse_*).
     const metadataPath = deriveSessionMetadataPath(hostConfigDir);
@@ -670,6 +644,32 @@ class SessionOrchestrator {
         + bridgeSession.remoteSessionId
         + ' (asar bridge transport handles CCR relay, CLI args untouched)');
     }
+
+    // Inject user's local skills as an additional --plugin-dir so Cowork
+    // sessions can access skills installed outside the server-provisioned set.
+    // Bridge-mode spawns are marked above because the asar does not always set
+    // the cowork flags before we prepare the CLI invocation.
+    if (translatedEnvVars && translatedEnvVars.CLAUDE_CODE_IS_COWORK) {
+      const localSkillsDir = GLOBAL_CLAUDE_DIR + path.sep + 'skills';
+      if (fs.existsSync(localSkillsDir)) {
+        const alreadyIncluded = hostArgs.some((arg, i) =>
+          i > 0 && hostArgs[i - 1] === '--plugin-dir' && arg === localSkillsDir
+        );
+        if (!alreadyIncluded) {
+          hostArgs.push('--plugin-dir', localSkillsDir);
+          trace('Injected local skills --plugin-dir: ' + localSkillsDir);
+        }
+      }
+    }
+
+    // Step 10: Resolve working directory for CLI spawn
+    const hostCwdPath = resolveHostCwdPath({
+      args: hostArgs,
+      canonicalizePathForHostAccess,
+      configDirPath: hostConfigDir,
+      sharedCwdPath,
+      trace,
+    });
 
     // Step 11: Check for resume arguments and session metadata
     // Only strip --resume when we have positive evidence the transcript is

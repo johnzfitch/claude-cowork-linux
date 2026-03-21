@@ -119,6 +119,11 @@ describe('Audit Items 18-21: Path utilities parity between dirs.js and swift stu
       );
     });
 
+    it('allows valid filenames that contain double dots without escaping the sessions root', () => {
+      const result = dirsModule.translateVmPathStrict(sessionsBase, '/sessions/my-session/mnt/foo..bar.txt');
+      assert.equal(result, path.join(sessionsBase, 'my-session/mnt/foo..bar.txt'));
+    });
+
     it('rejects non-string input', () => {
       assert.throws(
         () => dirsModule.translateVmPathStrict(sessionsBase, null),

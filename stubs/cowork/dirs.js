@@ -172,10 +172,16 @@ function translateVmPathStrict(sessionsBase, vmPath) {
     throw new Error('Not a VM path: ' + vmPath);
   }
   const sessionPath = vmPath.substring('/sessions/'.length);
-  if (sessionPath.includes('..') || !isPathSafe(sessionsBase, sessionPath)) {
+  const normalizedSessionPath = path.normalize(sessionPath);
+  if (
+    path.isAbsolute(normalizedSessionPath) ||
+    normalizedSessionPath === '..' ||
+    normalizedSessionPath.startsWith('..' + path.sep) ||
+    !isPathSafe(sessionsBase, normalizedSessionPath)
+  ) {
     throw new Error('Path traversal blocked: ' + vmPath);
   }
-  return path.join(sessionsBase, sessionPath);
+  return path.join(sessionsBase, normalizedSessionPath);
 }
 
 function canonicalizeHostPath(hostPath) {

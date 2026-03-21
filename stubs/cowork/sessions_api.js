@@ -200,6 +200,17 @@ function buildAuthHeaders(authToken, organizationUuid) {
   return headers;
 }
 
+function hasUsableAuthHeaders(headers) {
+  return !!(
+    headers &&
+    typeof headers === 'object' &&
+    (
+      (typeof headers.Authorization === 'string' && headers.Authorization.trim()) ||
+      (typeof headers.Cookie === 'string' && headers.Cookie.trim())
+    )
+  );
+}
+
 function normalizeSessionListResponse(responseBody) {
   // Extract session array from various API response formats.
   // Handles both direct arrays and nested structures ({data: [...]} or {sessions: [...]})
@@ -273,12 +284,10 @@ class SessionsApi {
 
   isConfigured() {
     // Check if client has both base URL and auth token configured
-    return (
-      typeof this._baseUrl === 'string' &&
-      this._baseUrl.length > 0 &&
-      typeof this.getAuthToken() === 'string' &&
-      this.getAuthToken().length > 0
-    );
+    if (typeof this._baseUrl !== 'string' || this._baseUrl.length === 0) {
+      return false;
+    }
+    return hasUsableAuthHeaders(buildAuthHeaders(this.getAuthToken(), this._organizationUuid));
   }
 
   updateAuthToken(authToken) {
@@ -293,7 +302,16 @@ class SessionsApi {
   requestJson(method, pathname, payload, options) {
     // Execute authenticated JSON API request and parse response.
     // Returns normalized result with success flag, response body, and status code.
-    if (!this.isConfigured()) {
+    if (typeof this._baseUrl !== 'string' || this._baseUrl.length === 0) {
+      return {
+        success: false,
+        error: 'Sessions API is not configured',
+        skipped: true,
+      };
+    }
+
+    const authToken = this.getAuthToken();
+    if (typeof authToken !== 'string' || authToken.length === 0) {
       return {
         success: false,
         error: 'Sessions API is not configured',
@@ -306,10 +324,18 @@ class SessionsApi {
     const organizationUuid = typeof requestOptions.organizationUuid === 'string' && requestOptions.organizationUuid.trim()
       ? requestOptions.organizationUuid.trim()
       : this._organizationUuid;
+    const requestHeaders = buildAuthHeaders(authToken, organizationUuid);
+    if (!hasUsableAuthHeaders(requestHeaders)) {
+      return {
+        success: false,
+        error: 'Sessions API auth token is invalid',
+        skipped: true,
+      };
+    }
     const request = {
       method,
       url: this._baseUrl + pathname,
-      headers: buildAuthHeaders(this.getAuthToken(), organizationUuid),
+      headers: requestHeaders,
       body: payload === undefined ? null : JSON.stringify(payload),
     };
 

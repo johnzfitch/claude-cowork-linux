@@ -2,7 +2,7 @@
 #
 # Claude Desktop for Linux - Installer
 #
-# Usage: ./install.sh [path/to/Claude.dmg|zip]
+# Usage: ./install.sh [--force] [path/to/Claude.dmg|zip]
 #        curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh | bash
 #
 # This script:
@@ -27,6 +27,7 @@ set -euo pipefail
 VERSION="4.0.0"
 REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
 INSTALL_DIR="$HOME/.local/share/claude-desktop"
+INSTALL_FORCE=0
 
 # Minimum expected archive size (100MB) — applies to both DMG and ZIP
 MIN_ARCHIVE_SIZE=100000000
@@ -53,6 +54,33 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 die() { log_error "$@"; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+confirm_destructive_removal() {
+    local target="$1"
+    local reason="$2"
+    local command_display="rm -rf \"$target\""
+
+    [[ -e "$target" ]] || return 0
+
+    if [[ "$INSTALL_FORCE" == "1" || "${CLAUDE_INSTALL_FORCE:-}" == "1" ]]; then
+        log_warn "$reason"
+        log_info "Proceeding due to --force: $command_display"
+        return 0
+    fi
+
+    if [[ ! -t 0 ]]; then
+        die "$reason Refusing to run without interactive confirmation. Re-run with --force. Command: $command_display"
+    fi
+
+    log_warn "$reason"
+    log_warn "About to run: $command_display"
+    printf 'Type "yes" to continue: '
+
+    local confirmation=""
+    read -r confirmation
+    log_info "Confirmation response: ${confirmation:-<empty>}"
+    [[ "$confirmation" == "yes" ]] || die "Aborted removal of $target"
+}
 
 format_size() {
     local size=$1
@@ -149,7 +177,7 @@ setup_repo() {
     else
         # Remove stale non-git install dir if present
         if [[ -d "$INSTALL_DIR" ]]; then
-            log_warn "Removing previous (non-git) installation at $INSTALL_DIR"
+            confirm_destructive_removal "$INSTALL_DIR" "Removing previous (non-git) installation at $INSTALL_DIR."
             rm -rf "$INSTALL_DIR"
         fi
         log_info "Cloning claude-cowork-linux to $INSTALL_DIR..."
@@ -347,7 +375,7 @@ extract_archive() {
 
     # Extract asar into linux-app-extracted/
     if [[ -d "$target_dir" ]]; then
-        log_info "Removing previous linux-app-extracted..."
+        confirm_destructive_removal "$target_dir" "Removing previous linux-app-extracted at $target_dir."
         rm -rf "$target_dir"
     fi
     log_info "Extracting app.asar..."
@@ -471,8 +499,8 @@ mkdir -p "\$LOG_DIR"
 cd "\$COWORK_DIR"
 
 case "\${1:-}" in
-    --devtools) shift; export CLAUDE_DEVTOOLS=1; exec ./launch.sh "\$@" 2>&1 | tee -a "\$LOG_DIR/startup.log" ;;
-    --debug)    shift; export CLAUDE_TRACE=1; exec ./launch.sh "\$@" 2>&1 | tee -a "\$LOG_DIR/startup.log" ;;
+    --devtools) shift; export CLAUDE_DEVTOOLS=1; exec ./launch.sh "\$@" ;;
+    --debug)    shift; export CLAUDE_TRACE=1; exec ./launch.sh "\$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
     *)
         nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \
@@ -814,15 +842,28 @@ doctor() {
 # ============================================================
 
 main() {
-    # Handle --doctor flag
-    if [[ "${1:-}" == "--doctor" ]]; then
-        doctor
-        exit $?
-    fi
+    local archive_arg=""
+    for arg in "$@"; do
+        case "$arg" in
+            --doctor)
+                doctor
+                exit $?
+                ;;
+            --force|--yes)
+                INSTALL_FORCE=1
+                ;;
+            *)
+                if [[ -n "$archive_arg" ]]; then
+                    die "Unexpected argument: $arg"
+                fi
+                archive_arg="$arg"
+                ;;
+        esac
+    done
 
     # Positional arg → CLAUDE_ARCHIVE (CLAUDE_DMG kept for backward compat)
-    if [[ -n "${1:-}" && -z "${CLAUDE_ARCHIVE:-}" && -z "${CLAUDE_DMG:-}" ]]; then
-        export CLAUDE_ARCHIVE="$1"
+    if [[ -n "$archive_arg" && -z "${CLAUDE_ARCHIVE:-}" && -z "${CLAUDE_DMG:-}" ]]; then
+        export CLAUDE_ARCHIVE="$archive_arg"
     fi
 
     echo ""
@@ -890,6 +931,7 @@ main() {
     echo "  claude-desktop --debug      Enable trace logging"
     echo "  claude-desktop --devtools   Open with DevTools"
     echo "  claude-desktop --doctor     Run preflight diagnostics"
+    echo "  bash install.sh --force     Skip confirmation before replacing old installs"
     echo ""
     echo "Update:"
     echo "  cd $INSTALL_DIR && git pull && bash install.sh"

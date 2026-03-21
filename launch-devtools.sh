@@ -1,6 +1,8 @@
 #!/bin/bash
 # Launcher with DevTools enabled for debugging
 
+set -o pipefail
+
 # Change to script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -34,8 +36,9 @@ fi
 mkdir -p "$LOG_DIR"
 
 # Launch with DevTools (--inspect enables Node.js inspector)
-exec "$ELECTRON_BIN" \
+"$ELECTRON_BIN" \
   "./${ASAR_FILE}" \
   --no-sandbox \
   --disable-gpu \
   --inspect "$@" 2>&1 | tee -a "$LOG_DIR/startup.log"
+exit "${PIPESTATUS[0]}"

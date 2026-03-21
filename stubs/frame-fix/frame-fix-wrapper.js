@@ -76,9 +76,13 @@ if (process.env.CLAUDE_DEVTOOLS === '1') console.log('[Frame Fix] DevTools mode 
         // as the original forwardEvent) to prevent interleaving.
         session.writeQueue = (session.writeQueue || Promise.resolve()).then(async () => {
           try {
-            if (session.transport) {
-              await session.transport.write(eventPayload);
+            if (!session.transport) return;
+            if (session.transport.closed) {
+              console.warn('[bridge-patch] transport closed for ' + e.sessionId);
+              return;
             }
+            await session.transport.write(eventPayload);
+            console.log('[bridge-patch] write OK: ' + msgType + ' session=' + e.sessionId);
           } catch (err) {
             console.warn('[bridge-patch] Failed to write ' + msgType + ' for session '
               + e.sessionId + ': ' + (err && err.message));
