@@ -26,10 +26,7 @@
  *
  * Based on reverse engineering of swift_addon.node via pyghidra-lite
  */
-console.log('[claude-swift-stub] LOADING MODULE - this confirms our stub is being used');
-console.log('[claude-swift-stub] process.platform at load time:', process.platform);
-console.log('[claude-swift-stub] Stack at load:', new Error().stack.split('\n').slice(1, 5).join('\n'));
-console.log('[claude-swift-stub] Module filename:', __filename);
+console.log('[claude-swift-stub] Module loaded: ' + __filename);
 const EventEmitter = require("events");
 const { spawn: nodeSpawn, spawnSync: nodeSpawnSync, execFileSync } = require("child_process");
 const fs = require("fs");
