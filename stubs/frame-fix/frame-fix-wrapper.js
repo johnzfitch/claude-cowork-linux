@@ -578,33 +578,12 @@ fs.renameSync = function(oldPath, newPath) {
 // 1. PLATFORM SPOOFING - Immediate, before any app code
 // ============================================================
 
-// ── Platform spoofing (performance-critical) ──────────────────────────
-// App code must see darwin/arm64; Electron/Node internals need the real
-// platform. The old approach used new Error().stack on every access —
-// stack trace generation is extremely expensive in V8 and process.platform
-// is read thousands of times per second (CSS, feature detection, Node APIs).
-//
-// New approach: default to 'darwin' (the common case — app code dominates
-// runtime reads) and only use the real platform during the brief module-
-// loading phase when Electron internals call it. A reentrant guard flips
-// to real values when OUR code is executing (frame-fix-wrapper, stubs).
-let _inOurCode = false;
-
-function withRealPlatform(fn) {
-  _inOurCode = true;
-  try { return fn(); }
-  finally { _inOurCode = false; }
-}
-
-Object.defineProperty(process, 'platform', {
-  get() { return _inOurCode ? REAL_PLATFORM : 'darwin'; },
-  configurable: true
-});
-
-Object.defineProperty(process, 'arch', {
-  get() { return _inOurCode ? REAL_ARCH : 'arm64'; },
-  configurable: true
-});
+// ── Platform spoofing ─────────────────────────────────────────────────
+// The asar expects darwin/arm64. All stub code uses the REAL_PLATFORM
+// constant (captured before spoofing) to make platform-conditional
+// decisions, so process.platform can safely return 'darwin' unconditionally.
+Object.defineProperty(process, 'platform', { get() { return 'darwin'; }, configurable: true });
+Object.defineProperty(process, 'arch', { get() { return 'arm64'; }, configurable: true });
 
 const originalOsPlatform = os.platform;
 const originalOsArch = os.arch;

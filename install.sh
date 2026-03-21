@@ -356,9 +356,18 @@ extract_archive() {
     local asar_file="$claude_app/Contents/Resources/app.asar"
     [[ -f "$asar_file" ]] || die "app.asar not found at: $asar_file"
 
-    # Extract on top of existing tree (overwrites stale files, preserves extras)
+    # Extract to a temp dir, then replace — avoids stale files from prior versions
     log_info "Extracting app.asar..."
-    asar extract "$asar_file" "$target_dir" || die "Failed to extract app.asar"
+    local asar_tmp="$target_dir.asar-extract-$$"
+    rm -rf "$asar_tmp"
+    asar extract "$asar_file" "$asar_tmp" || { rm -rf "$asar_tmp"; die "Failed to extract app.asar"; }
+    # Preserve resources/ (i18n, icons) across extractions since they come from
+    # the DMG, not the asar. Everything else is replaced cleanly.
+    if [[ -d "$target_dir/resources" ]]; then
+        mv "$target_dir/resources" "$asar_tmp/resources" 2>/dev/null || true
+    fi
+    rm -rf "$target_dir"
+    mv "$asar_tmp" "$target_dir"
 
     # Copy unpacked native modules if present
     local unpacked="$claude_app/Contents/Resources/app.asar.unpacked"
