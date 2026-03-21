@@ -694,9 +694,10 @@ class SessionOrchestrator {
     // --resume <ccId> and --session-id <cse_*> are independent codepaths:
     //   --resume: local transcript hydration + desktop writing bubble
     //   --session-id: remote CCR routing via v2 transport
-    // Keep ALL original args intact, just append --session-id for CCR.
+    // --fork-session is required when combining --resume with --session-id.
+    // Keep ALL original args intact, just append bridge flags for CCR.
     if (bridgeSession) {
-      hostArgs.push('--session-id', bridgeSession.remoteSessionId);
+      hostArgs.push('--session-id', bridgeSession.remoteSessionId, '--fork-session');
       Object.assign(translatedEnvVars, {
         CLAUDE_CODE_ENTRYPOINT: translatedEnvVars.CLAUDE_CODE_ENTRYPOINT || 'claude-desktop',
         CLAUDE_CODE_ENVIRONMENT_KIND: 'bridge',
@@ -706,7 +707,7 @@ class SessionOrchestrator {
       });
       trace('[bridge-creds] env injection: USE_CCR_V2=1, ENVIRONMENT_KIND=bridge'
         + ', session-id=' + bridgeSession.remoteSessionId
-        + ' (original args preserved, --session-id appended)');
+        + ' (original args preserved, --session-id + --fork-session appended)');
     }
 
     // Step 11: Check for resume arguments and session metadata

@@ -270,10 +270,11 @@ test('claude-swift provisions a remote session via bridge-state.json and /bridge
 
   assert.equal(result.exits.length, 1);
   assert.equal(result.exits[0].code, 0);
-  // Args: --session-id appended for CCR, --resume preserved for desktop tracking
+  // Args: --session-id + --fork-session appended for CCR, --resume preserved
   const sessionIdIdx = spawnedArgs.indexOf('--session-id');
   assert.ok(sessionIdIdx !== -1, '--session-id should be appended');
   assert.equal(spawnedArgs[sessionIdIdx + 1], 'cse_remote-created');
+  assert.ok(spawnedArgs.includes('--fork-session'), '--fork-session required with --resume + --session-id');
   assert.ok(spawnedArgs.includes('--resume'), '--resume preserved for desktop transcript tracking');
   assert.ok(spawnedArgs.includes('legacy-cli-session'), '--resume value preserved');
   // Env: v2 transport, OAuth preserved for CLI self-bootstrap

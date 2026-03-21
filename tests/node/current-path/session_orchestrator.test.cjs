@@ -209,10 +209,11 @@ test('prepareVmSpawn activates v2 bridge transport when bridge-state.json has cs
   });
 
   assert.equal(result.success, true);
-  // Args: --session-id appended for CCR, original --resume preserved for local tracking
+  // Args: --session-id + --fork-session appended for CCR, original --resume preserved
   const sessionIdIdx = result.args.indexOf('--session-id');
   assert.ok(sessionIdIdx !== -1, '--session-id should be appended');
   assert.equal(result.args[sessionIdIdx + 1], 'cse_remote-created');
+  assert.ok(result.args.includes('--fork-session'), '--fork-session required with --resume + --session-id');
   assert.ok(result.args.includes('--resume'), '--resume preserved for desktop transcript tracking');
   // Env: v2 transport flags, OAuth token preserved
   assert.equal(result.envVars.CLAUDE_CODE_ENVIRONMENT_KIND, 'bridge');
