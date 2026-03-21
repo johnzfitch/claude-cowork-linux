@@ -494,8 +494,8 @@ mkdir -p "\$LOG_DIR"
 cd "\$COWORK_DIR"
 
 case "\${1:-}" in
-    --devtools) shift; export CLAUDE_DEVTOOLS=1; exec ./launch.sh "\$@" ;;
-    --debug)    shift; export CLAUDE_TRACE=1; exec ./launch.sh "\$@" ;;
+    --devtools) export CLAUDE_DEVTOOLS=1; exec ./launch.sh "\$@" ;;
+    --debug)    export CLAUDE_TRACE=1; exec ./launch.sh "\$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
     *)
         nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \

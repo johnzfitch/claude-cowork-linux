@@ -163,7 +163,7 @@ for arg in "$@"; do
   elif [[ "$arg" == "--perf" ]]; then
     _perf=true
     _dev=true
-  elif [[ "$arg" == "--dev" ]]; then
+  elif [[ "$arg" == "--dev" || "$arg" == "--debug" ]]; then
     _dev=true
   else
     _args+=("$arg")

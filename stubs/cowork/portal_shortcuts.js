@@ -433,7 +433,7 @@ function createPortalShortcuts() {
   }
 
   async function bindAll() {
-    if (!sessionHandle || !dbus || shortcuts.size === 0) return;
+    if (!sessionHandle || !dbus) return;
     try {
       // Body: oa(sa{sv})sa{sv} — session, shortcuts, parent_window, options
       const body = Buffer.alloc(4096);
@@ -494,7 +494,7 @@ function createPortalShortcuts() {
 
   function unregister(accel) {
     shortcuts.delete(accel);
-    if (sessionHandle && shortcuts.size > 0) bindAll().catch(() => {});
+    if (sessionHandle) bindAll().catch(() => {});
   }
 
   function unregisterAll() {

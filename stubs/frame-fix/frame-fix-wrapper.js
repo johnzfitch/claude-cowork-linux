@@ -1078,8 +1078,11 @@ Module.prototype.require = function(id) {
           const origIsRegistered = module.globalShortcut.isRegistered.bind(module.globalShortcut);
 
           module.globalShortcut.register = function(accelerator, callback) {
-            portal.register(accelerator, callback);
-            return true; // Match Electron's sync return
+            portal.register(accelerator, callback).then(ok => {
+              if (!ok) console.warn('[Frame Fix] Portal shortcut failed for', accelerator, '— falling back to Electron');
+              if (!ok) origRegister(accelerator, callback);
+            }).catch(() => origRegister(accelerator, callback));
+            return true; // sync API — async failure falls back to Electron native
           };
           module.globalShortcut.unregister = function(accelerator) {
             portal.unregister(accelerator);
