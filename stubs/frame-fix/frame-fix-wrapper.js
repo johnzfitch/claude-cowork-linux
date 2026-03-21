@@ -420,6 +420,20 @@ const REAL_PLATFORM = process.platform;
 const REAL_ARCH = process.arch;
 const DIRS = createDirs();
 
+// ── Global shortcut default ───────────────────────────────────────────
+// The asar defaults to Alt+Space on darwin, Ctrl+Alt+Space on Linux.
+// Since we spoof darwin, it picks Alt+Space which conflicts with most
+// Linux WM launchers. Set the Linux default if the user hasn't chosen one.
+try {
+  const configPath = path.join(DIRS.claudeConfigRoot, 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  if (!cfg.globalShortcut) {
+    cfg.globalShortcut = 'Ctrl+Alt+Space';
+    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
+    console.log('[Frame Fix] Set default global shortcut to Ctrl+Alt+Space');
+  }
+} catch (_) {}
+
 const vmBundleDir = DIRS.claudeVmBundlesDir;
 const vmTmpDir = path.join(vmBundleDir, 'tmp');
 const claudeVmBundle = path.join(vmBundleDir, 'claudevm.bundle');
