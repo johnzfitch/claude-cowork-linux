@@ -21,27 +21,27 @@ This project is a Linux compatibility layer for Claude Desktop's Cowork feature.
 ## Architecture: Where OAuth Lives
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────────┐
 │  Claude Desktop (Unmodified Anthropic Renderer)                   │
 │  ┌──────────────────────────────────────────────────────────────┐ │
-│  │  OAuth flow → Anthropic servers → Token stored in renderer  │ │
-│  │  (We never see this token)                                  │ │
+│  │  OAuth flow → Anthropic servers → Token stored in renderer   │ │
+│  │  (We never see this token)                                   │ │
 │  └──────────────────────────────────────────────────────────────┘ │
 │                          │ IPC                                    │
 │  ┌──────────────────────────────────────────────────────────────┐ │
-│  │  Our Stubs (this repo)                                      │ │
-│  │  ├─ Auth_$_doAuthInBrowser: opens browser only              │ │
-│  │  ├─ AuthRequest: opens browser only, isAvailable()→false    │ │
-│  │  ├─ addApprovedOauthToken: no-op (token discarded)          │ │
-│  │  ├─ filterEnv: passes CLAUDE_CODE_OAUTH_TOKEN, blocks rest  │ │
-│  │  └─ sdk_bridge: allowlisted env vars only                   │ │
+│  │  Our Stubs (this repo)                                       │ │
+│  │  ├─ Auth_$_doAuthInBrowser: opens browser only               │ │
+│  │  ├─ AuthRequest: opens browser only, isAvailable()→false     │ │
+│  │  ├─ addApprovedOauthToken: no-op (token discarded)           │ │
+│  │  ├─ filterEnv: passes CLAUDE_CODE_OAUTH_TOKEN, blocks rest   │ │
+│  │  └─ sdk_bridge: allowlisted env vars only                    │ │
 │  └──────────────────────────────────────────────────────────────┘ │
 │                          │ spawn                                  │
 │  ┌──────────────────────────────────────────────────────────────┐ │
-│  │  Claude Code CLI (Unmodified Anthropic Binary)              │ │
-│  │  └─ Authenticates independently via `claude login`          │ │
+│  │  Claude Code CLI (Unmodified Anthropic Binary)               │ │
+│  │  └─ Authenticates independently via `claude login`           │ │
 │  └──────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -237,7 +237,7 @@ Even though our stubs don't handle tokens, trace logs could theoretically captur
 | `stubs/@ant/claude-native/index.js` | **Our code** | Platform shims (notifications, keyboard, etc.) |
 | `stubs/cowork/*.js` (15 modules) | **Our code** | Session orchestration, IPC, credential handling |
 | `linux-app-extracted/ipc-handler-setup.js` | **Our code** | IPC handlers, session state, session persistence |
-| `app/.vite/build/index.js` | **Anthropic's code** (3 one-line patches) | Platform gate bypass only |
+| `app/.vite/build/index.js` | **Anthropic's code** (2 sed patches in `launch.sh`) | Titlebar + origin validation fixes only |
 | Claude Desktop renderer | **Unmodified** | Handles all OAuth, UI, API communication |
 | Claude Code binary | **Unmodified** | Handles its own authentication |
 

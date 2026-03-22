@@ -11,6 +11,7 @@ extracted-mac-claude-desktop-*.zip
 linux-app-extracted.zip
 .asar-cache/
 mainView.js
+index.js
 
 # AppImage and binaries
 *.AppImage
@@ -119,5 +120,8 @@ Thumbs.db
 .vscode/
 install-oneclick.sh.backup*
 __pycache__/
+
+# Perf metrics dumped by running Claude Desktop
+/1
 FAST-PASS-AUDIT.md
 LONG_AUDIT.md

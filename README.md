@@ -133,7 +133,7 @@ CLAUDE_DMG=~/Downloads/Claude-1.1.4010.dmg ./install.sh
 │  └── Platform helpers → Minimal compatibility shims             │
 ├─────────────────────────────────────────────────────────────────┤
 │  stubs/cowork/ — Orchestration Layer (15 modules)               │
-│  ├── session_orchestrator.js   → Coordinates spawn lifecycle   │
+│  ├── session_orchestrator.js   → Coordinates spawn lifecycle    │
 │  ├── asar_adapter.js            → Asar IPC API compatibility    │
 │  ├── process_manager.js         → Process lifecycle & I/O       │
 │  ├── resume_coordinator.js      → Session resume logic          │
@@ -150,7 +150,7 @@ CLAUDE_DMG=~/Downloads/Claude-1.1.4010.dmg ./install.sh
 │  └── file_identity.js           → Path normalization            │
 ├─────────────────────────────────────────────────────────────────┤
 │  Claude Code Binary                                             │
-│  └── Resolved from ~/.local/bin, mise/asdf shims, PATH, etc.   │
+│  └── Resolved from ~/.local/bin, mise/asdf shims, PATH, etc.    │
 │      (launch.sh replaces macOS Mach-O binary with Linux symlink)│
 └─────────────────────────────────────────────────────────────────┘
 ```

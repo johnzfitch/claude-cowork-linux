@@ -100,6 +100,7 @@ if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!
   sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
 fi
 
+
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
 _needs_repack=false
