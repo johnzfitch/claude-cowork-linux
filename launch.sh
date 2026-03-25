@@ -140,7 +140,7 @@ if [[ -d "$CLAUDE_CODE_DIR" ]]; then
       _ccd_bin="${_version_dir}claude"
       if [[ -f "$_ccd_bin" && ! -L "$_ccd_bin" ]]; then
         # Check if it's a Mach-O binary (not a Linux ELF)
-        if file "$_ccd_bin" 2>/dev/null | grep -q "Mach-O"; then
+        if file "$_ccd_bin" 2>/dev/null | grep -qE "Mach-O|ELF"; then
           echo "Fixing Code tab binary: replacing macOS binary with Linux symlink"
           echo "  $_ccd_bin -> $LINUX_CLAUDE_REAL"
           mv "$_ccd_bin" "${_ccd_bin}.macho-backup"
