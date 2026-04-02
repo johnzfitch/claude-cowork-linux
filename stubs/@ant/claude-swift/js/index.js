@@ -1105,7 +1105,7 @@ class SwiftAddonStub extends EventEmitter {
       },
       isGuestConnected: () => {
         console.log('[claude-swift] vm.isGuestConnected() called - returning', self._guestConnected);
-        return self._guestConnected;
+        return Promise.resolve(self._guestConnected);
       },
       getRunningStatus: () => {
         const status = {
@@ -1858,7 +1858,7 @@ class SwiftAddonStub extends EventEmitter {
   }
 
   isGuestConnected() {
-    return this._guestConnected;
+    return Promise.resolve(this._guestConnected);
   }
 
   getRunningStatus() {
