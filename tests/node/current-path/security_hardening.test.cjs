@@ -145,29 +145,32 @@ describe('FileSystem allowlist-only access', () => {
 // ============================================================
 
 describe('Bridge handlers', () => {
-  it('getBridgeConsent returns consented: false', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-    const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
-    const result = await handler();
-    assert.equal(result.consented, false);
-  });
+  // Bridge handler overrides were removed: they intercepted the asar's own
+  // LocalAgentModeSessionManager and replaced its dispatch handlers with no-ops,
+  // preventing the WebSocket bridge from ever connecting. The asar registers
+  // and manages these handlers internally; we must not shadow them.
+  const BRIDGE_CHANNELS = [
+    'claude.web_$_LocalAgentModeSessions_$_abandonBridgeEnvironment',
+    'claude.web_$_LocalAgentModeSessions_$_deleteBridgeAgentMemory',
+    'claude.web_$_LocalAgentModeSessions_$_deleteBridgeSession',
+    'claude.web_$_LocalAgentModeSessions_$_getBridgeConsent',
+    'claude.web_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled',
+    'claude.web_$_LocalAgentModeSessions_$_kickBridgePoll',
+    'claude.web_$_LocalAgentModeSessions_$_onBridgePermissionPreflight',
+    'claude.web_$_LocalAgentModeSessions_$_resetBridge',
+    'claude.web_$_LocalAgentModeSessions_$_resetBridgeSession',
+    'claude.web_$_LocalAgentModeSessions_$_respondBridgePermissionPreflight',
+    'claude.web_$_LocalAgentModeSessions_$_sessionsBridgeStatus',
+    'claude.web_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled',
+  ];
 
-  it('sessionsBridgeStatus reports disconnected', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-    const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_sessionsBridgeStatus', registry);
-    const result = await handler();
-    assert.equal(result.status, 'disconnected');
-    assert.equal(result.enabled, false);
-  });
-
-  it('setSessionsBridgeEnabled is a no-op', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-    const setHandler = matchOverride('claude.web_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
-    await setHandler({}, true);
-    const statusHandler = matchOverride('claude.web_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled', registry);
-    const result = await statusHandler();
-    assert.equal(result, false, 'bridge must remain disabled regardless of set calls');
-  });
+  for (const channel of BRIDGE_CHANNELS) {
+    it(`${channel.split('_$_').pop()} has no override (asar handler runs unimpeded)`, () => {
+      const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+      const handler = matchOverride(channel, registry);
+      assert.ok(!handler, 'override must not be registered');
+    });
+  }
 });
 
 // ============================================================

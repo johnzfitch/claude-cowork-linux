@@ -201,19 +201,8 @@ test('override registry covers all known broken handlers', () => {
     'MainWindowTitleBar_$_requestMainMenuPopup',
     'BrowserNavigation_$_requestMainMenuPopup',
     'CoworkSpaces_$_getAllSpaces',
-    // Phase 4: Dispatch/Bridge
-    'LocalAgentModeSessions_$_abandonBridgeEnvironment',
-    'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
-    'LocalAgentModeSessions_$_deleteBridgeSession',
-    'LocalAgentModeSessions_$_getBridgeConsent',
-    'LocalAgentModeSessions_$_getSessionsBridgeEnabled',
-    'LocalAgentModeSessions_$_kickBridgePoll',
-    'LocalAgentModeSessions_$_onBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_resetBridge',
-    'LocalAgentModeSessions_$_resetBridgeSession',
-    'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_sessionsBridgeStatus',
-    'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
+    // Phase 4: Dispatch/Bridge — handlers removed; the asar's own
+    // LocalAgentModeSessionManager registers and manages these internally.
     // Phase 4: MCP
     'LocalAgentModeSessions_$_mcpCallTool',
     'LocalAgentModeSessions_$_mcpListResources',
@@ -379,33 +368,12 @@ test('override handlers return fresh objects for object results (not shared refe
 });
 
 // ================================================================
-// Phase 4: Dispatch/Bridge handler tests
+// ================================================================
+// Phase 4: Dispatch/Bridge handler tests — removed.
+// Bridge handlers are now managed by the asar's own
+// LocalAgentModeSessionManager. Overriding them blocked the bridge.
 // ================================================================
 
-test('getBridgeConsent returns denied', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const handler = matchOverride('test_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
-  const result = await handler(null);
-  assert.deepEqual(result, { consented: false });
-});
-
-test('bridge status always reports disconnected', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const handler = matchOverride('test_$_LocalAgentModeSessions_$_sessionsBridgeStatus', registry);
-  const result = await handler();
-  assert.equal(result.status, 'disconnected');
-  assert.equal(result.enabled, false);
-});
-
-test('setSessionsBridgeEnabled is a no-op (stays disabled)', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const setHandler = matchOverride('test_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
-  const getHandler = matchOverride('test_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled', registry);
-  await setHandler(null, true);
-  assert.equal(await getHandler(), false);
-});
-
-// ================================================================
 // Phase 4: MCP handler tests
 // ================================================================
 
