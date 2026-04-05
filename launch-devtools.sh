@@ -19,6 +19,25 @@ else
   exit 1
 fi
 
+# Sync stubs into the extracted app tree before launching (mirrors launch.sh)
+if [ -f "stubs/@ant/claude-swift/js/index.js" ]; then
+  mkdir -p "linux-app-extracted/node_modules/@ant/claude-swift/js"
+  cp -f "stubs/@ant/claude-swift/js/index.js" "linux-app-extracted/node_modules/@ant/claude-swift/js/index.js"
+fi
+if [ -f "stubs/@ant/claude-native/index.js" ]; then
+  mkdir -p "linux-app-extracted/node_modules/@ant/claude-native"
+  cp -f "stubs/@ant/claude-native/index.js" "linux-app-extracted/node_modules/@ant/claude-native/index.js"
+fi
+for _ff_file in frame-fix-entry.js frame-fix-wrapper.js; do
+  if [ -f "stubs/frame-fix/$_ff_file" ]; then
+    cp -f "stubs/frame-fix/$_ff_file" "linux-app-extracted/$_ff_file"
+  fi
+done
+if [ -d "stubs/cowork" ]; then
+  mkdir -p "linux-app-extracted/cowork"
+  cp -f stubs/cowork/*.js "linux-app-extracted/cowork/"
+fi
+
 # Enable logging and DevTools
 export ELECTRON_ENABLE_LOGGING=1
 export CLAUDE_ENABLE_LOGGING=1

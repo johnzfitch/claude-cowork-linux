@@ -24,11 +24,19 @@ fi
 STUB_FILE="linux-app-extracted/node_modules/@ant/claude-swift/js/index.js"
 STUB_SRC_FILE="stubs/@ant/claude-swift/js/index.js"
 
+NATIVE_STUB_FILE="linux-app-extracted/node_modules/@ant/claude-native/index.js"
+NATIVE_STUB_SRC_FILE="stubs/@ant/claude-native/index.js"
+
 # Ensure the extracted app tree has the latest stubs baked in before packing.
 # This avoids relying on runtime module interception (ESM import() bypasses Module._load).
 if [ -f "$STUB_SRC_FILE" ]; then
   mkdir -p "$(dirname "$STUB_FILE")"
   cp -f "$STUB_SRC_FILE" "$STUB_FILE"
+fi
+
+if [ -f "$NATIVE_STUB_SRC_FILE" ]; then
+  mkdir -p "$(dirname "$NATIVE_STUB_FILE")"
+  cp -f "$NATIVE_STUB_SRC_FILE" "$NATIVE_STUB_FILE"
 fi
 
 # Sync frame-fix files so wrapper changes take effect without a full reinstall

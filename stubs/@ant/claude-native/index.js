@@ -22,8 +22,8 @@ const { ipcMain } = require('electron');
 const EventEmitter = require('events');
 const path = require('path');
 const fs = require('fs');
-const { createDirs } = require('../../cowork/dirs.js');
-const { redactCredentials } = require('../../cowork/credential_classifier.js');
+const { createDirs } = require('../../../cowork/dirs.js');
+const { redactCredentials } = require('../../../cowork/credential_classifier.js');
 
 const LOG_PREFIX = '[claude-native-stub]';
 const DIRS = global.__coworkDirs || createDirs();
