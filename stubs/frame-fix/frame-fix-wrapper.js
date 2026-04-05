@@ -1,3 +1,16 @@
+// Patch macOS-only systemPreferences methods that don't exist on Linux
+const { systemPreferences } = require('electron');
+if (typeof systemPreferences.setUserDefault !== 'function') {
+  systemPreferences.setUserDefault = function(key, type, value) {
+    // no-op on Linux
+  };
+}
+if (typeof systemPreferences.getUserDefault !== 'function') {
+  systemPreferences.getUserDefault = function(key, type) {
+    return undefined;
+  };
+}
+
 // Inject frame fix and Cowork support before main app loads
 const Module = require('module');
 const originalRequire = Module.prototype.require;
