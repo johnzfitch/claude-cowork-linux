@@ -1326,6 +1326,18 @@ class SwiftAddonStub extends EventEmitter {
         // In our stub, this is controlled by env var, so we just log
       },
 
+      // Guest request interface — required by the cliPluginBridge to
+      // classify CLI plugins. Without these the bridge skips init and
+      // dispatch reports "can't connect".
+      setGuestRequestCallback: (callback) => {
+        trace('vm.setGuestRequestCallback() registered');
+        self._guestRequestCallback = callback;
+      },
+
+      sendGuestResponse: async (id, resultJson, error) => {
+        trace('vm.sendGuestResponse() id=' + id);
+      },
+
       /**
        * Stop the VM
        */
