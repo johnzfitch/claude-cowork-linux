@@ -201,19 +201,8 @@ test('override registry covers all known broken handlers', () => {
     'MainWindowTitleBar_$_requestMainMenuPopup',
     'BrowserNavigation_$_requestMainMenuPopup',
     'CoworkSpaces_$_getAllSpaces',
-    // Phase 4: Dispatch/Bridge
-    'LocalAgentModeSessions_$_abandonBridgeEnvironment',
-    'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
-    'LocalAgentModeSessions_$_deleteBridgeSession',
-    'LocalAgentModeSessions_$_getBridgeConsent',
-    'LocalAgentModeSessions_$_getSessionsBridgeEnabled',
-    'LocalAgentModeSessions_$_kickBridgePoll',
-    'LocalAgentModeSessions_$_onBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_resetBridge',
-    'LocalAgentModeSessions_$_resetBridgeSession',
-    'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_sessionsBridgeStatus',
-    'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
+    // Phase 4: Dispatch/Bridge — handlers removed; the asar's own
+    // LocalAgentModeSessionManager registers and manages these internally.
     // Phase 4: MCP
     'LocalAgentModeSessions_$_mcpCallTool',
     'LocalAgentModeSessions_$_mcpListResources',
@@ -379,62 +368,12 @@ test('override handlers return fresh objects for object results (not shared refe
 });
 
 // ================================================================
-// Phase 4: Dispatch/Bridge handler tests
+// ================================================================
+// Phase 4: Dispatch/Bridge handler tests — removed.
+// Bridge handlers are now managed by the asar's own
+// LocalAgentModeSessionManager. Overriding them blocked the bridge.
 // ================================================================
 
-test('getBridgeConsent returns consented shape', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const handler = matchOverride('test_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
-  const result = await handler(null);
-  assert.deepEqual(result, { consented: true });
-});
-
-test('getSessionsBridgeEnabled defaults to false, persists after set', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const getHandler = matchOverride('test_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled', registry);
-  const setHandler = matchOverride('test_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
-  assert.equal(await getHandler(), false);
-  await setHandler(null, true);
-  assert.equal(await getHandler(), true);
-  await setHandler(null, false);
-  assert.equal(await getHandler(), false);
-});
-
-test('sessionsBridgeStatus reflects enabled state', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const statusHandler = matchOverride('test_$_LocalAgentModeSessions_$_sessionsBridgeStatus', registry);
-  const setHandler = matchOverride('test_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
-  const initial = await statusHandler();
-  assert.equal(initial.status, 'disconnected');
-  assert.equal(initial.enabled, false);
-  await setHandler(null, true);
-  const updated = await statusHandler();
-  assert.equal(updated.status, 'connected');
-  assert.equal(updated.enabled, true);
-});
-
-test('bridge no-op handlers return null', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const noOpSuffixes = [
-    'LocalAgentModeSessions_$_abandonBridgeEnvironment',
-    'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
-    'LocalAgentModeSessions_$_deleteBridgeSession',
-    'LocalAgentModeSessions_$_kickBridgePoll',
-    'LocalAgentModeSessions_$_onBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_resetBridge',
-    'LocalAgentModeSessions_$_resetBridgeSession',
-    'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
-  ];
-  for (const suffix of noOpSuffixes) {
-    const handler = matchOverride('test_$_' + suffix, registry);
-    assert.ok(handler, 'missing handler: ' + suffix);
-    const result = await handler(null);
-    assert.equal(result, null, suffix + ' should return null');
-  }
-});
-
-// ================================================================
 // Phase 4: MCP handler tests
 // ================================================================
 

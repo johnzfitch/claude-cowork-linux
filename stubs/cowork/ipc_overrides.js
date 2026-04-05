@@ -338,69 +338,11 @@ function createOverrideRegistry(getProcessState) {
 
     // ================================================================
     // LocalAgentModeSessions — Dispatch/Bridge handlers
-    // The asar's own bridge transport manages the CCR connection.
-    // These handlers provide the webapp-expected API surface so IPC
-    // calls don't fail with "No handler registered" errors.
+    // Removed: these overrides blocked the asar's own
+    // LocalAgentModeSessionManager from establishing the WebSocket
+    // bridge to wss://bridge.claudeusercontent.com. The asar registers
+    // and manages these handlers internally.
     // ================================================================
-
-    'LocalAgentModeSessions_$_abandonBridgeEnvironment': async (_event, ...args) => {
-      vlog('[ipc:abandonBridgeEnvironment] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_deleteBridgeAgentMemory': async (_event, ...args) => {
-      vlog('[ipc:deleteBridgeAgentMemory] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_deleteBridgeSession': async (_event, ...args) => {
-      vlog('[ipc:deleteBridgeSession] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_getBridgeConsent': async (_event, ...args) => {
-      vlog('[ipc:getBridgeConsent] called');
-      return { consented: true };
-    },
-
-    'LocalAgentModeSessions_$_getSessionsBridgeEnabled': async () => {
-      return bridgeState.enabled;
-    },
-
-    'LocalAgentModeSessions_$_kickBridgePoll': async (_event, ...args) => {
-      vlog('[ipc:kickBridgePoll] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_onBridgePermissionPreflight': async (_event, ...args) => {
-      vlog('[ipc:onBridgePermissionPreflight] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_resetBridge': async (_event, ...args) => {
-      vlog('[ipc:resetBridge] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_resetBridgeSession': async (_event, ...args) => {
-      vlog('[ipc:resetBridgeSession] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_respondBridgePermissionPreflight': async (_event, ...args) => {
-      vlog('[ipc:respondBridgePermissionPreflight] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_sessionsBridgeStatus': async () => {
-      return { status: bridgeState.enabled ? 'connected' : 'disconnected', enabled: bridgeState.enabled };
-    },
-
-    'LocalAgentModeSessions_$_setSessionsBridgeEnabled': async (_event, enabled) => {
-      bridgeState.enabled = !!enabled;
-      vlog('[ipc:setSessionsBridgeEnabled] enabled=' + bridgeState.enabled);
-      return null;
-    },
 
     // ================================================================
     // MCP handlers — Desktop MCP integration (not CLI MCP)
