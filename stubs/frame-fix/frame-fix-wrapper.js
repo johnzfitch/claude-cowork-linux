@@ -939,6 +939,11 @@ Module.prototype.require = function(id) {
         console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess');
         return true;
       };
+      module.systemPreferences.setUserDefault = function() {};
+      module.systemPreferences.getUserDefault = function() { return null; };
+      module.systemPreferences.removeUserDefault = function() {};
+      module.systemPreferences.promptTouchID = async function() {};
+      module.systemPreferences.canPromptTouchID = function() { return false; };
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
 
