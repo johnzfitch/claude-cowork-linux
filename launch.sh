@@ -225,6 +225,7 @@ _electron_args=(
   --no-sandbox
   --password-store="$PASSWORD_STORE"
   --enable-features=GlobalShortcutsPortal
+  --class=Claude
 )
 
 if [[ "$_perf" == true ]]; then

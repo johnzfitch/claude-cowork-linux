@@ -29,7 +29,40 @@ const { createSessionStore } = require('./cowork/session_store.js');
 const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
 
+// Suppress EPIPE errors on stdout/stderr (normal in piped/Electron environments)
+// and prevent them from becoming uncaught exception crash dialogs.
+function _epipeHandler(err) {
+  if (err.code === 'EPIPE') return;
+  throw err;
+}
+if (process.stdout && typeof process.stdout.on === 'function') {
+  process.stdout.on('error', _epipeHandler);
+}
+if (process.stderr && typeof process.stderr.on === 'function') {
+  process.stderr.on('error', _epipeHandler);
+}
+// Catch EPIPE from any other pipe (IPC, Winston transports, CCD subprocess)
+// that would otherwise surface as uncaught exception error dialogs.
+const _origListeners = process.listeners('uncaughtException');
+process.removeAllListeners('uncaughtException');
+process.on('uncaughtException', (err, origin) => {
+  if (err && err.code === 'EPIPE') {
+    // Log once, don't crash
+    try { fs.appendFileSync(
+      path.join(process.env.CLAUDE_LOG_DIR || '/tmp', 'epipe-suppressed.log'),
+      `[${new Date().toISOString()}] EPIPE suppressed: ${err.stack || err.message}\n`,
+      { mode: 0o600 }
+    ); } catch (_) {}
+    return;
+  }
+  // Re-throw to existing handlers (Electron's dialog, etc.)
+  for (const listener of _origListeners) {
+    listener(err, origin);
+  }
+});
+
 console.log('[Frame Fix] Wrapper v2.5 loaded');
+console.log('[Frame Fix] EPIPE suppression enabled');
 if (process.env.CLAUDE_DEVTOOLS === '1') console.log('[Frame Fix] DevTools mode enabled');
 
 // ── Bridge forwardEvent patch ──────────────────────────────────────────
@@ -873,6 +906,19 @@ Module.prototype.require = function(id) {
       const chromeVersion = process.versions.chrome || '130.0.0.0';
       app.userAgentFallback = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/' + (app.getVersion ? app.getVersion() : '1.0.0') + ' Chrome/' + chromeVersion + ' Electron/' + electronVersion + ' Safari/537.36';
       console.log('[Frame Fix] User agent spoofed to macOS');
+
+      // Set the Wayland app-id so COSMIC (and other compositors) match the
+      // running window to claude.desktop, giving it the correct icon in the
+      // taskbar and making pin-to-dock work.
+      if (REAL_PLATFORM === 'linux') {
+        if (typeof app.setDesktopName === 'function') {
+          app.setDesktopName('claude.desktop');
+          console.log('[Frame Fix] Desktop name set to claude.desktop');
+        }
+        if (typeof app.setName === 'function') {
+          app.setName('Claude');
+        }
+      }
     }
 
     // Intercept ipcMain.handle to inject our VM handlers
@@ -951,6 +997,13 @@ Module.prototype.require = function(id) {
       module.systemPreferences.askForMediaAccess = async function() {
         console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess');
         return true;
+      };
+      module.systemPreferences.setUserDefault = function(key, type, value) {
+        console.log('[Frame Fix] Stubbed systemPreferences.setUserDefault:', key);
+      };
+      module.systemPreferences.getUserDefault = function(key, type) {
+        console.log('[Frame Fix] Stubbed systemPreferences.getUserDefault:', key);
+        return undefined;
       };
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
