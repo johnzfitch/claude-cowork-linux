@@ -393,10 +393,17 @@ function createMountSymlinks(sessionName, additionalMounts) {
     }
 
     // Construct the full host path
-    // Empty path means homedir itself
+    // The asar provides paths relative to the VM root (e.g., "home/user/.config/...").
+    // Prepending homedir doubles the path. Detect this: if the relative path starts
+    // with a known top-level directory (home/, root/, tmp/, etc.), treat it as an
+    // absolute path with a missing leading slash rather than joining with homedir.
+    const asAbsolute = '/' + relativePath;
+    const looksAbsolute = relativePath !== '' && /^(?:home|root|tmp|var|etc|opt|usr)\//.test(relativePath);
     const hostPath = relativePath === ''
       ? os.homedir()
-      : path.join(os.homedir(), relativePath);
+      : looksAbsolute
+        ? asAbsolute
+        : path.join(os.homedir(), relativePath);
 
     trace('  Relative path: "' + relativePath + '"');
     trace('  Host path: ' + hostPath);
