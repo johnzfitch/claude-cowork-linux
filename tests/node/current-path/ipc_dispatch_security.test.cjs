@@ -76,7 +76,8 @@ test('frame-fix-wrapper comment documents C++ dispatch behavior', () => {
   const wrapperPath = path.join(__dirname, '..', '..', '..', 'stubs', 'frame-fix', 'frame-fix-wrapper.js');
   const wrapperSource = fs.readFileSync(wrapperPath, 'utf8');
   
-  // Should contain the comment explaining that _invokeHandlers.get() is dead code
+  // The wrapper file should already have this comment (not modified in this PR,
+  // but this test ensures it remains present as it's the source of truth)
   assert.ok(
     wrapperSource.includes('_invokeHandlers.get() is dead code'),
     'frame-fix-wrapper should document that .get() is dead code'
@@ -171,20 +172,31 @@ test('SECURITY: remote module should not be enabled anywhere in our code', () =>
 });
 
 test('SECURITY: documentation explains dispatch and remote module security model', () => {
-  // Check that CLAUDE.md or other docs explain the security model
+  // Check that CLAUDE.md has Chain 6 documentation added in this PR
   const claudeMdPath = path.join(__dirname, '..', '..', '..', 'CLAUDE.md');
   
   if (fs.existsSync(claudeMdPath)) {
     const content = fs.readFileSync(claudeMdPath, 'utf8');
     
-    // Should mention the dispatch mechanism
-    const hasDispatchDocs = content.includes('dispatch') || content.includes('IPC');
-    // CLAUDE.md may not have dispatch details, that's in frame-fix-wrapper
-    // So we just check it exists and has some IPC/security content
+    // Should have Chain 6 that was added in this PR
     assert.ok(
-      hasDispatchDocs || content.length > 0,
-      'Documentation should exist'
+      content.includes('Chain 6: IPC Dispatch Security'),
+      'CLAUDE.md should have Chain 6 section added in this PR'
     );
+    
+    // Should explain C++ dispatch mechanism
+    assert.ok(
+      content.includes('Electron uses a C++ dispatch mechanism'),
+      'CLAUDE.md should explain C++ dispatch mechanism'
+    );
+    
+    // Should explain why .get() is dead code
+    assert.ok(
+      content.includes('Map.get() method is NEVER'),
+      'CLAUDE.md should explain why .get() is dead code'
+    );
+  } else {
+    assert.fail('CLAUDE.md should exist');
   }
   
   // Check frame-fix-wrapper has inline security documentation
