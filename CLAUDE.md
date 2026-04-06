@@ -198,6 +198,45 @@ Key handlers we intercept:
   ClaudeCode_$_prepare/getStatus       → stub out CLI preparation
 ```
 
+### Chain 6: IPC Dispatch Security (CRITICAL)
+
+**How Electron IPC Dispatch Works:**
+
+Electron uses a C++ dispatch mechanism for IPC handlers. When a renderer process calls
+`ipcRenderer.invoke(channel, ...args)`, Electron's C++ code looks up the handler in
+the internal `_invokeHandlers` Map and executes it. **The Map.get() method is NEVER
+called from JavaScript** — the C++ dispatch code accesses the Map directly.
+
+**Security Implications:**
+
+1. **Handler Registration**: Handlers MUST be registered via `ipcMain.handle()` to land
+   in Electron's C++ dispatch map. Direct manipulation of `_invokeHandlers` won't work
+   for dispatch (though we can intercept `.set()` for monitoring).
+
+2. **Dead Code**: Any JavaScript-level override of `_invokeHandlers.get()` is dead code
+   because the C++ dispatch never calls it. Prior to this fix, `ipc_tap.js` was patching
+   `.get()` for debugging, but this code was never executed.
+
+3. **Remote Module**: The Electron `remote` module (deprecated in v14+) allows renderers
+   to call main process methods directly, bypassing IPC. Modern Electron defaults to
+   `enableRemoteModule: false`, but this should be explicitly set for security clarity.
+   Our stubs do not enable remote module anywhere.
+
+**Why This Matters for Asar Updates:**
+
+As Electron versions advance, internal IPC mechanisms may change. The asar bundle is
+built with a specific Electron version and may make assumptions about IPC dispatch.
+By removing dead code that patches `.get()`, we:
+- Reduce confusion about how dispatch actually works
+- Avoid potential conflicts with future Electron changes
+- Ensure our monitoring code only hooks the actually-used codepaths (.set())
+- Align with Electron's documented security best practices
+
+**Related Files:**
+- `stubs/frame-fix/frame-fix-wrapper.js:435` — Documents C++ dispatch behavior
+- `stubs/cowork/ipc_tap.js:254` — Wraps `.set()` only (not `.get()`)
+- `tests/node/current-path/ipc_dispatch_security.test.cjs` — Validates no `.get()` patches exist
+
 ## Critical: Auth Flow (DO NOT CHANGE)
 
 The auth flow is fragile. The following behavior is correct and intentional:
