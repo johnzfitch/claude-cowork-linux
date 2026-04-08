@@ -41,9 +41,9 @@ const COMPUTER_USE_TCC_REQUEST_DENIED = Object.freeze({
   canPrompt: false,
 });
 
-// getLinuxIpcOverrides uses grant stubs (fires after asar init, per-window)
-const COMPUTER_USE_TCC_GRANTED = Object.freeze({ granted: true, status: 'granted' });
-const COMPUTER_USE_TCC_REQUEST_GRANTED = Object.freeze({ granted: true });
+// getLinuxIpcOverrides — deny by default (Linux has no TCC UI to prompt the user)
+const COMPUTER_USE_TCC_GRANTED = Object.freeze({ granted: false, status: 'denied' });
+const COMPUTER_USE_TCC_REQUEST_GRANTED = Object.freeze({ granted: false });
 
 module.exports = {
   CLAUDE_CODE_PREPARE,

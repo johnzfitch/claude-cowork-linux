@@ -268,6 +268,17 @@ function listConversationEntriesFromTranscriptFile(transcriptPath) {
   return listConversationEntriesFromTranscriptText(fs.readFileSync(transcriptPath, 'utf8'));
 }
 
+// SECURITY: Sanitize transcript text before injecting into recovery prompts.
+// Strips structural markers that the recovery prompt uses, preventing stored
+// prompt injection where prior AI output could manipulate recovery framing.
+function sanitizeTranscriptForRecovery(text) {
+  if (typeof text !== 'string') return '';
+  return text
+    .replace(/^\[Local cowork continuity recovery\]/gm, '[prior content]')
+    .replace(/^New user message:/gm, '[prior content]')
+    .replace(/^Recent conversation:/gm, '[prior content]');
+}
+
 function buildTranscriptContinuityPlan(options) {
   const {
     localSessionId,
@@ -304,7 +315,7 @@ function buildTranscriptContinuityPlan(options) {
           : entry.role === 'assistant'
             ? 'Assistant'
             : 'User';
-      return roleLabel + ': ' + entry.text;
+      return roleLabel + ': ' + sanitizeTranscriptForRecovery(entry.text);
     })
     .join('\n\n');
 
@@ -466,5 +477,6 @@ module.exports = {
   listConversationEntriesFromTranscriptText,
   listTranscriptCandidatesForSession,
   parseTranscriptLine,
+  sanitizeTranscriptForRecovery,
   sanitizeTranscriptProjectKey,
 };

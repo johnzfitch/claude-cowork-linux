@@ -195,13 +195,13 @@ const nativeStub = {
     spawn('xdg-open', [revealDir], { detached: true, stdio: 'ignore' });
   },
 
-  // Accessibility
-  isAccessibilityEnabled: () => true,
-  requestAccessibilityPermission: () => Promise.resolve(true),
+  // Accessibility — deny by default (Linux has no TCC prompt)
+  isAccessibilityEnabled: () => false,
+  requestAccessibilityPermission: () => Promise.resolve(false),
 
-  // Screen capture
-  hasScreenCapturePermission: () => true,
-  requestScreenCapturePermission: () => Promise.resolve(true),
+  // Screen capture — deny by default (Linux has no TCC prompt)
+  hasScreenCapturePermission: () => false,
+  requestScreenCapturePermission: () => Promise.resolve(false),
 };
 
 // ============================================================

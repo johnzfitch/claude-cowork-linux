@@ -204,9 +204,10 @@ describe('Audit Item 1: IPC stub response consistency (CONSOLIDATED)', () => {
     assert.strictEqual(stubs.CLAUDE_VM_DOWNLOAD_STATUS, 'ready');
   });
 
-  it('exports both TCC variants (denied for early stubs, granted for webContents)', () => {
+  it('exports both TCC variants as denied (early init and webContents)', () => {
     assert.equal(stubs.COMPUTER_USE_TCC_DENIED.accessibility, 'denied');
-    assert.equal(stubs.COMPUTER_USE_TCC_GRANTED.granted, true);
+    assert.equal(stubs.COMPUTER_USE_TCC_GRANTED.granted, false);
+    assert.equal(stubs.COMPUTER_USE_TCC_GRANTED.status, 'denied');
   });
 
   it('response objects are frozen to prevent accidental mutation', () => {

@@ -830,9 +830,20 @@ try {
       // Find the claude:// URL in the argv of the second instance
       const url = argv.find(a => a.startsWith('claude://'));
       if (url) {
-        console.log('[SingleInstance] Forwarding protocol URL to open-url handler');
-        // Emit open-url so the asar's existing handler processes it
-        app.emit('open-url', { preventDefault() {} }, url);
+        // SECURITY: Validate URL structure before forwarding to asar handler
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol !== 'claude:') {
+            console.warn('[SingleInstance] Rejected non-claude protocol URL');
+          } else if (/[<>"'`]/.test(url) || url.length > 2048) {
+            console.warn('[SingleInstance] Rejected suspicious claude:// URL');
+          } else {
+            console.log('[SingleInstance] Forwarding validated protocol URL to open-url handler');
+            app.emit('open-url', { preventDefault() {} }, url);
+          }
+        } catch (e) {
+          console.warn('[SingleInstance] Rejected malformed URL:', e.message);
+        }
       }
       // Focus the existing window
       const { BrowserWindow } = require('electron');
@@ -1048,13 +1059,13 @@ Module.prototype.require = function(id) {
     // Stub out macOS-only systemPreferences methods that cause crashes on Linux
     if (module.systemPreferences && !global.__coworkSystemPreferencesPatched) {
       global.__coworkSystemPreferencesPatched = true;
-      module.systemPreferences.getMediaAccessStatus = function() {
-        console.log('[Frame Fix] Stubbed systemPreferences.getMediaAccessStatus');
-        return 'granted';
+      module.systemPreferences.getMediaAccessStatus = function(mediaType) {
+        console.log('[Frame Fix] Stubbed systemPreferences.getMediaAccessStatus:', mediaType, '-> denied');
+        return 'denied';
       };
-      module.systemPreferences.askForMediaAccess = async function() {
-        console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess');
-        return true;
+      module.systemPreferences.askForMediaAccess = async function(mediaType) {
+        console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess:', mediaType, '-> denied');
+        return false;
       };
       module.systemPreferences.setUserDefault = function(key, type, value) {
         console.log('[Frame Fix] Stubbed systemPreferences.setUserDefault:', key);
