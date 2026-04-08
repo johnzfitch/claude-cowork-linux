@@ -325,7 +325,23 @@ function buildBridgeSpawnArgs(args, remoteSessionId, sdkUrl) {
   ];
 
   if (typeof sdkUrl === 'string' && sdkUrl.trim()) {
-    bridgeArgs.push('--sdk-url', sdkUrl);
+    // SECURITY: Only allow --sdk-url pointing to Anthropic endpoints
+    try {
+      const parsedSdkUrl = new URL(sdkUrl);
+      const ALLOWED_SDK_HOSTS = ['api.anthropic.com'];
+      const hostAllowed = ALLOWED_SDK_HOSTS.some(h =>
+        parsedSdkUrl.hostname === h || parsedSdkUrl.hostname.endsWith('.' + h)
+      );
+      if (!hostAllowed) {
+        console.warn('[Cowork] SECURITY: Blocked --sdk-url with disallowed host:', parsedSdkUrl.hostname);
+      } else if (parsedSdkUrl.protocol !== 'https:') {
+        console.warn('[Cowork] SECURITY: Blocked non-HTTPS --sdk-url');
+      } else {
+        bridgeArgs.push('--sdk-url', sdkUrl);
+      }
+    } catch (e) {
+      console.warn('[Cowork] SECURITY: Blocked malformed --sdk-url:', sdkUrl);
+    }
   }
 
   return [...bridgeArgs, ...preservedArgs];
@@ -1830,6 +1846,8 @@ module.exports = {
   symlinkGlobalConfig,
   // Bridge credential helpers
   readRemoteSessionIdFromBridgeState,
+  // Bridge spawn args (exported for testing)
+  buildBridgeSpawnArgs,
   // Phase 1: Message type filtering
   LIVE_EVENT_IGNORED_TYPES,
   LIVE_EVENT_METADATA_TYPES,

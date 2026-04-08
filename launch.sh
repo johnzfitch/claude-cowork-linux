@@ -219,10 +219,27 @@ if ! dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesk
   PASSWORD_STORE="basic"
 fi
 
+# Sandbox check: prefer Chromium sandbox when unprivileged user namespaces
+# are available. --no-sandbox is required on distros without userns support
+# (disables Chromium renderer process isolation — see security notes).
+_sandbox_flag="--no-sandbox"
+if [[ -f /proc/sys/kernel/unprivileged_userns_clone ]]; then
+  if [[ "$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null)" == "1" ]]; then
+    _sandbox_flag=""
+    echo "User namespaces available — Chromium sandbox enabled"
+  fi
+elif [[ -f /proc/sys/user/max_user_namespaces ]]; then
+  _max_ns="$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)"
+  if [[ "$_max_ns" -gt 0 ]] 2>/dev/null; then
+    _sandbox_flag=""
+    echo "User namespaces available — Chromium sandbox enabled"
+  fi
+fi
+
 # Build electron args
 _electron_args=(
   "./${ASAR_FILE}"
-  --no-sandbox
+  ${_sandbox_flag}
   --password-store="$PASSWORD_STORE"
   --enable-features=GlobalShortcutsPortal
   --class=Claude
@@ -233,8 +250,9 @@ if [[ "$_perf" == true ]]; then
   export CLAUDE_COWORK_IPC_TAP=1
   export CLAUDE_COWORK_TRACE_IO=1
   export CLAUDE_COWORK_VERBOSE=1
+  # SECURITY: Bind to localhost only — never expose to network
   _electron_args+=(
-    --inspect=9229
+    --inspect=127.0.0.1:9229
     --remote-debugging-port=9222
   )
   echo ""

@@ -50,12 +50,12 @@ test('matchOverride returns null for non-string channels', () => {
   assert.equal(matchOverride(null, registry), null);
 });
 
-test('ComputerUseTcc_$_getState override returns granted shape', async () => {
+test('ComputerUseTcc_$_getState override returns denied shape', async () => {
   const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
   const handler = matchOverride('claude.web_$_ComputerUseTcc_$_getState', registry);
   const result = await handler();
-  assert.equal(result.granted, true);
-  assert.equal(result.status, 'granted');
+  assert.equal(result.granted, false);
+  assert.equal(result.status, 'denied');
 });
 
 test('ClaudeCode_$_getStatus override returns ready string', async () => {
@@ -382,11 +382,11 @@ test('override handlers return fresh objects for object results (not shared refe
 // Phase 4: Dispatch/Bridge handler tests
 // ================================================================
 
-test('getBridgeConsent returns consented shape', async () => {
+test('getBridgeConsent returns denied by default', async () => {
   const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
   const handler = matchOverride('test_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
   const result = await handler(null);
-  assert.deepEqual(result, { consented: true });
+  assert.deepEqual(result, { consented: false });
 });
 
 test('getSessionsBridgeEnabled defaults to false, persists after set', async () => {
@@ -463,11 +463,11 @@ test('mcpReadResource returns null', async () => {
 // Phase 4: Permissions handler tests
 // ================================================================
 
-test('requestFolderTccAccess returns granted on Linux', async () => {
+test('requestFolderTccAccess returns denied on Linux', async () => {
   const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
   const handler = matchOverride('test_$_LocalAgentModeSessions_$_requestFolderTccAccess', registry);
   const result = await handler(null, '/some/path');
-  assert.deepEqual(result, { granted: true });
+  assert.deepEqual(result, { granted: false });
 });
 
 test('setChromePermissionMode returns null', async () => {
