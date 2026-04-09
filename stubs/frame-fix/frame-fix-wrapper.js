@@ -25,7 +25,7 @@ const {
 } = require('./cowork/asar_adapter.js');
 const { createDirs } = require('./cowork/dirs.js');
 const { createSessionOrchestrator } = require('./cowork/session_orchestrator.js');
-const { createSessionStore } = require('./cowork/session_store.js');
+const { createPermissionManager } = require('./cowork/permission_manager.js');
 const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
 
@@ -484,20 +484,19 @@ const vmBundleDir = DIRS.claudeVmBundlesDir;
 const vmTmpDir = path.join(vmBundleDir, 'tmp');
 const claudeVmBundle = path.join(vmBundleDir, 'claudevm.bundle');
 const LOCAL_AGENT_ROOT = DIRS.claudeLocalAgentRoot;
-const localSessionStore = createSessionStore({ localAgentRoot: LOCAL_AGENT_ROOT });
 const ipcSessionOrchestrator = createSessionOrchestrator({
   dirs: DIRS,
-  sessionStore: localSessionStore,
 });
 const asarAdapter = createAsarAdapter({
   sessionOrchestrator: ipcSessionOrchestrator,
-  sessionStore: localSessionStore,
+});
+const permissionManager = createPermissionManager({
+  persistPath: path.join(DIRS.claudeConfigRoot, 'cowork-permissions.json'),
 });
 global.__coworkAsarAdapter = asarAdapter;
-global.__coworkSessionStore = localSessionStore;
 global.__coworkSessionOrchestrator = ipcSessionOrchestrator;
+global.__coworkPermissionManager = permissionManager;
 global.__coworkDirs = DIRS;
-localSessionStore.installMetadataPersistenceGuard();
 global.__coworkIpcTap = ipcTap;
 
 try {
@@ -774,7 +773,7 @@ function logIgnoredLiveMessage(channel, payload, messageType) {
 const ipcOverrides = createOverrideRegistry(function getProcessState(args) {
   const processId = parseRequestedProcessId(args);
   return getCoworkProcessRunningState(processId);
-});
+}, permissionManager);
 
 // ============================================================
 // GRACEFUL SHUTDOWN — on Linux, closing all windows must quit the
@@ -1002,12 +1001,10 @@ Module.prototype.require = function(id) {
     if (module.systemPreferences && !global.__coworkSystemPreferencesPatched) {
       global.__coworkSystemPreferencesPatched = true;
       module.systemPreferences.getMediaAccessStatus = function(mediaType) {
-        console.log('[Frame Fix] Stubbed systemPreferences.getMediaAccessStatus:', mediaType, '-> denied');
-        return 'denied';
+        return permissionManager.getMediaAccessStatus(mediaType);
       };
       module.systemPreferences.askForMediaAccess = async function(mediaType) {
-        console.log('[Frame Fix] Stubbed systemPreferences.askForMediaAccess:', mediaType, '-> denied');
-        return false;
+        return permissionManager.requestMediaAccess(mediaType);
       };
       module.systemPreferences.setUserDefault = function(key, type, value) {
         console.log('[Frame Fix] Stubbed systemPreferences.setUserDefault:', key);

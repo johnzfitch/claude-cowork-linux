@@ -27,32 +27,33 @@ const CLAUDE_VM_RUNNING_STATUS = 'ready';
 
 const CLAUDE_VM_DOWNLOAD_STATUS = 'ready';
 
-// getSyntheticIPCResponse uses denial stubs (fires early, before asar init)
-const COMPUTER_USE_TCC_DENIED = Object.freeze({
-  accessibility: 'denied',
-  screenCapture: 'denied',
-  canPrompt: false,
+// Early TCC stub (fires before asar init, before permission manager is available).
+// Reports canPrompt: true so the webapp knows it can request permissions.
+const COMPUTER_USE_TCC_INITIAL = Object.freeze({
+  accessibility: 'not_determined',
+  screenCapture: 'not_determined',
+  canPrompt: true,
 });
 
-const COMPUTER_USE_TCC_REQUEST_DENIED = Object.freeze({
+const COMPUTER_USE_TCC_REQUEST_INITIAL = Object.freeze({
   success: false,
-  accessibility: 'denied',
-  screenCapture: 'denied',
-  canPrompt: false,
+  accessibility: 'not_determined',
+  screenCapture: 'not_determined',
+  canPrompt: true,
 });
 
-// getLinuxIpcOverrides — deny by default (Linux has no TCC UI to prompt the user)
-const COMPUTER_USE_TCC_GRANTED = Object.freeze({ granted: false, status: 'denied' });
-const COMPUTER_USE_TCC_REQUEST_GRANTED = Object.freeze({ granted: false });
+// Default responses for getLinuxIpcOverrides — prompt-capable
+const COMPUTER_USE_TCC_PROMPT_CAPABLE = { granted: false, status: 'not_determined', canPrompt: true };
+const COMPUTER_USE_TCC_REQUEST_PROMPT_CAPABLE = { granted: false, canPrompt: true };
 
 module.exports = {
   CLAUDE_CODE_PREPARE,
   CLAUDE_CODE_STATUS,
   CLAUDE_VM_DOWNLOAD_STATUS,
   CLAUDE_VM_RUNNING_STATUS,
-  COMPUTER_USE_TCC_DENIED,
-  COMPUTER_USE_TCC_GRANTED,
-  COMPUTER_USE_TCC_REQUEST_DENIED,
-  COMPUTER_USE_TCC_REQUEST_GRANTED,
+  COMPUTER_USE_TCC_INITIAL,
+  COMPUTER_USE_TCC_PROMPT_CAPABLE,
+  COMPUTER_USE_TCC_REQUEST_INITIAL,
+  COMPUTER_USE_TCC_REQUEST_PROMPT_CAPABLE,
   STUB_CLAUDE_CODE_VERSION,
 };

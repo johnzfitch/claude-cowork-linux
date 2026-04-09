@@ -17,8 +17,6 @@ const {
   CLAUDE_CODE_PREPARE,
   CLAUDE_VM_RUNNING_STATUS,
   CLAUDE_VM_DOWNLOAD_STATUS,
-  COMPUTER_USE_TCC_GRANTED,
-  COMPUTER_USE_TCC_REQUEST_GRANTED,
 } = require('./linux_ipc_stubs.js');
 
 // -- Helpers --
@@ -216,7 +214,7 @@ function whichApplicationForFile(filename) {
 // Keys are matched via channel.includes(key). This handles the
 // _$_Namespace_$_Method pattern regardless of UUID prefix.
 
-function createOverrideRegistry(getProcessState) {
+function createOverrideRegistry(getProcessState, permissionManager) {
   // Mutable state shared across handler closures
   const bridgeState = { enabled: false };
 
@@ -226,14 +224,31 @@ function createOverrideRegistry(getProcessState) {
     'ClaudeCode_$_prepare': async () => ({ ...CLAUDE_CODE_PREPARE }),
     'ClaudeCode_$_checkGitAvailable': async () => ({ available: true }),
 
-    // ComputerUseTcc — Linux has no TCC UI; deny by default for safety
-    'ComputerUseTcc_$_getState': async () => ({ ...COMPUTER_USE_TCC_GRANTED }),
-    'ComputerUseTcc_$_requestAccess': async () => ({ ...COMPUTER_USE_TCC_REQUEST_GRANTED }),
-    'ComputerUseTcc_$_requestAccessibility': async () => ({ ...COMPUTER_USE_TCC_REQUEST_GRANTED }),
-    'ComputerUseTcc_$_requestScreenRecording': async () => ({ ...COMPUTER_USE_TCC_REQUEST_GRANTED }),
+    // ComputerUseTcc — delegate to permission manager for user prompting
+    'ComputerUseTcc_$_getState': async () => {
+      if (permissionManager) return permissionManager.getTccState();
+      return { accessibility: 'not_determined', screenCapture: 'not_determined', canPrompt: true };
+    },
+    'ComputerUseTcc_$_requestAccess': async () => {
+      if (permissionManager) return permissionManager.requestTccAccess();
+      return { granted: false, canPrompt: true };
+    },
+    'ComputerUseTcc_$_requestAccessibility': async () => {
+      if (permissionManager) return { granted: await permissionManager.requestWithDialog('accessibility') };
+      return { granted: false, canPrompt: true };
+    },
+    'ComputerUseTcc_$_requestScreenRecording': async () => {
+      if (permissionManager) return { granted: await permissionManager.requestWithDialog('screen') };
+      return { granted: false, canPrompt: true };
+    },
     'ComputerUseTcc_$_openSystemSettings': async () => {},
-    'ComputerUseTcc_$_getCurrentSessionGrants': async () => ([]),
-    'ComputerUseTcc_$_revokeGrant': async () => {},
+    'ComputerUseTcc_$_getCurrentSessionGrants': async () => {
+      if (permissionManager) return permissionManager.getCurrentGrants();
+      return [];
+    },
+    'ComputerUseTcc_$_revokeGrant': async (_event, permission) => {
+      if (permissionManager) permissionManager.revoke(permission);
+    },
 
     // ClaudeVM — report VM as running and ready (webapp expects string "ready")
     'ClaudeVM_$_getRunningStatus': async () => CLAUDE_VM_RUNNING_STATUS,
@@ -397,7 +412,8 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'LocalAgentModeSessions_$_getBridgeConsent': async (_event, ...args) => {
-      vlog('[ipc:getBridgeConsent] called (denied by default)');
+      vlog('[ipc:getBridgeConsent] called');
+      if (permissionManager) return permissionManager.requestBridgeConsent();
       return { consented: false };
     },
 
@@ -463,8 +479,9 @@ function createOverrideRegistry(getProcessState) {
     // Permissions / Folders — Linux has no TCC or Chrome extension model
     // ================================================================
 
-    'LocalAgentModeSessions_$_requestFolderTccAccess': async (_event, ...args) => {
-      vlog('[ipc:requestFolderTccAccess] called (denied on Linux — no TCC UI)');
+    'LocalAgentModeSessions_$_requestFolderTccAccess': async (_event, folderPath) => {
+      vlog('[ipc:requestFolderTccAccess] called');
+      if (permissionManager) return permissionManager.requestFolderAccess(folderPath);
       return { granted: false };
     },
 

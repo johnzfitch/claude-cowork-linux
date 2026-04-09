@@ -14,10 +14,6 @@ const {
 const {
   createSessionStore,
 } = require('../../../stubs/cowork/session_store.js');
-const {
-  sanitizeTranscriptProjectKey,
-} = require('../../../stubs/cowork/transcript_store.js');
-
 const SESSION_ORCHESTRATOR_MODULE_PATH = require.resolve('../../../stubs/cowork/session_orchestrator.js');
 
 function createTempDir(t) {
@@ -26,12 +22,6 @@ function createTempDir(t) {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
   return tempRoot;
-}
-
-function writeTranscript(sessionDir, projectKey, cliSessionId, lines) {
-  const transcriptDir = path.join(sessionDir, '.claude', 'projects', projectKey);
-  fs.mkdirSync(transcriptDir, { recursive: true });
-  fs.writeFileSync(path.join(transcriptDir, cliSessionId + '.jsonl'), lines.join('\n') + '\n', 'utf8');
 }
 
 function createOrchestrator(overrides) {
@@ -79,71 +69,6 @@ test('prepareVmSpawn translates command, args, cwd, and filters asar add-dir', (
   assert.deepEqual(result.args, ['--add-dir', '/host/sessions/demo/mnt/project']);
   assert.equal(result.sharedCwdPath, '/host/sessions/demo/mnt/project');
   assert.equal(mountSessionName, 'demo');
-});
-
-test('prepareVmSpawn replaces stale --resume target with the best resumable transcript candidate', (t) => {
-  const tempRoot = createTempDir(t);
-  const sessionsBase = path.join(tempRoot, 'sessions');
-  fs.mkdirSync(sessionsBase, { recursive: true });
-  const sessionDirectory = path.join(tempRoot, 'local_session');
-  const configDir = path.join(sessionDirectory, '.claude');
-  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
-
-  writeTranscript(sessionDirectory, 'wrong-project', 'stale-cli-session', [
-    '{"type":"queue-operation","operation":"enqueue"}',
-    '{"type":"progress","data":{"type":"hook_progress"}}',
-  ]);
-  writeTranscript(sessionDirectory, preferredProjectKey, 'fresh-cli-session', [
-    '{"type":"queue-operation","operation":"enqueue"}',
-    '{"type":"user","message":{"role":"user","content":"recover context"}}',
-    '{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"restored"}]}}',
-  ]);
-
-  const orchestrator = createOrchestrator({ sessionsBase });
-  const result = orchestrator.prepareVmSpawn({
-    processId: 'proc-2',
-    processName: 'demo',
-    command: '/usr/local/bin/claude',
-    args: ['--resume', 'stale-cli-session'],
-    envVars: {
-      CLAUDE_CONFIG_DIR: configDir,
-    },
-    additionalMounts: null,
-    sharedCwdPath: '/home/zack/dev/claude-cowork-linux',
-  });
-
-  assert.equal(result.success, true);
-  assert.deepEqual(result.args, ['--resume', 'fresh-cli-session']);
-});
-
-test('prepareVmSpawn removes --resume when transcript candidate is not resumable', (t) => {
-  const tempRoot = createTempDir(t);
-  const sessionsBase = path.join(tempRoot, 'sessions');
-  fs.mkdirSync(sessionsBase, { recursive: true });
-  const sessionDirectory = path.join(tempRoot, 'local_session');
-  const configDir = path.join(sessionDirectory, '.claude');
-  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/claude-cowork-linux');
-
-  writeTranscript(sessionDirectory, preferredProjectKey, 'queue-only-session', [
-    '{"type":"queue-operation","operation":"enqueue"}',
-    '{"type":"last-prompt","lastPrompt":"claude> "}',
-  ]);
-
-  const orchestrator = createOrchestrator({ sessionsBase });
-  const result = orchestrator.prepareVmSpawn({
-    processId: 'proc-3',
-    processName: 'demo',
-    command: '/usr/local/bin/claude',
-    args: ['--resume', 'queue-only-session', '--model', 'claude-opus-4-6'],
-    envVars: {
-      CLAUDE_CONFIG_DIR: configDir,
-    },
-    additionalMounts: null,
-    sharedCwdPath: '/home/zack/dev/claude-cowork-linux',
-  });
-
-  assert.equal(result.success, true);
-  assert.deepEqual(result.args, ['--model', 'claude-opus-4-6']);
 });
 
 test('prepareVmSpawn derives host cwd from canonical session metadata when sharedCwdPath is missing', (t) => {
@@ -286,79 +211,6 @@ test('prepareVmSpawn injects local skills plugin-dir for bridge cowork spawns', 
   assert.ok(result.args.includes(localSkillsDir));
 });
 
-test('prepareFlatlineRetry clears only cliSessionId and removes --resume for the fresh retry', (t) => {
-  const tempRoot = createTempDir(t);
-  const sessionId = 'local_demo_session';
-  const metadataPath = path.join(tempRoot, sessionId + '.json');
-  const sessionDirectory = metadataPath.replace(/\.json$/, '');
-  const configDir = path.join(sessionDirectory, '.claude');
-  const preferredProjectKey = sanitizeTranscriptProjectKey('/home/zack/dev/canonical-workspace');
-
-  fs.mkdirSync(configDir, { recursive: true });
-  writeTranscript(sessionDirectory, preferredProjectKey, 'resume-cli-session', [
-    '{"type":"user","message":{"role":"user","content":"hello"}}',
-    '{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}}',
-  ]);
-  fs.writeFileSync(metadataPath, JSON.stringify({
-    sessionId,
-    cliSessionId: 'resume-cli-session',
-    cwd: '/home/zack/dev/canonical-workspace',
-    userSelectedFolders: ['/home/zack/dev/canonical-workspace'],
-    model: 'claude-opus-4-6',
-  }, null, 2) + '\n', 'utf8');
-
-  const orchestrator = createOrchestrator();
-  const result = orchestrator.prepareFlatlineRetry({
-    args: ['--resume', 'resume-cli-session', '--model', 'claude-opus-4-6'],
-    envVars: {
-      CLAUDE_CONFIG_DIR: configDir,
-    },
-    sharedCwdPath: '/home/zack/dev/canonical-workspace',
-  });
-
-  assert.equal(result.success, true);
-  assert.deepEqual(result.args, ['--model', 'claude-opus-4-6']);
-  assert.equal(result.retryPlan.clearCliSessionId, true);
-  assert.equal(result.retryMode, 'continuity');
-  assert.ok(result.continuityPlan);
-  assert.match(result.continuityPlan.hydratedPrompt, /Local session: local_demo_session/);
-  assert.match(result.continuityPlan.hydratedPrompt, /Assistant: hi/);
-  const persisted = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-  assert.equal(persisted.cliSessionId, null);
-  assert.equal(persisted.model, 'claude-opus-4-6');
-  assert.equal(persisted.sessionId, sessionId);
-});
-
-test('prepareFlatlineRetry falls back to a plain fresh retry when no safe continuity transcript exists', (t) => {
-  const tempRoot = createTempDir(t);
-  const sessionId = 'local_demo_session';
-  const metadataPath = path.join(tempRoot, sessionId + '.json');
-  const sessionDirectory = metadataPath.replace(/\.json$/, '');
-  const configDir = path.join(sessionDirectory, '.claude');
-
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(metadataPath, JSON.stringify({
-    sessionId,
-    cliSessionId: 'resume-cli-session',
-    cwd: '/home/zack/dev/canonical-workspace',
-    userSelectedFolders: ['/home/zack/dev/canonical-workspace'],
-  }, null, 2) + '\n', 'utf8');
-
-  const orchestrator = createOrchestrator();
-  const result = orchestrator.prepareFlatlineRetry({
-    args: ['--resume', 'resume-cli-session'],
-    envVars: {
-      CLAUDE_CONFIG_DIR: configDir,
-    },
-    sharedCwdPath: '/home/zack/dev/canonical-workspace',
-  });
-
-  assert.equal(result.success, true);
-  assert.deepEqual(result.args, []);
-  assert.equal(result.retryMode, 'fresh');
-  assert.equal(result.continuityPlan, null);
-});
-
 test('persistRecoveredCliSession updates the same local session metadata with the new working cliSessionId', (t) => {
   const tempRoot = createTempDir(t);
   const sessionId = 'local_demo_session';
@@ -412,7 +264,7 @@ test('resolveFileSystemPath uses the explicitly requested local session registry
   fs.writeFileSync(originalPath, 'hello\n', 'utf8');
 
   const sessionStore = createSessionStore({ localAgentRoot });
-  sessionStore.observeSessionId(sessionId);
+
 
   const orchestrator = createSessionOrchestrator({
     dirs: createDirs({ env: {}, homeDir: tempRoot }),
@@ -455,7 +307,7 @@ test('relinkFileSystemPath relinks a missing tracked file on the same session-ow
   fs.writeFileSync(originalPath, 'hello\n', 'utf8');
 
   const sessionStore = createSessionStore({ localAgentRoot });
-  sessionStore.observeSessionId(sessionId);
+
 
   const orchestrator = createSessionOrchestrator({
     dirs: createDirs({ env: {}, homeDir: tempRoot }),
@@ -517,7 +369,7 @@ test('resolveFileSystemPath fails closed when no local session id is provided', 
   fs.writeFileSync(filePath, 'hello\n', 'utf8');
 
   const sessionStore = createSessionStore({ localAgentRoot });
-  sessionStore.observeSessionId(sessionId);
+
 
   const orchestrator = createSessionOrchestrator({
     dirs: createDirs({ env: {}, homeDir: tempRoot }),

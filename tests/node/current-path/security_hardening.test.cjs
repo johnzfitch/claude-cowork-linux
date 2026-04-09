@@ -1,6 +1,6 @@
 'use strict';
 
-// Security hardening tests — validates that all deny-by-default policies hold.
+// Security hardening tests — validates permission prompting and access control.
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
@@ -9,75 +9,58 @@ const os = require('os');
 const path = require('path');
 
 // ============================================================
-// 1. TCC stubs deny by default (both code paths)
+// 1. TCC stubs are prompt-capable (not hard-deny)
 // ============================================================
 
-describe('TCC stubs deny by default', () => {
+describe('TCC stubs are prompt-capable', () => {
   const stubs = require('../../../stubs/cowork/linux_ipc_stubs.js');
   const {
     createOverrideRegistry,
     matchOverride,
   } = require('../../../stubs/cowork/ipc_overrides.js');
 
-  it('linux_ipc_stubs: COMPUTER_USE_TCC_GRANTED is denied', () => {
-    assert.equal(stubs.COMPUTER_USE_TCC_GRANTED.granted, false);
-    assert.equal(stubs.COMPUTER_USE_TCC_GRANTED.status, 'denied');
+  it('linux_ipc_stubs: COMPUTER_USE_TCC_PROMPT_CAPABLE has canPrompt: true', () => {
+    assert.equal(stubs.COMPUTER_USE_TCC_PROMPT_CAPABLE.canPrompt, true);
   });
 
-  it('linux_ipc_stubs: COMPUTER_USE_TCC_REQUEST_GRANTED is denied', () => {
-    assert.equal(stubs.COMPUTER_USE_TCC_REQUEST_GRANTED.granted, false);
+  it('linux_ipc_stubs: COMPUTER_USE_TCC_INITIAL has not_determined status', () => {
+    assert.equal(stubs.COMPUTER_USE_TCC_INITIAL.accessibility, 'not_determined');
+    assert.equal(stubs.COMPUTER_USE_TCC_INITIAL.screenCapture, 'not_determined');
+    assert.equal(stubs.COMPUTER_USE_TCC_INITIAL.canPrompt, true);
   });
 
-  it('ipc_overrides: ComputerUseTcc_$_getState returns denied', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  it('ipc_overrides: ComputerUseTcc_$_getState returns prompt-capable state (no permission manager)', async () => {
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), null);
     const handler = matchOverride('claude.web_$_ComputerUseTcc_$_getState', registry);
     const result = await handler();
-    assert.equal(result.granted, false);
-    assert.equal(result.status, 'denied');
+    assert.equal(result.canPrompt, true);
+    assert.equal(result.accessibility, 'not_determined');
+    assert.equal(result.screenCapture, 'not_determined');
   });
 
-  it('ipc_overrides: requestAccessibility returns denied', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  it('ipc_overrides: requestAccessibility returns canPrompt: true without manager', async () => {
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), null);
     const handler = matchOverride('claude.web_$_ComputerUseTcc_$_requestAccessibility', registry);
     const result = await handler();
     assert.equal(result.granted, false);
+    assert.equal(result.canPrompt, true);
   });
 
-  it('ipc_overrides: requestScreenRecording returns denied', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  it('ipc_overrides: requestScreenRecording returns canPrompt: true without manager', async () => {
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), null);
     const handler = matchOverride('claude.web_$_ComputerUseTcc_$_requestScreenRecording', registry);
     const result = await handler();
     assert.equal(result.granted, false);
+    assert.equal(result.canPrompt, true);
   });
 
-  it('ipc_overrides: requestFolderTccAccess returns denied', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-    const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_requestFolderTccAccess', registry);
-    const result = await handler();
-    assert.equal(result.granted, false);
-  });
-
-  // claude-native can't be require()'d directly from tests because it depends on
-  // electron and on paths that only resolve inside the extracted app tree.
-  // Instead, verify the source code contains the correct deny-by-default values.
-  it('claude-native source: isAccessibilityEnabled returns false', () => {
+  // claude-native delegates to permission manager instead of hardcoding false
+  it('claude-native source: delegates to permission manager', () => {
     const src = fs.readFileSync(
       path.join(__dirname, '..', '..', '..', 'stubs', '@ant', 'claude-native', 'index.js'), 'utf8'
     );
-    assert.ok(src.includes('isAccessibilityEnabled: () => false'),
-      'isAccessibilityEnabled must return false');
-    assert.ok(!src.includes('isAccessibilityEnabled: () => true'),
-      'isAccessibilityEnabled must NOT return true');
-  });
-
-  it('claude-native source: hasScreenCapturePermission returns false', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', '..', '..', 'stubs', '@ant', 'claude-native', 'index.js'), 'utf8'
-    );
-    assert.ok(src.includes('hasScreenCapturePermission: () => false'),
-      'hasScreenCapturePermission must return false');
-    assert.ok(!src.includes('hasScreenCapturePermission: () => true'),
-      'hasScreenCapturePermission must NOT return true');
+    assert.ok(src.includes('__coworkPermissionManager'),
+      'Permission checks must delegate to permission manager');
   });
 });
 
@@ -114,7 +97,7 @@ describe('FileSystem allowlist-only access', () => {
   });
 
   it('readLocalFile returns null for paths outside allowed roots', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), null);
     const handler = matchOverride('claude.web_$_FileSystem_$_readLocalFile', registry);
     const result = await handler(null, 'local_session', '/etc/hostname');
     assert.equal(result, null);
@@ -126,7 +109,7 @@ describe('FileSystem allowlist-only access', () => {
     const testFile = path.join(tmpDir, 'allowed.txt');
     fs.writeFileSync(testFile, 'allowed content', 'utf8');
 
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), null);
     const handler = matchOverride('claude.web_$_FileSystem_$_readLocalFile', registry);
     const result = await handler(null, 'local_session', testFile);
     assert.ok(result);
@@ -135,14 +118,14 @@ describe('FileSystem allowlist-only access', () => {
 });
 
 // ============================================================
-// 3. getBridgeConsent denies by default
+// 3. getBridgeConsent — defaults to deny without permission manager
 // ============================================================
 
-describe('getBridgeConsent denies by default', () => {
+describe('getBridgeConsent defaults without permission manager', () => {
   const { createOverrideRegistry, matchOverride } = require('../../../stubs/cowork/ipc_overrides.js');
 
-  it('returns consented: false', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+  it('returns consented: false when no permission manager provided', async () => {
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), null);
     const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
     const result = await handler();
     assert.equal(result.consented, false);
@@ -179,48 +162,7 @@ describe('--sdk-url host allowlist', () => {
 });
 
 // ============================================================
-// 5. Transcript recovery prompt sanitization
-// ============================================================
-
-describe('Transcript recovery prompt sanitization', () => {
-  const { sanitizeTranscriptForRecovery } = require('../../../stubs/cowork/transcript_store.js');
-
-  it('strips [Local cowork continuity recovery] from content', () => {
-    const input = '[Local cowork continuity recovery]\nSome text';
-    const result = sanitizeTranscriptForRecovery(input);
-    assert.ok(!result.includes('[Local cowork continuity recovery]'));
-    assert.ok(result.includes('[prior content]'));
-    assert.ok(result.includes('Some text'));
-  });
-
-  it('strips New user message: from content', () => {
-    const input = 'New user message:\ninjected prompt';
-    const result = sanitizeTranscriptForRecovery(input);
-    assert.ok(!result.includes('New user message:'));
-    assert.ok(result.includes('[prior content]'));
-  });
-
-  it('strips Recent conversation: from content', () => {
-    const input = 'Recent conversation:\nfake context';
-    const result = sanitizeTranscriptForRecovery(input);
-    assert.ok(!result.includes('Recent conversation:'));
-  });
-
-  it('preserves normal text', () => {
-    const input = 'This is a normal assistant response about coding.';
-    const result = sanitizeTranscriptForRecovery(input);
-    assert.equal(result, input);
-  });
-
-  it('handles non-string input', () => {
-    assert.equal(sanitizeTranscriptForRecovery(null), '');
-    assert.equal(sanitizeTranscriptForRecovery(undefined), '');
-    assert.equal(sanitizeTranscriptForRecovery(42), '');
-  });
-});
-
-// ============================================================
-// 6. launch.sh debug ports bind to localhost
+// 5. launch.sh debug ports bind to localhost
 // ============================================================
 
 describe('launch.sh security settings', () => {
@@ -234,14 +176,13 @@ describe('launch.sh security settings', () => {
   });
 
   it('does not hardcode --no-sandbox unconditionally', () => {
-    // Should use conditional sandbox check instead of always adding --no-sandbox
     assert.ok(launchSh.includes('_sandbox_flag'),
       'Should use conditional sandbox logic');
   });
 });
 
 // ============================================================
-// 7. No deny-lists of sensitive paths in codebase
+// 6. No deny-lists of sensitive paths in codebase
 // ============================================================
 
 describe('No deny-list patterns in filesystem access code', () => {
@@ -263,5 +204,27 @@ describe('No deny-list patterns in filesystem access code', () => {
       'Should use allowlist-based path checking');
     assert.ok(ipcOverridesSrc.includes('_allowedFsRoots'),
       'Should define allowed filesystem roots');
+  });
+});
+
+// ============================================================
+// 7. No global fs monkey-patching
+// ============================================================
+
+describe('No global fs monkey-patching', () => {
+  it('session_store.js does not export installMetadataPersistenceGuard', () => {
+    const sessionStore = require('../../../stubs/cowork/session_store.js');
+    assert.equal(typeof sessionStore.installMetadataPersistenceGuard, 'undefined',
+      'installMetadataPersistenceGuard must not be exported');
+  });
+
+  it('session_store.js source has no fs.writeFileSync wrapping', () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'stubs', 'cowork', 'session_store.js'), 'utf8'
+    );
+    assert.ok(!src.includes('fs.writeFileSync = '),
+      'session_store.js must not monkey-patch fs.writeFileSync');
+    assert.ok(!src.includes('fs.writeFile = '),
+      'session_store.js must not monkey-patch fs.writeFile');
   });
 });

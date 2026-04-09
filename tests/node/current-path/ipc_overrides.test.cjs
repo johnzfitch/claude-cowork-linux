@@ -50,12 +50,13 @@ test('matchOverride returns null for non-string channels', () => {
   assert.equal(matchOverride(null, registry), null);
 });
 
-test('ComputerUseTcc_$_getState override returns denied shape', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+test('ComputerUseTcc_$_getState override returns prompt-capable shape', async () => {
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), null);
   const handler = matchOverride('claude.web_$_ComputerUseTcc_$_getState', registry);
   const result = await handler();
-  assert.equal(result.granted, false);
-  assert.equal(result.status, 'denied');
+  assert.equal(result.canPrompt, true);
+  assert.equal(result.accessibility, 'not_determined');
+  assert.equal(result.screenCapture, 'not_determined');
 });
 
 test('ClaudeCode_$_getStatus override returns ready string', async () => {

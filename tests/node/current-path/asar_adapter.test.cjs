@@ -25,6 +25,9 @@ const {
   createSessionStore,
 } = require('../../../stubs/cowork/session_store.js');
 
+// Note: asar_adapter constructor no longer accepts sessionStore directly.
+// It now uses only sessionOrchestrator for normalization.
+
 function createTempDir(t) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-asar-adapter-'));
   t.after(() => {
@@ -136,7 +139,7 @@ test('wrapHandler normalizes getSession and getAll results through the orchestra
 });
 
 test('wrapHandler normalizes getTranscript results through the adapter', async () => {
-  const adapter = createAsarAdapter({ sessionStore: null });
+  const adapter = createAsarAdapter({});
   const handler = adapter.wrapHandler(
     '$eipc_message$_cowork_$_claude.web_$_LocalAgentModeSessions_$_getTranscript',
     async () => ([{ type: 'queue-operation' }, { type: 'assistant' }]),
@@ -144,29 +147,6 @@ test('wrapHandler normalizes getTranscript results through the adapter', async (
 
   const result = await handler();
   assert.deepEqual(result, [{ type: 'assistant' }]);
-});
-
-test('wrapHandler rewrites mutating local-session calls to the canonical active session', async () => {
-  const seenSessionIds = [];
-  const adapter = createAsarAdapter({
-    sessionStore: {
-      resolveMutationSessionId(sessionId) {
-        return sessionId === 'local_duplicate' ? 'local_active' : sessionId;
-      },
-    },
-  });
-
-  const handler = adapter.wrapHandler(
-    '$eipc_message$_cowork_$_claude.web_$_LocalAgentModeSessions_$_sendMessage',
-    async (sessionId, messageText) => {
-      seenSessionIds.push(sessionId);
-      return { sessionId, messageText };
-    },
-  );
-
-  const result = await handler('local_duplicate', 'hello');
-  assert.deepEqual(seenSessionIds, ['local_active']);
-  assert.equal(result.sessionId, 'local_active');
 });
 
 test('rewriteAliasedFilePath remaps stale historical repo paths when target exists', (t) => {
@@ -241,70 +221,6 @@ test('rewriteAliasedFilePath rewrites macOS LocalAgentModeSessions paths to XDG'
   assert.equal(rewritten, targetFile);
 });
 
-test('rewriteIpcArgs remaps stale FileSystem paths before delegating to the asar handler', async (t) => {
-  const tempRoot = createTempDir(t);
-  const oldRoot = path.join(tempRoot, 'claude-cowork-linux');
-  const newRoot = path.join(tempRoot, 'claude-linux');
-  const oldPath = path.join(oldRoot, 'cowork-ui', 'src', 'hooks', 'useStream.ts');
-  const newPath = path.join(newRoot, 'cowork-ui', 'src', 'hooks', 'useStream.ts');
-
-  fs.mkdirSync(path.dirname(newPath), { recursive: true });
-  fs.writeFileSync(newPath, 'export {}\n', 'utf8');
-
-  const adapter = createAsarAdapter({
-    sessionStore: null,
-    fileSystemPathAliases: [
-      { from: path.join(oldRoot, 'cowork-ui'), to: path.join(newRoot, 'cowork-ui') },
-    ],
-  });
-
-  const seenPaths = [];
-  const handler = adapter.wrapHandler(
-    '$eipc_message$_x_$_claude.web_$_FileSystem_$_readLocalFile',
-    async (targetPath) => {
-      seenPaths.push(targetPath);
-      return { ok: true };
-    },
-  );
-
-  await handler(oldPath);
-  assert.deepEqual(seenPaths, [newPath]);
-});
-
-test('rewriteIpcArgs prefers registry-backed orchestrator resolution before alias fallback', async () => {
-  const seenPaths = [];
-  const adapter = createAsarAdapter({
-    fileSystemPathAliases: [
-      {
-        from: '/historical/root',
-        to: '/alias/root',
-      },
-    ],
-    sessionOrchestrator: {
-      resolveFileSystemPath({ targetPath }) {
-        return {
-          resolvedPath: targetPath === '/historical/root/file.txt'
-            ? '/registry/root/file.txt'
-            : targetPath,
-          resolution: targetPath === '/historical/root/file.txt' ? 'registry' : 'missing',
-        };
-      },
-    },
-    sessionStore: null,
-  });
-
-  const handler = adapter.wrapHandler(
-    '$eipc_message$_x_$_claude.web_$_FileSystem_$_readLocalFile',
-    async (targetPath) => {
-      seenPaths.push(targetPath);
-      return { ok: true };
-    },
-  );
-
-  await handler('/historical/root/file.txt');
-  assert.deepEqual(seenPaths, ['/registry/root/file.txt']);
-});
-
 test('getFileSystemRequestContext parses real extracted-app read/open argument shapes', () => {
   assert.deepEqual(
     getFileSystemRequestContext(
@@ -377,7 +293,6 @@ test('wrapHandler rewrites real extracted-app readLocalFile(sessionId, path) cal
         };
       },
     },
-    sessionStore: null,
   });
 
   const handler = adapter.wrapHandler(
@@ -404,7 +319,6 @@ test('wrapHandler rewrites real extracted-app openLocalFile(sessionId, path, sho
         };
       },
     },
-    sessionStore: null,
   });
 
   const seenCalls = [];
@@ -435,7 +349,6 @@ test('wrapHandler rejects existing FileSystem paths outside authorized roots ins
         };
       },
     },
-    sessionStore: null,
   });
 
   const handler = adapter.wrapHandler(
@@ -460,7 +373,6 @@ test('wrapHandler rejects FileSystem access when session context has not been es
         };
       },
     },
-    sessionStore: null,
   });
 
   const handler = adapter.wrapHandler(
@@ -509,7 +421,6 @@ test('wrapHandler surfaces structured relink-required errors for missing tracked
         };
       },
     },
-    sessionStore: null,
   });
 
   const handler = adapter.wrapHandler(
@@ -573,7 +484,6 @@ test('wrapHandler surfaces structured relink-required errors for ambiguous track
         };
       },
     },
-    sessionStore: null,
   });
 
   const handler = adapter.wrapHandler(
@@ -599,71 +509,9 @@ test('wrapHandler surfaces structured relink-required errors for ambiguous track
   );
 });
 
-test('wrapHandler resolves FileSystem paths against the requesting session instead of another active session', async (t) => {
-  const tempRoot = createTempDir(t);
-  const localAgentRoot = path.join(tempRoot, 'claude-local');
-  const workspaceOne = path.join(tempRoot, 'workspace-one');
-  const workspaceTwo = path.join(tempRoot, 'workspace-two');
-  const sessionOneId = 'local_one';
-  const sessionTwoId = 'local_two';
-  const metadataOnePath = path.join(localAgentRoot, 'user', 'org', sessionOneId + '.json');
-  const metadataTwoPath = path.join(localAgentRoot, 'user', 'org', sessionTwoId + '.json');
-  const stalePath = path.join(workspaceOne, 'src', 'note.txt');
-  const recoveredPath = path.join(workspaceOne, 'dst', 'note.txt');
-  const otherSessionPath = path.join(workspaceTwo, 'src', 'note.txt');
-  fs.mkdirSync(path.dirname(metadataOnePath), { recursive: true });
-  fs.mkdirSync(path.dirname(stalePath), { recursive: true });
-  fs.mkdirSync(path.dirname(recoveredPath), { recursive: true });
-  fs.mkdirSync(path.dirname(otherSessionPath), { recursive: true });
-  fs.writeFileSync(metadataOnePath, JSON.stringify({
-    cwd: workspaceOne,
-    sessionId: sessionOneId,
-    userSelectedFolders: [workspaceOne],
-  }, null, 2) + '\n', 'utf8');
-  fs.writeFileSync(metadataTwoPath, JSON.stringify({
-    cwd: workspaceTwo,
-    sessionId: sessionTwoId,
-    userSelectedFolders: [workspaceTwo],
-  }, null, 2) + '\n', 'utf8');
-  fs.writeFileSync(stalePath, 'hello\n', 'utf8');
-  fs.writeFileSync(otherSessionPath, 'hello\n', 'utf8');
-
-  const sessionStore = createSessionStore({ localAgentRoot });
-  sessionStore.observeSessionId(sessionTwoId);
-  const sessionOrchestrator = createSessionOrchestrator({
-    dirs: createDirs({ env: {}, homeDir: tempRoot }),
-    sessionStore,
-  });
-
-  sessionOrchestrator.resolveFileSystemPath({
-    localSessionId: sessionOneId,
-    targetPath: stalePath,
-  });
-  fs.renameSync(stalePath, recoveredPath);
-
-  const adapter = createAsarAdapter({
-    sessionOrchestrator,
-    sessionStore,
-  });
-
-  const getSessionHandler = adapter.wrapHandler(
-    '$eipc_message$_cowork_$_claude.web_$_LocalAgentModeSessions_$_getSession',
-    async () => ({ sessionId: sessionOneId }),
-  );
-  await getSessionHandler({ sender: { id: 101 } }, sessionOneId);
-
-  const seenPaths = [];
-  const fileHandler = adapter.wrapHandler(
-    '$eipc_message$_x_$_claude.web_$_FileSystem_$_readLocalFile',
-    async (event, targetPath) => {
-      seenPaths.push(targetPath);
-      return { ok: true };
-    },
-  );
-
-  await fileHandler({ sender: { id: 101 } }, stalePath);
-  assert.deepEqual(seenPaths, [recoveredPath]);
-});
+// Test for session-scoped FileSystem path resolution removed — the adapter no
+// longer tracks sender→session context (_sessionContextBySender was removed).
+// The Asar handles session routing internally.
 
 test('default file-system aliases include macOS-to-XDG mapping and project sources', () => {
   const homeDir = require('os').homedir();
@@ -688,39 +536,3 @@ test('default file-system aliases include macOS-to-XDG mapping and project sourc
   assert.equal(DEFAULT_FILESYSTEM_PATH_ALIASES[2].from, require('path').join(homeDir, 'dev', 'claude-cowork-linux', 'cowork-ui'));
 });
 
-test('wrapHandler marks start/getSession activity in the session store', async () => {
-  const observed = [];
-  const adapter = createAsarAdapter({
-    sessionStore: {
-      observeSessionId(sessionId) {
-        observed.push(['id', sessionId]);
-      },
-      observeSessionRead(sessionRecord) {
-        observed.push(['read', sessionRecord.sessionId]);
-        return {
-          ...sessionRecord,
-          normalized: true,
-        };
-      },
-    },
-  });
-
-  const startHandler = adapter.wrapHandler(
-    '$eipc_message$_cowork_$_claude.web_$_LocalAgentModeSessions_$_start',
-    async () => ({ sessionId: 'local_started' }),
-  );
-  const getSessionHandler = adapter.wrapHandler(
-    '$eipc_message$_cowork_$_claude.web_$_LocalAgentModeSessions_$_getSession',
-    async () => ({ sessionId: 'local_opened' }),
-  );
-
-  const startResult = await startHandler();
-  const getSessionResult = await getSessionHandler('local_opened');
-
-  assert.deepEqual(observed, [
-    ['id', 'local_started'],
-    ['read', 'local_opened'],
-  ]);
-  assert.equal(startResult.sessionId, 'local_started');
-  assert.equal(getSessionResult.normalized, true);
-});

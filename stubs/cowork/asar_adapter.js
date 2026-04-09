@@ -322,11 +322,9 @@ function describeFileSystemRelinkIpcSurface() {
 
 class AsarAdapter {
   constructor(options) {
-    const { sessionOrchestrator, sessionStore } = options || {};
+    const { sessionOrchestrator } = options || {};
     this._allowActiveSessionFallback = !!(options && options.allowActiveSessionFallback);
     this._sessionOrchestrator = sessionOrchestrator || null;
-    this._sessionStore = sessionStore;
-    this._sessionContextBySender = new Map();
     this._fileSystemPathAliases = Array.isArray(options && options.fileSystemPathAliases) &&
       options.fileSystemPathAliases.length > 0
       ? options.fileSystemPathAliases.slice()
@@ -355,72 +353,6 @@ class AsarAdapter {
     return result;
   }
 
-  rewriteIpcArgs(channel, args) {
-    if (!Array.isArray(args) || args.length === 0) {
-      return args;
-    }
-
-    if (!isLocalSessionMutationChannel(channel) || !this._sessionStore) {
-      return args;
-    }
-
-    const { eventArg, payloadArgs } = splitIpcArgs(args);
-    const [sessionId, ...rest] = payloadArgs;
-    const routedSessionId = this._sessionStore.resolveMutationSessionId(sessionId);
-    if (!routedSessionId || routedSessionId === sessionId) {
-      return args;
-    }
-
-    return joinIpcArgs(eventArg, [routedSessionId, ...rest]);
-  }
-
-  observeLocalSessionActivity(channel, args, result) {
-    if (!this._sessionStore || !isLocalSessionActivationChannel(channel)) {
-      return result;
-    }
-
-    const normalizedChannel = String(channel).toLowerCase();
-    const { eventArg, payloadArgs } = splitIpcArgs(args);
-    if (normalizedChannel.includes('start')) {
-      if (
-        result &&
-        typeof result === 'object' &&
-        typeof result.sessionId === 'string' &&
-        typeof this._sessionStore.observeSessionId === 'function'
-      ) {
-        this._sessionStore.observeSessionId(result.sessionId);
-        this._rememberSessionContext(eventArg, result.sessionId);
-      }
-      return result;
-    }
-
-    if (normalizedChannel.includes('getsession') && typeof this._sessionStore.observeSessionRead === 'function') {
-      const observedResult = this._sessionStore.observeSessionRead(result);
-      if (observedResult && typeof observedResult.sessionId === 'string') {
-        this._rememberSessionContext(eventArg, observedResult.sessionId);
-      }
-      return observedResult;
-    }
-
-    if (normalizedChannel.includes('gettranscript') || normalizedChannel.includes('setfocusedsession')) {
-      const [sessionId] = payloadArgs;
-      if (typeof sessionId === 'string' && typeof this._sessionStore.observeSessionId === 'function') {
-        this._sessionStore.observeSessionId(sessionId);
-        this._rememberSessionContext(eventArg, sessionId);
-      }
-    }
-
-    return result;
-  }
-
-  _rememberSessionContext(eventArg, localSessionId) {
-    const sessionContextKey = getSessionContextKey(eventArg);
-    if (!sessionContextKey || typeof localSessionId !== 'string' || !localSessionId.trim()) {
-      return;
-    }
-    this._sessionContextBySender.set(sessionContextKey, localSessionId);
-  }
-
   _rewriteFileSystemArgs(channel, args) {
     const normalizedChannel = typeof channel === 'string' ? channel.toLowerCase() : '';
     const fileSystemRequest = getFileSystemRequestContext(normalizedChannel, args);
@@ -435,9 +367,7 @@ class AsarAdapter {
       return { rewrittenArgs: args };
     }
 
-    const sessionContextKey = getSessionContextKey(eventArg);
-    const contextSessionId = explicitLocalSessionId ||
-      (sessionContextKey ? this._sessionContextBySender.get(sessionContextKey) || null : null);
+    const contextSessionId = explicitLocalSessionId || null;
     const registryResolution = this._sessionOrchestrator && typeof this._sessionOrchestrator.resolveFileSystemPath === 'function'
       ? this._sessionOrchestrator.resolveFileSystemPath({
         allowActiveSessionFallback: this._allowActiveSessionFallback && !contextSessionId,
@@ -513,10 +443,8 @@ class AsarAdapter {
       if (isFileSystemPathRewriteChannel(channel)) {
         rewrittenArgs = self._rewriteFileSystemArgs(channel, args).rewrittenArgs;
       }
-      rewrittenArgs = self.rewriteIpcArgs(channel, rewrittenArgs);
       const result = await handler(...rewrittenArgs);
-      const observedResult = self.observeLocalSessionActivity(channel, rewrittenArgs, result);
-      return self.normalizeIpcResult(channel, observedResult);
+      return self.normalizeIpcResult(channel, result);
     };
     wrappedHandler.__coworkLocalSessionWrapped = true;
     return wrappedHandler;

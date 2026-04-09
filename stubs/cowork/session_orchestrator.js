@@ -16,13 +16,6 @@ const {
   resolveHostCwdPath,
 } = require('./process_manager.js');
 const {
-  handleFlatlineResumeFailure,
-  planSessionResume,
-} = require('./resume_coordinator.js');
-const {
-  buildTranscriptContinuityPlan,
-} = require('./transcript_store.js');
-const {
   extractCliSessionId,
   isFlatlineResumeResult,
   isSuccessfulResult,
@@ -692,25 +685,8 @@ class SessionOrchestrator {
     // unresumable (e.g. corrupt/empty file on disk). If no local transcript
     // exists at all, trust the asar's --resume — the CLI may store session
     // state server-side or in a location we don't scan.
-    const resumeArgIndex = findResumeArgIndex(hostArgs);
-    const currentResumeCliSessionId = resumeArgIndex === -1 ? null : hostArgs[resumeArgIndex + 1];
-    const sessionDirectory = deriveSessionDirectory(hostConfigDir);
-    if (!bridgeSession && currentResumeCliSessionId && sessionDirectory) {
-      const sessionData = {
-        cliSessionId: currentResumeCliSessionId,
-        userSelectedFolders: typeof hostCwdPath === 'string' && path.isAbsolute(hostCwdPath) ? [hostCwdPath] : [],
-      };
-      const resumePlan = planSessionResume({
-        sessionData,
-        sessionDirectory,
-      });
-
-      if (!resumePlan.shouldResume && resumePlan.reason === 'transcript_not_resumable') {
-        hostArgs = removeResumeArgs(hostArgs, trace);
-      } else if (resumePlan.shouldResume && resumePlan.resumeCliSessionId) {
-        hostArgs = replaceResumeArgs(hostArgs, resumePlan.resumeCliSessionId, trace);
-      }
-    }
+    // Trust the Asar's --resume <ccId> argument as-is. The CLI handles resume
+    // natively; we don't reimplement transcript selection or resume planning.
 
     trace('vm.spawn() sharedCwdPath=' + sharedCwdPath + ' hostCwdPath=' + hostCwdPath);
     return {
@@ -848,72 +824,6 @@ class SessionOrchestrator {
       reason,
       targetPath: normalizedTargetPath,
     });
-  }
-
-  prepareFlatlineRetry(context) {
-    const {
-      args,
-      envVars,
-      sharedCwdPath,
-    } = context || {};
-    const {
-      canonicalizePathForHostAccess,
-      trace = () => {},
-      translateVmPathStrict,
-    } = this._deps;
-
-    const { translatedEnvVars, hostConfigDir } = translateHostConfigDir(envVars, {
-      canonicalizePathForHostAccess,
-      trace,
-      translateVmPathStrict,
-    });
-
-    const resumeArgIndex = findResumeArgIndex(args);
-    const currentResumeCliSessionId = resumeArgIndex === -1 ? null : args[resumeArgIndex + 1];
-    const sessionDirectory = deriveSessionDirectory(hostConfigDir);
-    if (!currentResumeCliSessionId || !sessionDirectory) {
-      return {
-        success: false,
-        error: 'Missing resumable session context for flatline retry',
-      };
-    }
-
-    const metadataPath = deriveSessionMetadataPath(hostConfigDir);
-    const persistedSessionData = readSessionDataFromMetadata(metadataPath, trace);
-    const sessionData = persistedSessionData && typeof persistedSessionData === 'object'
-      ? persistedSessionData
-      : {
-        cliSessionId: currentResumeCliSessionId,
-        userSelectedFolders: typeof sharedCwdPath === 'string' && path.isAbsolute(sharedCwdPath)
-          ? [sharedCwdPath]
-          : [],
-      };
-
-    const retryPlan = handleFlatlineResumeFailure({
-      sessionData,
-      sessionDirectory,
-    });
-    const continuityPlan = buildTranscriptContinuityPlan({
-      localSessionId: sessionData.sessionId,
-      preferredRoot: Array.isArray(sessionData.userSelectedFolders) && sessionData.userSelectedFolders.length > 0
-        ? sessionData.userSelectedFolders.find((folderPath) => typeof folderPath === 'string' && folderPath.trim()) || null
-        : null,
-      staleCliSessionId: currentResumeCliSessionId,
-      transcriptCandidate: retryPlan.transcriptCandidate,
-    });
-    if (metadataPath) {
-      persistSessionDataToMetadata(metadataPath, retryPlan.sessionData, trace);
-    }
-
-    return {
-      success: true,
-      args: removeResumeArgs(args, trace),
-      envVars: translatedEnvVars,
-      retryPlan,
-      continuityPlan,
-      retryMode: continuityPlan ? 'continuity' : 'fresh',
-      sharedCwdPath,
-    };
   }
 
   persistRecoveredCliSession(context) {

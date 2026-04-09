@@ -195,13 +195,25 @@ const nativeStub = {
     spawn('xdg-open', [revealDir], { detached: true, stdio: 'ignore' });
   },
 
-  // Accessibility — deny by default (Linux has no TCC prompt)
-  isAccessibilityEnabled: () => false,
-  requestAccessibilityPermission: () => Promise.resolve(false),
+  // Accessibility — delegate to permission manager for user prompting
+  isAccessibilityEnabled: () => {
+    const pm = global.__coworkPermissionManager;
+    return pm ? pm.isGranted('accessibility') : false;
+  },
+  requestAccessibilityPermission: () => {
+    const pm = global.__coworkPermissionManager;
+    return pm ? pm.requestWithDialog('accessibility') : Promise.resolve(false);
+  },
 
-  // Screen capture — deny by default (Linux has no TCC prompt)
-  hasScreenCapturePermission: () => false,
-  requestScreenCapturePermission: () => Promise.resolve(false),
+  // Screen capture — delegate to permission manager for user prompting
+  hasScreenCapturePermission: () => {
+    const pm = global.__coworkPermissionManager;
+    return pm ? pm.isGranted('screen') : false;
+  },
+  requestScreenCapturePermission: () => {
+    const pm = global.__coworkPermissionManager;
+    return pm ? pm.requestWithDialog('screen') : Promise.resolve(false);
+  },
 };
 
 // ============================================================
