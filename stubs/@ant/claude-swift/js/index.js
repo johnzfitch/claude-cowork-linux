@@ -325,7 +325,11 @@ function createMountSymlinks(sessionName, additionalMounts) {
       // On macOS, uploads is a VM shared mount. On Linux (no VM),
       // we symlink to the host uploads dir so Claude Code can see files.
       const uploadsRelPath = (typeof mountInfo === 'object' && mountInfo !== null) ? (mountInfo.path || '') : String(mountInfo || '');
-      const hostUploadsPath = path.join(os.homedir(), uploadsRelPath);
+      const hostUploadsPath = path.isAbsolute(uploadsRelPath)
+        ? uploadsRelPath
+        : ('/' + uploadsRelPath).startsWith(os.homedir())
+          ? '/' + uploadsRelPath
+          : path.join(os.homedir(), uploadsRelPath);
       try {
         fs.mkdirSync(hostUploadsPath, { recursive: true, mode: 0o700 });
         if (fs.existsSync(mountPoint)) {
@@ -393,10 +397,17 @@ function createMountSymlinks(sessionName, additionalMounts) {
     }
 
     // Construct the full host path
-    // Empty path means homedir itself
+    // Empty path means homedir itself.
+    // Since Claude Desktop v1.569.0+, getVMStorageSubpath returns root-relative
+    // subpaths (e.g. "home/user/.config/...") instead of homedir-relative paths.
+    // Detect this format to avoid doubled paths like /home/user/home/user/...
     const hostPath = relativePath === ''
       ? os.homedir()
-      : path.join(os.homedir(), relativePath);
+      : path.isAbsolute(relativePath)
+        ? relativePath
+        : ('/' + relativePath).startsWith(os.homedir())
+          ? '/' + relativePath
+          : path.join(os.homedir(), relativePath);
 
     trace('  Relative path: "' + relativePath + '"');
     trace('  Host path: ' + hostPath);
