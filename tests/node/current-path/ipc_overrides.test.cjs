@@ -577,3 +577,119 @@ test('setMenuBarEnabled returns null', async () => {
   const result = await handler(null, true);
   assert.equal(result, null);
 });
+
+// ================================================================
+// Permission manager integration tests
+// ================================================================
+
+test('TCC getState reflects permission manager grants', async () => {
+  const mockPm = {
+    getTccState: () => ({ accessibility: 'granted', screenCapture: 'denied', canPrompt: true }),
+  };
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), mockPm);
+  const handler = matchOverride('claude.web_$_ComputerUseTcc_$_getState', registry);
+  const result = await handler();
+  assert.equal(result.accessibility, 'granted');
+  assert.equal(result.screenCapture, 'denied');
+  assert.equal(result.canPrompt, true);
+});
+
+test('requestAccessibility delegates to permission manager', async () => {
+  const mockPm = {
+    requestWithDialog: async (perm) => {
+      assert.equal(perm, 'accessibility');
+      return true;
+    },
+  };
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), mockPm);
+  const handler = matchOverride('claude.web_$_ComputerUseTcc_$_requestAccessibility', registry);
+  const result = await handler();
+  assert.deepEqual(result, { granted: true });
+});
+
+test('requestScreenRecording delegates to permission manager', async () => {
+  const mockPm = {
+    requestWithDialog: async (perm) => {
+      assert.equal(perm, 'screen');
+      return true;
+    },
+  };
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), mockPm);
+  const handler = matchOverride('claude.web_$_ComputerUseTcc_$_requestScreenRecording', registry);
+  const result = await handler();
+  assert.deepEqual(result, { granted: true });
+});
+
+test('getCurrentSessionGrants delegates to permission manager', async () => {
+  const mockPm = {
+    getCurrentGrants: () => [{ permission: 'screen', grantedAt: 123 }],
+  };
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), mockPm);
+  const handler = matchOverride('claude.web_$_ComputerUseTcc_$_getCurrentSessionGrants', registry);
+  const result = await handler();
+  assert.deepEqual(result, [{ permission: 'screen', grantedAt: 123 }]);
+});
+
+test('revokeGrant delegates to permission manager', async () => {
+  const revokeCalls = [];
+  const mockPm = {
+    revoke: (permission) => { revokeCalls.push(permission); },
+  };
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), mockPm);
+  const handler = matchOverride('claude.web_$_ComputerUseTcc_$_revokeGrant', registry);
+  await handler(null, 'accessibility');
+  assert.equal(revokeCalls.length, 1);
+  assert.equal(revokeCalls[0], 'accessibility');
+});
+
+test('getBridgeConsent delegates to permission manager', async () => {
+  const mockPm = {
+    requestBridgeConsent: async () => ({ consented: true }),
+  };
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), mockPm);
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
+  const result = await handler(null);
+  assert.deepEqual(result, { consented: true });
+});
+
+test('requestFolderTccAccess delegates to permission manager', async () => {
+  const mockPm = {
+    requestFolderAccess: async (folderPath) => {
+      assert.equal(folderPath, '/home/user/project');
+      return { granted: true };
+    },
+  };
+  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }), mockPm);
+  const handler = matchOverride('test_$_LocalAgentModeSessions_$_requestFolderTccAccess', registry);
+  const result = await handler(null, '/home/user/project');
+  assert.deepEqual(result, { granted: true });
+});
+
+test('linux_ipc_stubs exports have correct shape', () => {
+  const {
+    COMPUTER_USE_TCC_INITIAL,
+    COMPUTER_USE_TCC_PROMPT_CAPABLE,
+    COMPUTER_USE_TCC_REQUEST_INITIAL,
+    COMPUTER_USE_TCC_REQUEST_PROMPT_CAPABLE,
+  } = require('../../../stubs/cowork/linux_ipc_stubs.js');
+
+  // COMPUTER_USE_TCC_INITIAL
+  assert.equal(COMPUTER_USE_TCC_INITIAL.canPrompt, true);
+  assert.equal(COMPUTER_USE_TCC_INITIAL.accessibility, 'not_determined');
+  assert.equal(COMPUTER_USE_TCC_INITIAL.screenCapture, 'not_determined');
+
+  // COMPUTER_USE_TCC_PROMPT_CAPABLE
+  assert.equal(COMPUTER_USE_TCC_PROMPT_CAPABLE.canPrompt, true);
+  assert.equal(COMPUTER_USE_TCC_PROMPT_CAPABLE.status, 'not_determined');
+  assert.equal(COMPUTER_USE_TCC_PROMPT_CAPABLE.granted, false);
+
+  // COMPUTER_USE_TCC_REQUEST_INITIAL
+  assert.equal(COMPUTER_USE_TCC_REQUEST_INITIAL.canPrompt, true);
+  assert.equal(COMPUTER_USE_TCC_REQUEST_INITIAL.accessibility, 'not_determined');
+  assert.equal(COMPUTER_USE_TCC_REQUEST_INITIAL.screenCapture, 'not_determined');
+  assert.equal(COMPUTER_USE_TCC_REQUEST_INITIAL.success, false);
+
+  // COMPUTER_USE_TCC_REQUEST_PROMPT_CAPABLE
+  assert.equal(COMPUTER_USE_TCC_REQUEST_PROMPT_CAPABLE.canPrompt, true);
+  assert.equal(COMPUTER_USE_TCC_REQUEST_PROMPT_CAPABLE.granted, false);
+});

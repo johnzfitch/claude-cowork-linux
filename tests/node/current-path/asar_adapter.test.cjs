@@ -530,3 +530,86 @@ test('default file-system aliases include macOS-to-XDG mapping and project sourc
   assert.equal(DEFAULT_FILESYSTEM_PATH_ALIASES[2].from, require('path').join(homeDir, 'dev', 'claude-cowork-linux', 'cowork-ui'));
 });
 
+// ================================================================
+// Simplified wrapHandler behavior tests
+// ================================================================
+
+test('wrapHandler passes through non-session channels unchanged', async () => {
+  const adapter = createAsarAdapter({
+    sessionOrchestrator: {
+      normalizeSessionRecord(rec) {
+        return { ...rec, normalized: true };
+      },
+    },
+  });
+
+  const handler = adapter.wrapHandler(
+    '$eipc_message$_cowork_$_claude.web_$_ClaudeCode_$_getStatus',
+    async () => 'ready',
+  );
+
+  const result = await handler();
+  assert.equal(result, 'ready');
+});
+
+test('wrapHandler normalizes single session records for getSession', async () => {
+  const adapter = createAsarAdapter({
+    sessionOrchestrator: {
+      normalizeSessionRecord(rec) {
+        return { ...rec, taggedByOrchestrator: true };
+      },
+    },
+  });
+
+  const handler = adapter.wrapHandler(
+    '$eipc_message$_cowork_$_claude.web_$_LocalAgentModeSessions_$_getSession',
+    async () => ({ sessionId: 'local_test', name: 'Test Session' }),
+  );
+
+  const result = await handler();
+  assert.equal(result.sessionId, 'local_test');
+  assert.equal(result.name, 'Test Session');
+  assert.equal(result.taggedByOrchestrator, true);
+});
+
+test('wrapHandler normalizes array results for getAll', async () => {
+  const adapter = createAsarAdapter({
+    sessionOrchestrator: {
+      normalizeSessionRecord(rec) {
+        return { ...rec, taggedByOrchestrator: true };
+      },
+    },
+  });
+
+  const handler = adapter.wrapHandler(
+    '$eipc_message$_cowork_$_claude.web_$_LocalSessions_$_getAll',
+    async () => ([
+      { sessionId: 'local_x', name: 'X' },
+      { sessionId: 'local_y', name: 'Y' },
+      { sessionId: 'local_z', name: 'Z' },
+    ]),
+  );
+
+  const result = await handler();
+  assert.equal(result.length, 3);
+  for (const entry of result) {
+    assert.equal(entry.taggedByOrchestrator, true);
+  }
+  assert.equal(result[0].sessionId, 'local_x');
+  assert.equal(result[1].sessionId, 'local_y');
+  assert.equal(result[2].sessionId, 'local_z');
+});
+
+test('createAsarAdapter with no sessionOrchestrator does not crash', async () => {
+  const adapter = createAsarAdapter({});
+
+  // wrapHandler should still work for non-session channels
+  const handler = adapter.wrapHandler(
+    '$eipc_message$_cowork_$_claude.web_$_ClaudeCode_$_getStatus',
+    async () => 'ready',
+  );
+
+  const result = await handler();
+  assert.equal(result, 'ready');
+});
+
