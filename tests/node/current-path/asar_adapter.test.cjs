@@ -15,15 +15,9 @@ const {
   isLocalSessionResultChannel,
   rewriteAliasedFilePath,
 } = require('../../../stubs/cowork/asar_adapter.js');
-const {
-  createDirs,
-} = require('../../../stubs/cowork/dirs.js');
-const {
-  createSessionOrchestrator,
-} = require('../../../stubs/cowork/session_orchestrator.js');
-const {
-  createSessionStore,
-} = require('../../../stubs/cowork/session_store.js');
+// createDirs, createSessionOrchestrator, createSessionStore imports removed —
+// the session-scoped FileSystem path resolution test that needed them was removed
+// when _sessionContextBySender was deleted from asar_adapter.js.
 
 // Note: asar_adapter constructor no longer accepts sessionStore directly.
 // It now uses only sessionOrchestrator for normalization.

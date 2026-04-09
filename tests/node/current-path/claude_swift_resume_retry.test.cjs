@@ -4,7 +4,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { sanitizeTranscriptProjectKey } = require('../../../stubs/cowork/transcript_store.js');
 
 function createTempDir(t) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-resume-retry-'));
@@ -32,86 +31,6 @@ function setupPackedStubFixture(tempRoot) {
     tempRepoRoot,
     modulePath,
   };
-}
-
-function runSwiftRetryHarness(options) {
-  const {
-    attemptFile,
-    configDir,
-    fakeClaudePath,
-    modulePath,
-    resultFile,
-    sharedCwdPath,
-    tempHome,
-    tempRepoRoot,
-    workerEnv,
-    stdinText,
-    workerArgs = ['--resume', 'resume-cli-session'],
-  } = options;
-
-  const script = `
-    const fs = require('fs');
-    const addon = require(${JSON.stringify(modulePath)});
-    const resultFile = ${JSON.stringify(resultFile)};
-    const outputs = [];
-    const exits = [];
-    const errors = [];
-
-    addon.vm.setEventCallbacks(
-      (id, data) => outputs.push({ id, data }),
-      (_id, data) => errors.push({ type: 'stderr', data }),
-      (id, code, signal) => {
-        exits.push({ id, code, signal });
-        fs.writeFileSync(resultFile, JSON.stringify({ outputs, exits, errors }, null, 2));
-        process.exit(0);
-      },
-      (id, message, stack) => {
-        errors.push({ type: 'error', id, message, stack });
-      },
-      () => {},
-      () => {}
-    );
-
-    const spawnResult = addon.vm.spawn(
-      'proc-1',
-      'demo',
-      ${JSON.stringify(fakeClaudePath)},
-      ${JSON.stringify(workerArgs)},
-      {},
-      ${JSON.stringify({
-        CLAUDE_CONFIG_DIR: configDir,
-        FLATLINE_ATTEMPT_FILE: attemptFile,
-        ...workerEnv,
-      })},
-      null,
-      true,
-      [],
-      ${JSON.stringify(sharedCwdPath)}
-    );
-
-    if (!spawnResult || spawnResult.success !== true) {
-      fs.writeFileSync(resultFile, JSON.stringify({ spawnResult, outputs, exits, errors }, null, 2));
-      process.exit(2);
-    }
-
-    addon.vm.writeStdin('proc-1', ${JSON.stringify(stdinText)});
-
-    setTimeout(() => {
-      fs.writeFileSync(resultFile, JSON.stringify({ outputs, exits, errors, timeout: true }, null, 2));
-      process.exit(3);
-    }, 4000);
-  `;
-
-  return spawnSync(process.execPath, ['-e', script], {
-    cwd: tempRepoRoot,
-    env: {
-      ...process.env,
-      HOME: tempHome,
-      XDG_CONFIG_HOME: path.join(tempHome, '.config'),
-      FLATLINE_ATTEMPT_FILE: attemptFile,
-    },
-    encoding: 'utf8',
-  });
 }
 
 function runSwiftBridgeHarness(options) {
