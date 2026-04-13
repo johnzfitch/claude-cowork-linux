@@ -896,6 +896,64 @@ Module.prototype.require = function(id) {
     global.__coworkElectronPatched = true;
     console.log('[Frame Fix] Intercepting electron module');
 
+    // ── Native titlebar for Linux/Wayland (KDE, GNOME, etc.) ──────────
+    // On macOS, titleBarStyle:"hidden" + titleBarOverlay works fine:
+    // the OS draws traffic lights and clicks pass through to child elements.
+    // On Linux/Wayland, this creates an undecorated window where
+    // -webkit-app-region:drag swallows ALL pointer events, making the
+    // tab bar (Chat/Cowork/Código) unclickable.
+    //
+    // Fix: wrap BrowserWindow in a Proxy that strips macOS-specific
+    // window chrome options (titleBarStyle, titleBarOverlay,
+    // trafficLightPosition), giving the compositor (KWin, Mutter, etc.)
+    // native window decorations. Also inject CSS to disable app-region:drag.
+    //
+    // Note: BrowserWindow is defined as a non-configurable getter on the
+    // electron module, so Object.defineProperty cannot replace it.
+    // A Proxy on the module object is the only way to intercept it.
+    if (REAL_PLATFORM === 'linux') {
+      const _OrigBrowserWindow = module.BrowserWindow;
+      function _PatchedBrowserWindow(opts) {
+        if (opts && typeof opts === 'object') {
+          if (opts.titleBarStyle) {
+            console.log('[Frame Fix] Removing titleBarStyle:', opts.titleBarStyle);
+            delete opts.titleBarStyle;
+          }
+          if (opts.titleBarOverlay !== undefined) {
+            delete opts.titleBarOverlay;
+          }
+          if (opts.trafficLightPosition !== undefined) {
+            delete opts.trafficLightPosition;
+          }
+        }
+        return new _OrigBrowserWindow(opts);
+      }
+      Object.setPrototypeOf(_PatchedBrowserWindow, _OrigBrowserWindow);
+      _PatchedBrowserWindow.prototype = _OrigBrowserWindow.prototype;
+      Object.defineProperty(_PatchedBrowserWindow, 'name', { value: 'BrowserWindow' });
+
+      global.__coworkPatchedBrowserWindow = _PatchedBrowserWindow;
+      console.log('[Frame Fix] BrowserWindow patched for native Linux decorations');
+
+      // Inject CSS into all webContents to disable -webkit-app-region:drag.
+      // With native decorations, window dragging is handled by the compositor,
+      // so the CSS drag region is unnecessary and actively harmful on Linux.
+      const _appRef = module.app || (module.default && module.default.app);
+      if (_appRef) {
+        const _fixCSS = '* { -webkit-app-region: no-drag !important; app-region: no-drag !important; }';
+        _appRef.on('web-contents-created', (_ev, contents) => {
+          contents.on('dom-ready', () => {
+            contents.insertCSS(_fixCSS).catch(() => {});
+          });
+          contents.on('did-navigate', () => {
+            contents.insertCSS(_fixCSS).catch(() => {});
+          });
+        });
+        console.log('[Frame Fix] CSS app-region fix registered for all webContents');
+      }
+    }
+    // ── End native titlebar ───────────────────────────────────────────
+
     // Spoof user agent to macOS so the webapp shows the correct branding
     // and auth flows (Google OAuth checks UA for platform compatibility).
     // Without this, the webapp sees "Linux" in the UA and falls through
@@ -1172,6 +1230,21 @@ Module.prototype.require = function(id) {
       }
     }
 
+  }
+
+  // On Linux, wrap the electron module in a Proxy to intercept the
+  // non-configurable BrowserWindow getter (see native titlebar patch above).
+  if (id === 'electron' && REAL_PLATFORM === 'linux' && global.__coworkPatchedBrowserWindow) {
+    return new Proxy(module, {
+      get(target, prop) {
+        if (prop === 'BrowserWindow') return global.__coworkPatchedBrowserWindow;
+        return target[prop];
+      },
+      set(target, prop, value) {
+        target[prop] = value;
+        return true;
+      },
+    });
   }
 
   return module;
