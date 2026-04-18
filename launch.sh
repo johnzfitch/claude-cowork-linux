@@ -108,6 +108,18 @@ if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!
   sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
 fi
 
+# Fix resource path lookup for i18n, shim-lib, icon, etc.
+# The asar uses `app.isPackaged ? process.resourcesPath : <asar-relative path>`.
+# On Arch Linux, `process.resourcesPath` is the system electron's dir
+# (e.g., /usr/lib/electron39/resources/), which only has default_app.asar —
+# locales live at /usr/lib/electron39/locales/*.pak (wrong format, wrong path).
+# The fallback branch resolves to resources/ inside our asar, where launch.sh
+# populates resources/i18n/*.json. Always use the fallback so locale JSONs load.
+if [ -f "$INDEX_JS" ] && grep -qE '[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?process\.resourcesPath:' "$INDEX_JS"; then
+  echo "Patching resourcesPath lookups to use asar-internal resources/..."
+  sed -i -E 's/[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?process\.resourcesPath://g' "$INDEX_JS"
+fi
+
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
 _needs_repack=false
