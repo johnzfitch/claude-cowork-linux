@@ -522,6 +522,9 @@ class SessionOrchestrator {
     ) {
       hostCommand = resolveClaudeBinaryPath();
       trace('Translated command: ' + normalizedCommand + ' -> ' + hostCommand);
+    } else if (commandBasename === 'bash' || commandBasename === 'sh') {
+      hostCommand = '/usr/bin/' + commandBasename;
+      trace('Translated shell command: ' + normalizedCommand + ' -> ' + hostCommand);
     } else if (allowedPrefixes.some((prefix) => normalizedCommand.startsWith(prefix))) {
       if (fs.existsSync(normalizedCommand)) {
         hostCommand = normalizedCommand;
