@@ -237,6 +237,36 @@ function canonicalizePathForHostAccess(sessionsBase, inputPath) {
   return canonicalizeHostPath(inputPath);
 }
 
+// Matches /sessions/<sessionName>/mnt/<mountKey>[/<rest>] embedded anywhere
+// in a string. Stops at whitespace and shell metacharacters so paths in
+// `bash -c "..."` strings (quoted, piped, redirected, subshelled) translate
+// cleanly without straying into adjacent tokens.
+const VM_PATH_RE = /\/sessions\/[^\/\s'"`<>|&;()$\n]+\/mnt\/[^\/\s'"`<>|&;()$\n]+(?:\/[^\s'"`<>|&;()$\n]*)?/g;
+
+function translateVmPathsInString(sessionsBase, str) {
+  // Rewrite VM paths embedded in a string (typically a shell command arg or
+  // env-var value) to host paths, using canonicalizePathForHostAccess for
+  // each match. Non-string inputs and host-path-only strings pass through.
+  if (typeof str !== 'string') return str;
+  return str.replace(VM_PATH_RE, (match) => {
+    // SECURITY: refuse translation of paths containing parent-dir traversal.
+    // Without a VM, /sessions/<n>/mnt/<key>/.. would resolve through the host
+    // symlink to escape the user-granted mount boundary (macOS prevents this
+    // via VM filesystem; on Linux we preserve the same boundary by leaving
+    // such paths untranslated -- bash then ENOENTs them, matching the
+    // pre-fix behavior for malicious or buggy callers).
+    if (match.includes('/..')) return match;
+    try {
+      return canonicalizePathForHostAccess(sessionsBase, match);
+    } catch (_) {
+      // Translation failed (e.g. translateVmPathStrict threw); leave the
+      // arg unchanged so the spawned process surfaces the original error
+      // rather than a misleading translated path.
+      return match;
+    }
+  });
+}
+
 module.exports = {
   canonicalizeHostPath,
   canonicalizePathForHostAccess,
@@ -247,4 +277,5 @@ module.exports = {
   isPathSafe,
   resolveAbsoluteDirectory,
   translateVmPathStrict,
+  translateVmPathsInString,
 };

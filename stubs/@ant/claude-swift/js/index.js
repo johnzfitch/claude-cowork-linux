@@ -40,6 +40,7 @@ const {
   canonicalizeHostPath,
   canonicalizeVmPathStrict: _canonicalizeVmPathStrict,
   canonicalizePathForHostAccess: _canonicalizePathForHostAccess,
+  translateVmPathsInString: _translateVmPathsInString,
 } = require('../../../../cowork/dirs.js');
 const { createSessionStore } = require('../../../../cowork/session_store.js');
 const { createSessionsApi } = require('../../../../cowork/sessions_api.js');
@@ -146,6 +147,15 @@ function translateVmPathStrict(vmPath) {
     }
     throw err;
   }
+}
+
+// Wrapper over dirs.js translateVmPathsInString that binds SESSIONS_BASE.
+// Used to rewrite VM paths embedded in spawn() command args and env-var
+// values (the bundled SDK constructs /sessions/<n>/mnt/<key>/... paths
+// from its macOS VM mental model; on Linux those paths reach bash verbatim
+// and ENOENT without translation).
+function translateVmPathsInString(str) {
+  return _translateVmPathsInString(SESSIONS_BASE, str);
 }
 
 function extractSessionNameFromVmPathStrict(vmPath) {
@@ -1487,13 +1497,26 @@ class SwiftAddonStub extends EventEmitter {
       trace('spawn envVars keys from asar: ' + Object.keys(envVars).join(', '));
     }
     try {
+      // Translate /sessions/<n>/mnt/<key>/... VM paths embedded in args
+      // and env-var values to host paths. The bundled SDK constructs these
+      // from its macOS VM mental model; on Linux they reach bash verbatim
+      // and ENOENT without translation. cwd is already translated downstream
+      // in buildSpawnOptions; this covers the remaining surfaces.
+      const translatedArgs = Array.isArray(args)
+        ? args.map(translateVmPathsInString)
+        : [];
+      const translatedEnvVars = envVars && typeof envVars === 'object'
+        ? Object.fromEntries(
+            Object.entries(envVars).map(([k, v]) => [k, translateVmPathsInString(v)])
+          )
+        : {};
       const processState = {
         id,
         processName,
         command,
-        args: Array.isArray(args) ? args.slice() : [],
+        args: translatedArgs,
         options: options && typeof options === 'object' ? { ...options } : {},
-        envVars: envVars && typeof envVars === 'object' ? { ...envVars } : {},
+        envVars: translatedEnvVars,
         additionalMounts,
         allowedDomains,
         sharedCwdPath,
@@ -1528,7 +1551,9 @@ class SwiftAddonStub extends EventEmitter {
       if (optEnv && typeof optEnv === 'object') {
         trace('WARNING: spawnSync() ignoring options.env override');
       }
-      const result = nodeSpawnSync(command, args || [], { encoding: 'utf-8', cwd, ...safeOptions });
+      // Translate VM paths in args (mirrors the same fix in spawn() above).
+      const translatedArgs = Array.isArray(args) ? args.map(translateVmPathsInString) : [];
+      const result = nodeSpawnSync(command, translatedArgs, { encoding: 'utf-8', cwd, ...safeOptions });
       return { stdout: result.stdout, stderr: result.stderr, status: result.status, signal: result.signal, error: result.error };
     } catch (err) {
       console.error('[claude-swift] spawnSync error:', err);
