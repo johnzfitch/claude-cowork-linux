@@ -191,7 +191,7 @@ exec electron /usr/lib/claude-cowork/app.asar \
     --no-sandbox \
     --disable-gpu \
     --password-store="$PW_STORE" \
-    --enable-features=GlobalShortcutsPortal "$@"
+    --enable-features=GlobalShortcutsPortal,WaylandWindowDecorations "$@"
 EOF
 
     # Install desktop entry
