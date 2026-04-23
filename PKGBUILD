@@ -1,7 +1,7 @@
 # Maintainer: Zack Fitch <zack@internetuniverse.org>
 pkgname=claude-cowork-linux
 pkgver=1.1.4010
-pkgrel=10
+pkgrel=11
 pkgdesc="Anthropic Claude Desktop with Cowork (local agent) support for Linux"
 arch=('x86_64')
 url="https://github.com/johnzfitch/claude-cowork-linux"
@@ -14,7 +14,7 @@ depends=(
 # at runtime and falls back to --password-store=basic if unavailable
 makedepends=(
     'p7zip'
-    'npm'
+    'asar'
     'curl'
 )
 optdepends=(
@@ -61,15 +61,11 @@ prepare() {
     dmg_url=$(node "${srcdir}/claude-cowork-linux/fetch-dmg.js" --url)
     echo "Downloading DMG from CDN..."
     curl -fSL --progress-bar -o "${srcdir}/Claude.dmg" "$dmg_url"
-
-    # Install asar tool locally
-    npm install --prefix "${srcdir}" @electron/asar >/dev/null 2>&1
 }
 
 build() {
     cd "${srcdir}"
 
-    local _asar="${srcdir}/node_modules/.bin/asar"
     local _repo="${srcdir}/claude-cowork-linux"
 
     # Extract DMG with 7z
@@ -97,7 +93,7 @@ build() {
     fi
 
     # Extract app.asar
-    "$_asar" extract "$_app_asar" "${srcdir}/linux-app-extracted"
+    asar extract "$_app_asar" "${srcdir}/linux-app-extracted"
 
     # Copy unpacked native modules if present
     local _unpacked="${_claude_app}/Contents/Resources/app.asar.unpacked"
@@ -138,6 +134,64 @@ build() {
     cp -f "${_repo}"/stubs/cowork/*.sh \
           "${srcdir}/linux-app-extracted/cowork/" 2>/dev/null || true
 
+    # Linux port wiring (mirrors launch.sh; without these the renderer UI never appears).
+    echo "Applying Linux port patches..."
+    local _ext="${srcdir}/linux-app-extracted"
+    local _pkgjson="${_ext}/package.json"
+    local _indexjs="${_ext}/.vite/build/index.js"
+
+    # Trampoline: override resourcesPath, then load frame-fix-entry.js.
+    cat > "${_ext}/trampoline.js" <<'JSEOF'
+Object.defineProperty(process, 'resourcesPath', {
+    value: '/usr/lib/claude-cowork/resources',
+    writable: true,
+    configurable: true,
+    enumerable: true,
+});
+require('./frame-fix-entry.js');
+JSEOF
+
+    # Repoint asar main → trampoline.js.
+    if grep -q '"main":.*"\.vite/build/index\.pre\.js"' "$_pkgjson"; then
+        sed -i 's|"main":.*"\.vite/build/index\.pre\.js"|"main": "trampoline.js"|' "$_pkgjson"
+    else
+        echo "WARN: asar entry-point patch skipped (target not found)"
+    fi
+
+    # Strip macOS titlebar opts (Vite ESM bypasses wrapper's require-Proxy).
+    if grep -q 'titleBarOverlay' "$_indexjs"; then
+        sed -i 's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_]\+,trafficLightPosition:[A-Za-z0-9_]\+,//g' "$_indexjs"
+        sed -i 's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g' "$_indexjs"
+    else
+        echo "WARN: titlebar patch skipped (target not found)"
+    fi
+
+    # Drop isPackaged check on file:// preloads (else renderer shell never loads).
+    if grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!0' "$_indexjs"; then
+        sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$_indexjs"
+    else
+        echo "WARN: file:// preload patch skipped (target not found)"
+    fi
+
+    # Duplicate i18n JSONs into resources/i18n/ (bundle reads from both paths).
+    if ls "${_ext}/resources/"*.json >/dev/null 2>&1; then
+        mkdir -p "${_ext}/resources/i18n"
+        cp "${_ext}/resources/"*.json "${_ext}/resources/i18n/"
+    fi
+
+    # Allow bash/sh in cowork orchestrator allowlist (upstream gap -- the SDK
+    # calls vm.spawn("bash", ...) which the allowlist currently rejects).
+    # Guard matches either quote style so this no-ops once stubs/cowork/
+    # session_orchestrator.js is patched upstream. Remove this whole block
+    # after that fix lands.
+    local _orch="${_ext}/cowork/session_orchestrator.js"
+    if grep -q '} else if (allowedPrefixes\.some' "$_orch" \
+       && ! grep -qE "commandBasename === [\"']bash[\"']" "$_orch"; then
+        sed -i 's#^    } else if (allowedPrefixes\.some#    } else if (commandBasename === "bash" || commandBasename === "sh") {\n      hostCommand = "/usr/bin/" + commandBasename;\n      trace("Translated shell command: " + normalizedCommand + " -> " + hostCommand);\n    } else if (allowedPrefixes.some#' "$_orch"
+    else
+        echo "WARN: bash/sh allowlist patch skipped (target not found or already patched)"
+    fi
+
     # Apply cowork patch
     echo "Applying cowork patch..."
     python "${_repo}/enable-cowork.py" \
@@ -145,7 +199,7 @@ build() {
 
     # Repack into app.asar
     echo "Repacking app.asar..."
-    "$_asar" pack "${srcdir}/linux-app-extracted" "${srcdir}/app.asar"
+    asar pack "${srcdir}/linux-app-extracted" "${srcdir}/app.asar"
 }
 
 package() {
@@ -155,20 +209,38 @@ package() {
     install -Dm644 "${srcdir}/app.asar" \
                    "${pkgdir}/usr/lib/claude-cowork/app.asar"
 
-    # Install i18n locale JSON files to electron's resources directory.
-    # The app reads these via process.resourcesPath at startup, which resolves
-    # to the system electron's resources dir -- not inside the asar.
-    local _electron_name
-    _electron_name=$(basename "$(readlink -f /usr/bin/electron)")
-    local _electron_resources="/usr/lib/${_electron_name}/resources"
-    mkdir -p "${pkgdir}${_electron_resources}"
+    # Resources in our namespace (avoid /usr/lib/electronNN/, foreign-owned).
+    # i18n in BOTH root and i18n/ -- bundle reads from both paths.
+    install -d "${pkgdir}/usr/lib/claude-cowork/resources/i18n"
     install -m644 "${srcdir}/linux-app-extracted/resources/"*.json \
-        "${pkgdir}${_electron_resources}/"
-
-    # Install plugin permission shim to electron resources dir.
-    # The asar copies this to <sessionStorageDir>/shim-lib/shim.sh at session start.
+        "${pkgdir}/usr/lib/claude-cowork/resources/"
+    install -m644 "${srcdir}/linux-app-extracted/resources/i18n/"*.json \
+        "${pkgdir}/usr/lib/claude-cowork/resources/i18n/"
     install -m755 "${srcdir}/linux-app-extracted/cowork/cowork-plugin-shim.sh" \
-        "${pkgdir}${_electron_resources}/cowork-plugin-shim.sh"
+        "${pkgdir}/usr/lib/claude-cowork/resources/cowork-plugin-shim.sh"
+
+    # Disclaimer shim: pre-installed (frame-fix-wrapper would write this at
+    # runtime but our root-owned dir blocks it). Same content, no-op for it.
+    install -Dm755 /dev/stdin "${pkgdir}/usr/lib/claude-cowork/Helpers/disclaimer" <<'EOF'
+#!/bin/sh
+CMD="$1"
+shift
+case "$CMD" in
+  *claude.app/Contents/MacOS/claude|*claude.app/Contents/MacOS/Claude)
+    for c in \
+      "$HOME/.local/bin/claude" \
+      "$HOME/.local/share/mise/shims/claude" \
+      "$HOME/.asdf/shims/claude" \
+      "/usr/local/bin/claude" \
+      "/usr/bin/claude"; do
+      [ -x "$c" ] && exec "$c" "$@"
+    done
+    echo "disclaimer: no Linux claude binary found" >&2
+    exit 1
+    ;;
+esac
+exec "$CMD" "$@"
+EOF
 
     # Install launcher script
     install -Dm755 /dev/stdin "${pkgdir}/usr/bin/claude-cowork" <<'EOF'
@@ -190,6 +262,7 @@ fi
 exec electron /usr/lib/claude-cowork/app.asar \
     --no-sandbox \
     --disable-gpu \
+    --class=Claude \
     --password-store="$PW_STORE" \
     --enable-features=GlobalShortcutsPortal "$@"
 EOF
