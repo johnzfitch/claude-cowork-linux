@@ -1,3 +1,37 @@
+// Override process.resourcesPath BEFORE any other code (asar's jHi(), our own
+// disclaimer install) reads it. The asar's jHi() helper computes the disclaimer
+// wrapper path as path.dirname(process.resourcesPath) + '/Helpers/disclaimer'.
+// On the system Electron in dev mode (no PKGBUILD trampoline), this resolves to
+// /usr/lib/electron${V}/Helpers/disclaimer — a root-owned path our runtime
+// install (line ~546) can't write to (EACCES), so the SDK then spawns into
+// thin air ("Claude Code native binary not found"). Repoint to a user-writable
+// XDG location so the install succeeds and jHi() returns the same path.
+//
+// Conditional: skip when a disclaimer wrapper already exists at jHi()'s path
+// (PKGBUILD users, where the trampoline points at /usr/lib/claude-cowork/
+// resources and the wrapper is installed by the package). Overriding there
+// would also misroute the asar's locale lookups, which the packaged build
+// keeps reading via process.resourcesPath.
+{
+  const _fs = require('fs');
+  const _path = require('path');
+  const _existing = _path.join(_path.dirname(process.resourcesPath || ''), 'Helpers', 'disclaimer');
+  let _haveDisclaimer = false;
+  try {
+    _fs.accessSync(_existing, _fs.constants.X_OK);
+    _haveDisclaimer = true;
+  } catch (_) {}
+  if (!_haveDisclaimer) {
+    const _xdgConfigHome = process.env.XDG_CONFIG_HOME || _path.join(require('os').homedir(), '.config');
+    Object.defineProperty(process, 'resourcesPath', {
+      value: _path.join(_xdgConfigHome, 'Claude', 'cowork-resources'),
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
+}
+
 // Patch macOS-only systemPreferences methods that don't exist on Linux
 const { systemPreferences } = require('electron');
 if (typeof systemPreferences.setUserDefault !== 'function') {
