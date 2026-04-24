@@ -548,6 +548,25 @@ function extractSessionName(args, envVars, sharedCwdPath) {
         return sessionName;
       }
     }
+
+    // Fallback: detect /sessions/<name>/mnt/ patterns embedded inside arg
+    // strings. The SDK's bash -c "..." invocations pack VM paths into the
+    // shell command body rather than as standalone args, so the whole-arg
+    // checks above miss them. We round-trip through the strict validator
+    // to defend against `..`-style session names hijacking createMountSymlinks
+    // (e.g. /sessions/../../../etc/passwd/mnt/...).
+    for (const arg of args) {
+      if (typeof arg !== 'string') continue;
+      const m = arg.match(/\/sessions\/[^\/\s'"`<>|&;()$\n]+\/mnt(?=\/|$|\s|['"`<>|&;()$])/);
+      if (!m) continue;
+      try {
+        const sessionName = extractSessionNameFromVmPathStrict(m[0]);
+        trace('Extracted session name from embedded VM path in arg: ' + sessionName);
+        return sessionName;
+      } catch (err) {
+        trace('SECURITY: Rejected embedded VM path while extracting session name: ' + err.message);
+      }
+    }
   }
 
   trace('WARNING: No validated VM path available for session name extraction');
