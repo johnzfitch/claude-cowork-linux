@@ -237,6 +237,21 @@ function canonicalizePathForHostAccess(sessionsBase, inputPath) {
   return canonicalizeHostPath(inputPath);
 }
 
+function validateMountName(mountName) {
+  if (typeof mountName !== 'string' || mountName.length === 0) return false;
+  if (path.isAbsolute(mountName)) return false;
+  const normalized = path.normalize(mountName);
+  if (normalized === '..' || normalized.startsWith('..' + path.sep)) return false;
+  if (path.isAbsolute(normalized)) return false;
+  return true;
+}
+
+function validateRelativePathWithinHome(relativePath) {
+  if (typeof relativePath !== 'string') return false;
+  if (relativePath === '') return true;
+  return isPathSafe(os.homedir(), relativePath);
+}
+
 module.exports = {
   canonicalizeHostPath,
   canonicalizePathForHostAccess,
@@ -247,4 +262,6 @@ module.exports = {
   isPathSafe,
   resolveAbsoluteDirectory,
   translateVmPathStrict,
+  validateMountName,
+  validateRelativePathWithinHome,
 };

@@ -40,6 +40,8 @@ const {
   canonicalizeHostPath,
   canonicalizeVmPathStrict: _canonicalizeVmPathStrict,
   canonicalizePathForHostAccess: _canonicalizePathForHostAccess,
+  validateMountName,
+  validateRelativePathWithinHome,
 } = require('../../../../cowork/dirs.js');
 const { createSessionStore } = require('../../../../cowork/session_store.js');
 const { createSessionsApi } = require('../../../../cowork/sessions_api.js');
@@ -103,51 +105,10 @@ function trace(msg) {
 trace("=== MODULE LOADING ===");
 trace("Trace IO logging: " + (TRACE_IO ? "enabled (CLAUDE_COWORK_TRACE_IO=1)" : "disabled"));
 
-// SECURITY: Allowlist of environment variables to pass to spawned process
-const ENV_ALLOWLIST = [
-  'PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE',
-  'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
-  'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS',
-  'NODE_ENV', 'ELECTRON_RUN_AS_NODE',
-  // Claude-specific
-  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'
-];
-
-// OAUTH COMPLIANCE: Pattern to detect env var keys that specifically carry
-// OAuth/bearer credentials. These are blocked from being forwarded to
-// subprocesses even if the Claude Desktop renderer includes them in
-// additionalEnv, ensuring OAuth tokens never transit this compatibility layer.
-//
-// Deliberately narrow: generic terms like "token" and "secret" are omitted to
-// avoid blocking legitimate provider credentials (e.g., AWS_SECRET_ACCESS_KEY,
-// AWS_SESSION_TOKEN) in Bedrock/Vertex configurations.
-const BLOCKED_ENV_KEY_PATTERN = /oauth[_.]?token|bearer[_.]?token|session_?cookie|ANTHROPIC_AUTH_TOKEN/i;
-
-// Keys that must pass through filterEnv even though they match the pattern above.
-// CLAUDE_CODE_OAUTH_TOKEN is the legitimate auth mechanism — the CLI needs it.
-const CREDENTIAL_EXEMPT_KEYS = new Set([
-  'CLAUDE_CODE_OAUTH_TOKEN',
-]);
+const { filterEnv: _filterEnv } = require('../../../../cowork/env_filter.js');
 
 function filterEnv(baseEnv, additionalEnv) {
-  const filtered = {};
-  for (const key of ENV_ALLOWLIST) {
-    if (baseEnv[key] !== undefined) {
-      filtered[key] = baseEnv[key];
-    }
-  }
-  // Additional env vars from Claude Desktop — filter out credential-like keys,
-  // but exempt keys that are legitimate auth mechanisms for the CLI.
-  if (additionalEnv) {
-    for (const [key, val] of Object.entries(additionalEnv)) {
-      if (BLOCKED_ENV_KEY_PATTERN.test(key) && !CREDENTIAL_EXEMPT_KEYS.has(key)) {
-        trace('OAUTH COMPLIANCE: blocked additionalEnv key: ' + key);
-        continue;
-      }
-      filtered[key] = val;
-    }
-  }
-  return filtered;
+  return _filterEnv(baseEnv, additionalEnv, trace);
 }
 
 const SESSIONS_BASE = DIRS.claudeSessionsBase;
@@ -281,6 +242,7 @@ function resolveClaudeBinaryPath() {
  *   - "uploads" is a directory, not a symlink
  *   - "outputs" is typically handled separately
  */
+
 function createMountSymlinks(sessionName, additionalMounts) {
   trace('=== CREATE MOUNT SYMLINKS ===');
   trace('Session name: ' + sessionName);
@@ -328,6 +290,12 @@ function createMountSymlinks(sessionName, additionalMounts) {
     trace('--- Processing mount: ' + mountName + ' ---');
     trace('  Mount info: ' + JSON.stringify(mountInfo));
 
+    if (!validateMountName(mountName)) {
+      trace('  SECURITY: Rejected mount name (failed containment check): ' + mountName);
+      failedMounts.push(mountName);
+      continue;
+    }
+
     const mountPoint = path.join(mntDir, mountName);
 
     // Skip asar mounts: on macOS the app path is a directory inside the .app bundle,
@@ -342,11 +310,12 @@ function createMountSymlinks(sessionName, additionalMounts) {
       // On macOS, uploads is a VM shared mount. On Linux (no VM),
       // we symlink to the host uploads dir so Claude Code can see files.
       const uploadsRelPath = (typeof mountInfo === 'object' && mountInfo !== null) ? (mountInfo.path || '') : String(mountInfo || '');
-      const hostUploadsPath = path.isAbsolute(uploadsRelPath)
-        ? uploadsRelPath
-        : ('/' + uploadsRelPath).startsWith(os.homedir())
-          ? '/' + uploadsRelPath
-          : path.join(os.homedir(), uploadsRelPath);
+      if (uploadsRelPath !== '' && !validateRelativePathWithinHome(uploadsRelPath)) {
+        trace('  SECURITY: Rejected uploads path (failed home containment check)');
+        failedMounts.push(mountName);
+        continue;
+      }
+      const hostUploadsPath = path.join(os.homedir(), uploadsRelPath);
       try {
         fs.mkdirSync(hostUploadsPath, { recursive: true, mode: 0o700 });
         if (fs.existsSync(mountPoint)) {
@@ -411,6 +380,12 @@ function createMountSymlinks(sessionName, additionalMounts) {
       relativePath = mountInfo.path || '';
     } else if (typeof mountInfo === 'string') {
       relativePath = mountInfo;
+    }
+
+    if (relativePath !== '' && !validateRelativePathWithinHome(relativePath)) {
+      trace('  SECURITY: Rejected relativePath (failed home containment check)');
+      failedMounts.push(mountName);
+      continue;
     }
 
     // Construct the full host path
@@ -1923,6 +1898,8 @@ setTimeout(() => {
 
 module.exports = instance;
 module.exports.default = instance;
+
+module.exports.filterEnv = filterEnv;
 
 // For ESM compatibility - mark as ES module
 Object.defineProperty(module.exports, '__esModule', { value: true });
