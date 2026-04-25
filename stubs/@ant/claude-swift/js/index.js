@@ -67,7 +67,24 @@ try {
   fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
 } catch (e) {}
 
+// SECURITY: Rotate trace log if it exceeds 50 MB to limit data retention
+const MAX_TRACE_FILE_BYTES = 50 * 1024 * 1024;
+try {
+  const _traceStats = fs.statSync(TRACE_FILE);
+  if (_traceStats.size > MAX_TRACE_FILE_BYTES) {
+    const _keepBytes = 10 * 1024 * 1024;
+    const _fd = fs.openSync(TRACE_FILE, 'r');
+    const _buf = Buffer.alloc(_keepBytes);
+    const _bytesRead = fs.readSync(_fd, _buf, 0, _keepBytes, _traceStats.size - _keepBytes);
+    fs.closeSync(_fd);
+    fs.writeFileSync(TRACE_FILE, _buf.slice(0, _bytesRead), { mode: 0o600 });
+  }
+} catch (_) {}
+
 const TRACE_IO = process.env.CLAUDE_COWORK_TRACE_IO === '1';
+
+// SECURITY: Cap stdinHistory to prevent memory exhaustion and limit replay scope
+const MAX_STDIN_HISTORY_BYTES = 10 * 1024 * 1024; // 10 MB
 
 function redactForLogs(input) {
   return redactCredentials(String(input));
@@ -802,25 +819,10 @@ class SwiftAddonStub extends EventEmitter {
         // Could integrate with GTK recent files or track opened files
         return Promise.resolve([]);
       },
-      // Get list of open windows
+      // Get list of open windows — disabled for privacy (do not expose
+      // the user's desktop window list to AI sessions)
       getOpenWindows: () => {
-        console.log('[claude-swift] desktop.getOpenWindows()');
-        try {
-          // Try wmctrl first, fall back to empty
-          const { execFileSync } = require('child_process');
-          const output = execFileSync('wmctrl', ['-l'], { encoding: 'utf-8', timeout: 2000 });
-          const windows = output.trim().split('\n').filter(Boolean).map(line => {
-            const parts = line.split(/\s+/);
-            return {
-              id: parts[0],
-              desktop: parts[1],
-              title: parts.slice(3).join(' ')
-            };
-          });
-          return Promise.resolve(windows);
-        } catch (e) {
-          return Promise.resolve([]);
-        }
+        return Promise.resolve([]);
       },
       // Open file with default application
       openFile: (filePath) => {
@@ -1499,6 +1501,7 @@ class SwiftAddonStub extends EventEmitter {
         sharedCwdPath,
         retryCount: 0,
         stdinHistory: [],
+        stdinHistoryBytes: 0,
         deferredResultLine: null,
         hadFirstResponse: false,
         attemptedResume: false,
@@ -1849,7 +1852,25 @@ class SwiftAddonStub extends EventEmitter {
     console.log('[claude-swift] writeToProcess(' + id + ')');
     const processState = this._processStates.get(id);
     if (processState) {
-      processState.stdinHistory.push(data);
+      const chunkSize = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(String(data), 'utf8');
+      // Single chunk larger than the entire cap: drop history, skip recording.
+      // Without this, eviction empties history and the oversized chunk is
+      // still pushed, leaving stdinHistoryBytes permanently above the limit.
+      if (chunkSize > MAX_STDIN_HISTORY_BYTES) {
+        trace('WARNING: stdinHistory chunk exceeds cap for process ' + id + ' (' + chunkSize + ' bytes), clearing history and skipping record');
+        processState.stdinHistory = [];
+        processState.stdinHistoryBytes = 0;
+      } else {
+        processState.stdinHistoryBytes += chunkSize;
+        if (processState.stdinHistoryBytes > MAX_STDIN_HISTORY_BYTES) {
+          trace('WARNING: stdinHistory size cap reached for process ' + id + ', evicting oldest entries');
+          while (processState.stdinHistory.length > 0 && processState.stdinHistoryBytes > MAX_STDIN_HISTORY_BYTES / 2) {
+            const removed = processState.stdinHistory.shift();
+            processState.stdinHistoryBytes -= (Buffer.isBuffer(removed) ? removed.length : Buffer.byteLength(String(removed), 'utf8'));
+          }
+        }
+        processState.stdinHistory.push(data);
+      }
     }
     const proc = this._processes.get(id);
     if (proc && proc.stdin && proc.exitCode === null) {

@@ -28,6 +28,31 @@ const {
 const _verbose = process.env.CLAUDE_COWORK_VERBOSE === '1';
 function vlog(msg) { if (_verbose) console.log(msg); }
 
+// SECURITY: Allowlist-only filesystem access.
+// Only allow reads/opens for paths within the user's home directory or /tmp.
+// Everything outside (system dirs, other users, /proc, etc.) is denied by
+// default. No deny-list — the allowlist IS the policy.
+const _homeDir = require('os').homedir();
+const _allowedFsRoots = [_homeDir, '/tmp'];
+
+function isPathWithinAllowedRoots(filePath) {
+  // Reject non-absolute up front: path.resolve would fall back to process.cwd()
+  // and make the policy depend on runtime working directory.
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
+    return false;
+  }
+  let resolved;
+  try {
+    resolved = fs.realpathSync(filePath);
+  } catch (_) {
+    // File may not exist yet (for open/show); the input is already absolute
+    resolved = path.normalize(filePath);
+  }
+  return _allowedFsRoots.some(root =>
+    resolved === root || resolved.startsWith(root + path.sep)
+  );
+}
+
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const MIME_MAP = {
@@ -108,12 +133,18 @@ let _resolvedTerminal = undefined;
 function resolveTerminal() {
   if (_resolvedTerminal !== undefined) return _resolvedTerminal;
   // 1. Respect $TERMINAL env var (user's explicit preference)
+  // SECURITY: Only trust binaries in system directories to prevent
+  // local attackers from setting $TERMINAL to a malicious script
+  const SAFE_BIN_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
   const envTerm = process.env.TERMINAL;
   if (envTerm) {
     try {
-      execFileSync('which', [envTerm], { stdio: 'ignore' });
-      _resolvedTerminal = { bin: envTerm, spawn: ['-e'] };
-      return _resolvedTerminal;
+      const resolvedPath = execFileSync('which', [envTerm], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      if (resolvedPath && SAFE_BIN_DIRS.some(d => resolvedPath.startsWith(d))) {
+        _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
+        return _resolvedTerminal;
+      }
+      console.warn('[Cowork] $TERMINAL resolved outside system dirs, ignoring:', resolvedPath);
     } catch (_) {}
   }
   // 2. xdg-terminal-exec (proposed XDG Default Terminal Spec)
@@ -200,7 +231,7 @@ function createOverrideRegistry(getProcessState) {
     'ClaudeCode_$_prepare': async () => ({ ...CLAUDE_CODE_PREPARE }),
     'ClaudeCode_$_checkGitAvailable': async () => ({ available: true }),
 
-    // ComputerUseTcc — Linux has no TCC, report granted
+    // ComputerUseTcc — Linux has no TCC UI; deny by default for safety
     'ComputerUseTcc_$_getState': async () => ({ ...COMPUTER_USE_TCC_GRANTED }),
     'ComputerUseTcc_$_requestAccess': async () => ({ ...COMPUTER_USE_TCC_REQUEST_GRANTED }),
     'ComputerUseTcc_$_requestAccessibility': async () => ({ ...COMPUTER_USE_TCC_REQUEST_GRANTED }),
@@ -223,8 +254,17 @@ function createOverrideRegistry(getProcessState) {
 
     // FileSystem — proper Linux implementations
     'FileSystem_$_readLocalFile': async (_event, sessionId, filePath) => {
-      const decoded = decodeURIComponent(filePath);
+      let decoded;
+      try {
+        decoded = decodeURIComponent(filePath);
+      } catch (_e) {
+        return null;
+      }
       if (!path.isAbsolute(decoded)) return null;
+      if (!isPathWithinAllowedRoots(decoded)) {
+        console.warn('[Cowork] readLocalFile BLOCKED (outside allowed roots):', decoded);
+        return null;
+      }
       try {
         return readLocalFileContent(decoded);
       } catch (e) {
@@ -234,9 +274,18 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'FileSystem_$_openLocalFile': async (_event, sessionId, filePath, showInFolder) => {
-      const decoded = decodeURIComponent(filePath);
+      let decoded;
+      try {
+        decoded = decodeURIComponent(filePath);
+      } catch (_e) {
+        return;
+      }
       vlog('[Cowork] openLocalFile: ' + decoded + ' showInFolder: ' + showInFolder);
       if (!path.isAbsolute(decoded)) return;
+      if (!isPathWithinAllowedRoots(decoded)) {
+        console.warn('[Cowork] openLocalFile BLOCKED (outside allowed roots):', decoded);
+        return;
+      }
       try {
         if (showInFolder) {
           xdgOpen(path.dirname(decoded));
@@ -253,8 +302,18 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'FileSystem_$_showInFolder': async (_event, filePath) => {
-      const decoded = decodeURIComponent(filePath);
+      let decoded;
+      try {
+        decoded = decodeURIComponent(filePath);
+      } catch (_e) {
+        return;
+      }
       vlog('[Cowork] showInFolder: ' + decoded);
+      if (!path.isAbsolute(decoded)) return;
+      if (!isPathWithinAllowedRoots(decoded)) {
+        console.warn('[Cowork] showInFolder BLOCKED (outside allowed roots):', decoded);
+        return;
+      }
       try {
         // D-Bus FileManager1 isn't available on Hyprland/wlroots compositors.
         // Open the parent directory with xdg-open instead.
@@ -359,8 +418,8 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'LocalAgentModeSessions_$_getBridgeConsent': async (_event, ...args) => {
-      vlog('[ipc:getBridgeConsent] called');
-      return { consented: true };
+      vlog('[ipc:getBridgeConsent] called (denied by default)');
+      return { consented: false };
     },
 
     'LocalAgentModeSessions_$_getSessionsBridgeEnabled': async () => {
@@ -426,8 +485,8 @@ function createOverrideRegistry(getProcessState) {
     // ================================================================
 
     'LocalAgentModeSessions_$_requestFolderTccAccess': async (_event, ...args) => {
-      vlog('[ipc:requestFolderTccAccess] called (auto-granted on Linux)');
-      return { granted: true };
+      vlog('[ipc:requestFolderTccAccess] called (denied on Linux — no TCC UI)');
+      return { granted: false };
     },
 
     'LocalAgentModeSessions_$_setChromePermissionMode': async (_event, mode) => {
@@ -587,6 +646,7 @@ module.exports = {
   extractEipcUuid,
   proactivelyRegisterOverrides,
   isProactiveChannel,
+  isPathWithinAllowedRoots,
   PROACTIVE_ONLY_SUFFIXES,
   getMimeType,
   isBinaryMime,
