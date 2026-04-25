@@ -1853,15 +1853,24 @@ class SwiftAddonStub extends EventEmitter {
     const processState = this._processStates.get(id);
     if (processState) {
       const chunkSize = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(String(data), 'utf8');
-      processState.stdinHistoryBytes += chunkSize;
-      if (processState.stdinHistoryBytes > MAX_STDIN_HISTORY_BYTES) {
-        trace('WARNING: stdinHistory size cap reached for process ' + id + ', evicting oldest entries');
-        while (processState.stdinHistory.length > 0 && processState.stdinHistoryBytes > MAX_STDIN_HISTORY_BYTES / 2) {
-          const removed = processState.stdinHistory.shift();
-          processState.stdinHistoryBytes -= (Buffer.isBuffer(removed) ? removed.length : Buffer.byteLength(String(removed), 'utf8'));
+      // Single chunk larger than the entire cap: drop history, skip recording.
+      // Without this, eviction empties history and the oversized chunk is
+      // still pushed, leaving stdinHistoryBytes permanently above the limit.
+      if (chunkSize > MAX_STDIN_HISTORY_BYTES) {
+        trace('WARNING: stdinHistory chunk exceeds cap for process ' + id + ' (' + chunkSize + ' bytes), clearing history and skipping record');
+        processState.stdinHistory = [];
+        processState.stdinHistoryBytes = 0;
+      } else {
+        processState.stdinHistoryBytes += chunkSize;
+        if (processState.stdinHistoryBytes > MAX_STDIN_HISTORY_BYTES) {
+          trace('WARNING: stdinHistory size cap reached for process ' + id + ', evicting oldest entries');
+          while (processState.stdinHistory.length > 0 && processState.stdinHistoryBytes > MAX_STDIN_HISTORY_BYTES / 2) {
+            const removed = processState.stdinHistory.shift();
+            processState.stdinHistoryBytes -= (Buffer.isBuffer(removed) ? removed.length : Buffer.byteLength(String(removed), 'utf8'));
+          }
         }
+        processState.stdinHistory.push(data);
       }
-      processState.stdinHistory.push(data);
     }
     const proc = this._processes.get(id);
     if (proc && proc.stdin && proc.exitCode === null) {

@@ -339,8 +339,10 @@ function buildBridgeSpawnArgs(args, remoteSessionId, sdkUrl) {
       } else {
         bridgeArgs.push('--sdk-url', sdkUrl);
       }
-    } catch (e) {
-      console.warn('[Cowork] SECURITY: Blocked malformed --sdk-url:', sdkUrl);
+    } catch (_e) {
+      // Don't log sdkUrl verbatim — user-controlled, may contain
+      // newlines (log injection) or credentials
+      console.warn('[Cowork] SECURITY: Blocked malformed --sdk-url');
     }
   }
 

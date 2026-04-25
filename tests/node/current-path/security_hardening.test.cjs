@@ -157,9 +157,11 @@ describe('--sdk-url host allowlist', () => {
   const { buildBridgeSpawnArgs } = require('../../../stubs/cowork/session_orchestrator.js');
 
   it('allows api.anthropic.com', () => {
-    const args = buildBridgeSpawnArgs([], 'cse_test', 'https://api.anthropic.com');
-    assert.ok(args.includes('--sdk-url'));
-    assert.ok(args.includes('https://api.anthropic.com'));
+    const inputUrl = 'https://api.anthropic.com';
+    const args = buildBridgeSpawnArgs([], 'cse_test', inputUrl);
+    const flagIdx = args.indexOf('--sdk-url');
+    assert.ok(flagIdx >= 0, '--sdk-url flag should be present');
+    assert.strictEqual(args[flagIdx + 1], inputUrl);
   });
 
   it('blocks non-Anthropic hosts', () => {
