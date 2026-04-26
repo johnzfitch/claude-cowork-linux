@@ -36,7 +36,6 @@ function setupPackedStubFixture(tempRoot) {
 
 function runSwiftRetryHarness(options) {
   const {
-    attemptFile,
     configDir,
     fakeClaudePath,
     modulePath,
@@ -44,7 +43,6 @@ function runSwiftRetryHarness(options) {
     sharedCwdPath,
     tempHome,
     tempRepoRoot,
-    workerEnv,
     stdinText,
     workerArgs = ['--resume', 'resume-cli-session'],
   } = options;
@@ -80,8 +78,6 @@ function runSwiftRetryHarness(options) {
       {},
       ${JSON.stringify({
         CLAUDE_CONFIG_DIR: configDir,
-        FLATLINE_ATTEMPT_FILE: attemptFile,
-        ...workerEnv,
       })},
       null,
       true,
@@ -108,7 +104,6 @@ function runSwiftRetryHarness(options) {
       ...process.env,
       HOME: tempHome,
       XDG_CONFIG_HOME: path.join(tempHome, '.config'),
-      FLATLINE_ATTEMPT_FILE: attemptFile,
     },
     encoding: 'utf8',
   });
@@ -333,7 +328,8 @@ test('claude-swift retries a flatlined resumed turn through transcript continuit
   ].join('\n') + '\n', 'utf8');
   fs.writeFileSync(workerPath, `
     const fs = require('fs');
-    const attemptFile = process.env.FLATLINE_ATTEMPT_FILE;
+    const attemptFile = ${JSON.stringify(attemptFile)};
+    const continuityInputFile = ${JSON.stringify(continuityInputFile)};
     let attempts = 0;
     try {
       attempts = Number(fs.readFileSync(attemptFile, 'utf8')) || 0;
@@ -359,7 +355,7 @@ test('claude-swift retries a flatlined resumed turn through transcript continuit
         return;
       }
 
-      fs.writeFileSync(process.env.CONTINUITY_INPUT_FILE, stdinText, 'utf8');
+      fs.writeFileSync(continuityInputFile, stdinText, 'utf8');
       if (
         stdinText.includes('[Local cowork continuity recovery]') &&
         stdinText.includes('Assistant: hi') &&
@@ -394,7 +390,6 @@ test('claude-swift retries a flatlined resumed turn through transcript continuit
   fs.chmodSync(fakeClaudePath, 0o755);
 
   const child = runSwiftRetryHarness({
-    attemptFile,
     configDir,
     fakeClaudePath,
     modulePath,
@@ -402,9 +397,6 @@ test('claude-swift retries a flatlined resumed turn through transcript continuit
     sharedCwdPath: workspaceDir,
     tempHome,
     tempRepoRoot,
-    workerEnv: {
-      CONTINUITY_INPUT_FILE: continuityInputFile,
-    },
     stdinText: 'replay-me\n',
   });
 
@@ -458,7 +450,8 @@ test('claude-swift skips plaintext continuity hydration for stream-json retries 
   ].join('\n') + '\n', 'utf8');
   fs.writeFileSync(workerPath, `
     const fs = require('fs');
-    const attemptFile = process.env.FLATLINE_ATTEMPT_FILE;
+    const attemptFile = ${JSON.stringify(attemptFile)};
+    const replayInputFile = ${JSON.stringify(replayInputFile)};
     let attempts = 0;
     try {
       attempts = Number(fs.readFileSync(attemptFile, 'utf8')) || 0;
@@ -484,7 +477,7 @@ test('claude-swift skips plaintext continuity hydration for stream-json retries 
         return;
       }
 
-      fs.writeFileSync(process.env.STREAM_JSON_INPUT_FILE, stdinText, 'utf8');
+      fs.writeFileSync(replayInputFile, stdinText, 'utf8');
       const lines = stdinText.split(/\\n+/).filter(Boolean);
       const allValidJson = lines.length > 0 && lines.every((line) => {
         try {
@@ -530,7 +523,6 @@ test('claude-swift skips plaintext continuity hydration for stream-json retries 
 
   const streamJsonInput = '{"type":"user_input","text":"replay-json"}\n';
   const child = runSwiftRetryHarness({
-    attemptFile,
     configDir,
     fakeClaudePath,
     modulePath,
@@ -539,9 +531,6 @@ test('claude-swift skips plaintext continuity hydration for stream-json retries 
     tempHome,
     tempRepoRoot,
     workerArgs: ['--input-format', 'stream-json', '--resume', 'resume-cli-session'],
-    workerEnv: {
-      STREAM_JSON_INPUT_FILE: replayInputFile,
-    },
     stdinText: streamJsonInput,
   });
 
@@ -593,7 +582,9 @@ test('claude-swift falls back to a plain fresh retry when no continuity transcri
   ].join('\n') + '\n', 'utf8');
   fs.writeFileSync(workerPath, `
     const fs = require('fs');
-    const attemptFile = process.env.FLATLINE_ATTEMPT_FILE;
+    const attemptFile = ${JSON.stringify(attemptFile)};
+    const fallbackInputFile = ${JSON.stringify(fallbackInputFile)};
+    const transcriptToDelete = ${JSON.stringify(transcriptPath)};
     let attempts = 0;
     try {
       attempts = Number(fs.readFileSync(attemptFile, 'utf8')) || 0;
@@ -609,7 +600,7 @@ test('claude-swift falls back to a plain fresh retry when no continuity transcri
     setTimeout(() => {
       if (process.argv.includes('--resume')) {
         try {
-          fs.unlinkSync(process.env.TRANSCRIPT_TO_DELETE);
+          fs.unlinkSync(transcriptToDelete);
         } catch (_) {}
         process.stdout.write(JSON.stringify({
           type: 'result',
@@ -622,7 +613,7 @@ test('claude-swift falls back to a plain fresh retry when no continuity transcri
         return;
       }
 
-      fs.writeFileSync(process.env.FALLBACK_INPUT_FILE, stdinText, 'utf8');
+      fs.writeFileSync(fallbackInputFile, stdinText, 'utf8');
       if (stdinText === 'fallback-me\\n') {
         process.stdout.write(JSON.stringify({
           type: 'stream_event',
@@ -653,7 +644,6 @@ test('claude-swift falls back to a plain fresh retry when no continuity transcri
   fs.chmodSync(fakeClaudePath, 0o755);
 
   const child = runSwiftRetryHarness({
-    attemptFile,
     configDir,
     fakeClaudePath,
     modulePath,
@@ -661,10 +651,6 @@ test('claude-swift falls back to a plain fresh retry when no continuity transcri
     sharedCwdPath: workspaceDir,
     tempHome,
     tempRepoRoot,
-    workerEnv: {
-      FALLBACK_INPUT_FILE: fallbackInputFile,
-      TRANSCRIPT_TO_DELETE: transcriptPath,
-    },
     stdinText: 'fallback-me\n',
   });
 

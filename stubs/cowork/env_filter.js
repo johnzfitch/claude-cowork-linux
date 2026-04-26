@@ -1,3 +1,4 @@
+// SECURITY: Allowlist of base process environment variables to forward.
 const ENV_ALLOWLIST = [
   'PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE',
   'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
@@ -6,28 +7,30 @@ const ENV_ALLOWLIST = [
   'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'
 ];
 
-// Keys that must never be forwarded from additionalEnv to the subprocess.
-// These enable loader injection or interpreter hijacking on Linux.
-const DENIED_ENV_KEYS = new Set([
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'LD_AUDIT',
-  'NODE_OPTIONS',
-  'PYTHONPATH',
-  'PYTHONSTARTUP',
-  'RUBYOPT',
-  'RUBYLIB',
-  'PERL5OPT',
-  'PERL5LIB',
-  'BASH_ENV',
-  'ENV',
-  'SHELLOPTS',
+// SECURITY: Positive allowlist for additionalEnv keys from the renderer.
+// Only keys in this set or matching ADDITIONAL_ENV_PREFIX_ALLOWLIST pass through.
+const ADDITIONAL_ENV_ALLOWLIST = new Set([
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_REGION',
+  'AWS_DEFAULT_REGION',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'VERTEX_PROJECT',
+  'VERTEX_REGION',
 ]);
 
-// Pattern for OAuth/bearer credential keys that should not transit this layer
-// (except for exempt keys the CLI legitimately needs).
-const BLOCKED_CREDENTIAL_PATTERN = /oauth[_.]?token|bearer[_.]?token|session_?cookie|ANTHROPIC_AUTH_TOKEN/i;
-const CREDENTIAL_EXEMPT_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
+// Prefix patterns for allowed additional env keys.
+const ADDITIONAL_ENV_PREFIX_ALLOWLIST = [
+  'CLAUDE_',
+  'ANTHROPIC_',
+];
 
 function filterEnv(baseEnv, additionalEnv, trace) {
   const log = typeof trace === 'function' ? trace : () => {};
@@ -39,15 +42,15 @@ function filterEnv(baseEnv, additionalEnv, trace) {
   }
   if (additionalEnv) {
     for (const [key, val] of Object.entries(additionalEnv)) {
-      if (DENIED_ENV_KEYS.has(key)) {
-        log('SECURITY: denied dangerous additionalEnv key: ' + key);
+      if (ADDITIONAL_ENV_ALLOWLIST.has(key)) {
+        filtered[key] = val;
         continue;
       }
-      if (BLOCKED_CREDENTIAL_PATTERN.test(key) && !CREDENTIAL_EXEMPT_KEYS.has(key)) {
-        log('SECURITY: denied credential additionalEnv key: ' + key);
+      if (ADDITIONAL_ENV_PREFIX_ALLOWLIST.some(p => key.startsWith(p))) {
+        filtered[key] = val;
         continue;
       }
-      filtered[key] = val;
+      log('SECURITY: filtered out additionalEnv key not in allowlist: ' + key);
     }
   }
   return filtered;
@@ -55,7 +58,7 @@ function filterEnv(baseEnv, additionalEnv, trace) {
 
 module.exports = {
   ENV_ALLOWLIST,
-  DENIED_ENV_KEYS,
-  CREDENTIAL_EXEMPT_KEYS,
+  ADDITIONAL_ENV_ALLOWLIST,
+  ADDITIONAL_ENV_PREFIX_ALLOWLIST,
   filterEnv,
 };
