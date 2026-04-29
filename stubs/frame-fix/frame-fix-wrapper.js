@@ -583,6 +583,129 @@ try {
 }
 
 // ============================================================
+// 0a. PATCH fs TO REDIRECT /sessions/ PATHS TO SESSIONS_BASE
+// ============================================================
+// The asar and our stubs use /sessions/<name>/... as the VM-internal path
+// prefix. On macOS a /sessions root symlink is created. On Linux we can't
+// always create root symlinks (immutable rootfs, no sudo). Instead, patch
+// all fs calls to rewrite /sessions/ → SESSIONS_BASE/ transparently.
+//
+// SESSIONS_BASE is resolved lazily (DIRS is created below) so we capture
+// a getter that reads from the global set during createDirs().
+(function patchFsSessionsPaths() {
+  const VM_SESSIONS_PREFIX = '/sessions/';
+
+  function rewritePath(p) {
+    if (typeof p === 'string' && p.startsWith(VM_SESSIONS_PREFIX)) {
+      // DIRS is initialised synchronously before any app code runs (line ~467).
+      // SESSIONS_BASE is set at module level after this IIFE, but because this
+      // function is only ever called at runtime (not during this IIFE), DIRS
+      // will be defined by then.
+      const base = (typeof SESSIONS_BASE !== 'undefined' ? SESSIONS_BASE : null)
+        || (global.__coworkDirs && global.__coworkDirs.claudeSessionsBase)
+        || require('path').join(
+            (process.env.XDG_CONFIG_HOME || require('path').join(require('os').homedir(), '.config')),
+            'Claude', 'local-agent-mode-sessions', 'sessions'
+          );
+      return base + '/' + p.slice(VM_SESSIONS_PREFIX.length);
+    }
+    return p;
+  }
+
+  // Wrap a single fs method whose first argument is a path.
+  function wrapFsMethod(obj, name) {
+    const orig = obj[name];
+    if (typeof orig !== 'function' || obj[name].__coworkSessionsPatched) return;
+    obj[name] = function(p, ...rest) {
+      return orig.call(this, rewritePath(p), ...rest);
+    };
+    obj[name].__coworkSessionsPatched = true;
+  }
+
+  // Path-taking fs methods (first arg is path)
+  const PATH_METHODS = [
+    'access', 'accessSync',
+    'chmod', 'chmodSync',
+    'chown', 'chownSync',
+    'copyFile', 'copyFileSync',
+    'createReadStream', 'createWriteStream',
+    'exists', 'existsSync',
+    'lchmod', 'lchmodSync',
+    'lchown', 'lchownSync',
+    'lstat', 'lstatSync',
+    'mkdir', 'mkdirSync',
+    'mkdtemp', 'mkdtempSync',
+    'open', 'openSync',
+    'opendir', 'opendirSync',
+    'readdir', 'readdirSync',
+    'readFile', 'readFileSync',
+    'readlink', 'readlinkSync',
+    'realpath', 'realpathSync',
+    'rmdir', 'rmdirSync',
+    'rm', 'rmSync',
+    'stat', 'statSync',
+    'symlink', 'symlinkSync',
+    'truncate', 'truncateSync',
+    'unlink', 'unlinkSync',
+    'utimes', 'utimesSync',
+    'watch', 'watchFile',
+    'writeFile', 'writeFileSync',
+    'appendFile', 'appendFileSync',
+  ];
+
+  for (const name of PATH_METHODS) {
+    if (typeof fs[name] === 'function') wrapFsMethod(fs, name);
+  }
+
+  // rename/renameSync take two paths
+  const origRenameForSessions = fs.rename;
+  if (origRenameForSessions && !origRenameForSessions.__coworkSessionsRenamePatched) {
+    fs.rename = function(oldPath, newPath, cb) {
+      return origRenameForSessions.call(this, rewritePath(oldPath), rewritePath(newPath), cb);
+    };
+    fs.rename.__coworkSessionsRenamePatched = true;
+  }
+  const origRenameSyncForSessions = fs.renameSync;
+  if (origRenameSyncForSessions && !origRenameSyncForSessions.__coworkSessionsRenamePatched) {
+    fs.renameSync = function(oldPath, newPath) {
+      return origRenameSyncForSessions.call(this, rewritePath(oldPath), rewritePath(newPath));
+    };
+    fs.renameSync.__coworkSessionsRenamePatched = true;
+  }
+
+  // Also patch fs/promises (async versions)
+  try {
+    const fsp = require('fs/promises') || fs.promises;
+    if (fsp) {
+      const ASYNC_PATH_METHODS = [
+        'access', 'chmod', 'chown', 'copyFile', 'lchmod', 'lchown',
+        'lstat', 'mkdir', 'mkdtemp', 'open', 'opendir', 'readdir',
+        'readFile', 'readlink', 'realpath', 'rmdir', 'rm', 'stat',
+        'symlink', 'truncate', 'unlink', 'utimes', 'writeFile', 'appendFile',
+      ];
+      for (const name of ASYNC_PATH_METHODS) {
+        if (typeof fsp[name] === 'function' && !fsp[name].__coworkSessionsPatched) {
+          const origFsp = fsp[name];
+          fsp[name] = function(p, ...rest) {
+            return origFsp.call(this, rewritePath(p), ...rest);
+          };
+          fsp[name].__coworkSessionsPatched = true;
+        }
+      }
+      if (typeof fsp.rename === 'function' && !fsp.rename.__coworkSessionsRenamePatched) {
+        const origFspRename = fsp.rename;
+        fsp.rename = function(oldPath, newPath) {
+          return origFspRename.call(this, rewritePath(oldPath), rewritePath(newPath));
+        };
+        fsp.rename.__coworkSessionsRenamePatched = true;
+      }
+    }
+  } catch (_) {}
+
+  console.log('[Sessions] fs path redirect /sessions/ → SESSIONS_BASE installed');
+})();
+
+// ============================================================
 // 0b. PATCH fs.rename TO HANDLE EXDEV ERRORS
 // ============================================================
 const originalRename = fs.rename;
@@ -809,56 +932,17 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
 }
 
 // ============================================================
-// SINGLE-INSTANCE LOCK + PROTOCOL URL FORWARDING
-// ============================================================
-// The asar takes the macOS codepath (open-url event) because we
-// spoof darwin. But Linux doesn't have macOS's Apple Event URL
-// routing — launching claude:// URLs spawns a NEW Electron process.
-// Fix: acquire a single-instance lock ourselves. When a second
-// instance launches (e.g. from a claude:// protocol redirect after
-// Google auth), extract the URL from argv, emit 'open-url' on the
-// app (which the asar IS listening for), and quit the duplicate.
+// APP NAME — set before index.js runs so requestSingleInstanceLock() uses the
+// correct userData path (~/.config/Claude). The package.json name is @ant/desktop
+// which would produce ~/.config/@ant/desktop — wrong path, breaks single-instance.
+// The asar's index.js also calls app.setName('Claude') but only inside whenReady(),
+// which is too late for the lock. We set it here at require-time.
 try {
   const { app } = require('electron');
-  const gotLock = app.requestSingleInstanceLock();
-  if (!gotLock) {
-    // We're the second instance — the first will get 'second-instance'
-    console.log('[SingleInstance] Another instance is running, quitting');
-    app.quit();
-  } else {
-    app.on('second-instance', (_event, argv, _workingDirectory) => {
-      // Find the claude:// URL in the argv of the second instance
-      const url = argv.find(a => a.startsWith('claude://'));
-      if (url) {
-        // SECURITY: Validate URL structure before forwarding to asar handler
-        try {
-          const parsed = new URL(url);
-          if (parsed.protocol !== 'claude:') {
-            console.warn('[SingleInstance] Rejected non-claude protocol URL');
-          } else if (/[<>"'`]/.test(url) || url.length > 2048) {
-            console.warn('[SingleInstance] Rejected suspicious claude:// URL');
-          } else {
-            console.log('[SingleInstance] Forwarding validated protocol URL to open-url handler');
-            app.emit('open-url', { preventDefault() {} }, url);
-          }
-        } catch (e) {
-          console.warn('[SingleInstance] Rejected malformed URL:', e.message);
-        }
-      }
-      // Focus the existing window
-      const { BrowserWindow } = require('electron');
-      const wins = BrowserWindow.getAllWindows();
-      if (wins.length > 0) {
-        const win = wins[0];
-        if (win.isMinimized()) win.restore();
-        win.show();
-        win.focus();
-      }
-    });
-    console.log('[SingleInstance] Lock acquired, protocol URL forwarding enabled');
-  }
+  if (typeof app.setName === 'function') app.setName('Claude');
+  console.log('[SingleInstance] App name set to Claude — lock will use ~/.config/Claude');
 } catch (e) {
-  console.error('[SingleInstance] Failed to set up single-instance lock:', e.message);
+  console.error('[SingleInstance] Failed to set app name:', e.message);
 }
 
 Module.prototype.require = function(id) {
@@ -1077,7 +1161,33 @@ Module.prototype.require = function(id) {
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
 
-    // Patch BrowserWindow to stub macOS-only methods and handle close events
+    // ── Intercept setAsDefaultProtocolClient ──────────────────────────
+    // On Linux, Electron's setAsDefaultProtocolClient creates/overwrites a
+    // .desktop file pointing to the raw electron binary, breaking our
+    // claude-desktop wrapper as the protocol handler. We already registered
+    // the correct claude.desktop during install. Make this a no-op so
+    // Electron doesn't clobber our registration.
+    const _app = resolveElectronApp(module);
+    if (_app && typeof _app.setAsDefaultProtocolClient === 'function' && !_app.__coworkProtocolClientPatched) {
+      _app.__coworkProtocolClientPatched = true;
+      const _origSetProtocol = _app.setAsDefaultProtocolClient.bind(_app);
+      _app.setAsDefaultProtocolClient = function(protocol, ...rest) {
+        if (REAL_PLATFORM === 'linux') {
+          console.log('[Frame Fix] Suppressed setAsDefaultProtocolClient(' + protocol + ') — using install-time claude.desktop');
+          return true;
+        }
+        return _origSetProtocol(protocol, ...rest);
+      };
+      if (typeof _app.removeAsDefaultProtocolClient === 'function') {
+        _app.removeAsDefaultProtocolClient = function(protocol) {
+          if (REAL_PLATFORM === 'linux') return true;
+          return _app.removeAsDefaultProtocolClient.__orig(protocol);
+        };
+      }
+      console.log('[Frame Fix] setAsDefaultProtocolClient patched (no-op on Linux)');
+    }
+
+
     // The asar's close handler does `if (isMac()) return;` which swallows
     // close events since we spoof darwin. We prepend a listener that forces
     // app.quit() so killactive/WM close works on all Linux DEs.
