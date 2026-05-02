@@ -121,12 +121,12 @@ install_dependencies() {
 
     if ! command_exists asar; then
         log_info "Installing @electron/asar..."
-        npm install --silent -g @electron/asar || die "Failed to install asar"
+        npm install --silent -g --prefix="$npm_prefix" @electron/asar || die "Failed to install asar"
     fi
 
     if ! command_exists electron; then
         log_info "Installing electron..."
-        npm install --silent -g electron || die "Failed to install electron"
+        npm install --silent -g --prefix="$npm_prefix" electron || die "Failed to install electron"
     fi
 
     # Verify
