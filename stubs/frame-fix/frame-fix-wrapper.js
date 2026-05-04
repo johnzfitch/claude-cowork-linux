@@ -32,7 +32,7 @@ const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegis
 // Suppress EPIPE errors on stdout/stderr (normal in piped/Electron environments)
 // and prevent them from becoming uncaught exception crash dialogs.
 function _epipeHandler(err) {
-  if (err.code === 'EPIPE') return;
+  if (err.code === 'EPIPE' || err.code === 'EBADF') return;
   throw err;
 }
 if (process.stdout && typeof process.stdout.on === 'function') {
@@ -46,7 +46,7 @@ if (process.stderr && typeof process.stderr.on === 'function') {
 const _origListeners = process.listeners('uncaughtException');
 process.removeAllListeners('uncaughtException');
 process.on('uncaughtException', (err, origin) => {
-  if (err && err.code === 'EPIPE') {
+  if (err && (err.code === 'EPIPE' || err.code === 'EBADF')) {
     // Log once, don't crash
     try { fs.appendFileSync(
       path.join(process.env.CLAUDE_LOG_DIR || '/tmp', 'epipe-suppressed.log'),
