@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -31,6 +32,24 @@ const {
 //   - Filters out temporary desktop runtime paths
 //
 // Used by ipc-handler-setup.js to maintain session state.
+
+function computeMetadataChecksum(data) {
+  if (!data || typeof data !== 'object') return null;
+  const clone = { ...data };
+  delete clone._checksum;
+  const canonical = JSON.stringify(clone, Object.keys(clone).sort());
+  return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
+}
+
+function verifyMetadataChecksum(data) {
+  if (!data || typeof data !== 'object' || typeof data._checksum !== 'string') {
+    return { valid: false, reason: 'missing_checksum' };
+  }
+  const expected = computeMetadataChecksum(data);
+  return data._checksum === expected
+    ? { valid: true }
+    : { valid: false, reason: 'checksum_mismatch' };
+}
 
 const ACTIVE_SESSION_RETENTION_MS = 5 * 60 * 1000;
 
@@ -206,6 +225,9 @@ function findSessionMetadataPath(localAgentRoot, sessionId) {
     return null;
   }
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    return null;
+  }
+  if (sessionId.includes('..') || sessionId.includes('/') || sessionId.includes(path.sep)) {
     return null;
   }
 
@@ -407,6 +429,11 @@ class SessionStore {
       rawSessionData = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
     } catch (_) {
       return null;
+    }
+
+    const checksumResult = verifyMetadataChecksum(rawSessionData);
+    if (checksumResult.reason === 'checksum_mismatch') {
+      console.error('[session_store] SECURITY WARNING: checksum mismatch for ' + metadataPath);
     }
 
     const normalizedSessionData = this.normalizeSessionRecordForMetadataPath(metadataPath, rawSessionData);
@@ -642,6 +669,7 @@ class SessionStore {
     delete nextSessionData.error;
 
     const normalizedValue = this.normalizeSessionRecordForMetadataPath(metadataPath, nextSessionData);
+    normalizedValue._checksum = computeMetadataChecksum(normalizedValue);
     const indent = detectJsonIndentation(serializedValue);
     const hasTrailingNewline = serializedValue.endsWith('\n');
     const nextSerializedValue = JSON.stringify(normalizedValue, null, indent) + (hasTrailingNewline ? '\n' : '');
@@ -742,6 +770,8 @@ function createSessionStore(options) {
 
 module.exports = {
   createSessionStore,
+  computeMetadataChecksum,
+  verifyMetadataChecksum,
   deriveMetadataPathFromConfigDir,
   findSessionMetadataPath,
   getPreferredSessionRoot,
