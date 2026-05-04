@@ -141,35 +141,32 @@ else
 fi
 
 # ============================================================
-# Fix Code tab binary: the asar downloads a macOS Mach-O binary to
-# claude-code/<version>/claude. Replace with the Linux binary so
-# HostCLIRunner (Code tab) works on Linux.
+# getHostPlatform() spoofs darwin-x64, so the asar may download macOS
+# Covers both claude-code/ (Code tab) and claude-code-vm/ (Cowork).
 # ============================================================
-CLAUDE_CODE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code"
-if [[ -d "$CLAUDE_CODE_DIR" ]]; then
-  LINUX_CLAUDE=""
-  for _candidate in "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude" "/usr/local/bin/claude" "/usr/bin/claude"; do
-    if [[ -x "$_candidate" ]]; then
-      LINUX_CLAUDE="$_candidate"
-      break
+for _ccd in "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code" \
+             "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code-vm"; do
+  [[ -d "$_ccd" ]] || continue
+  for _vdir in "$_ccd"/*/; do
+    [[ -d "$_vdir" ]] || continue
+    _bin="${_vdir}claude"
+    [[ -f "$_bin" ]] || continue
+    file "$_bin" 2>/dev/null | grep -q "Mach-O" || continue
+    _ver="$(basename "$_vdir")"
+    _arch="$(uname -m)"
+    [[ "$_arch" == "aarch64" ]] && _plat="linux-arm64" || _plat="linux-x64"
+    _url="https://downloads.claude.ai/claude-code-releases/${_ver}/${_plat}/claude.zst"
+    echo "Replacing Mach-O binary: $_bin (v${_ver})"
+    mv "$_bin" "${_bin}.macho-backup"
+    if curl -sfL "$_url" | zstd -d -o "$_bin" 2>/dev/null; then
+      chmod +x "$_bin"
+      echo "  Downloaded Linux binary from CDN"
+    else
+      echo "  CDN download failed, restoring backup"
+      mv "${_bin}.macho-backup" "$_bin"
     fi
   done
-  if [[ -n "$LINUX_CLAUDE" ]]; then
-    LINUX_CLAUDE_REAL="$(readlink -f "$LINUX_CLAUDE")"
-    for _version_dir in "$CLAUDE_CODE_DIR"/*/; do
-      _ccd_bin="${_version_dir}claude"
-      if [[ -f "$_ccd_bin" && ! -L "$_ccd_bin" ]]; then
-        # Check if it's a Mach-O binary (not a Linux ELF)
-        if file "$_ccd_bin" 2>/dev/null | grep -q "Mach-O"; then
-          echo "Fixing Code tab binary: replacing macOS binary with Linux symlink"
-          echo "  $_ccd_bin -> $LINUX_CLAUDE_REAL"
-          mv "$_ccd_bin" "${_ccd_bin}.macho-backup"
-          ln -s "$LINUX_CLAUDE_REAL" "$_ccd_bin"
-        fi
-      fi
-    done
-  fi
-fi
+done
 
 # --devtools flag opens DevTools + asset dumper on launch
 # --perf flag enables Chromium tracing + Node inspector for profiling
@@ -275,6 +272,12 @@ if [[ "$_perf" == true ]]; then
   echo "  Trace IO:      Enabled (stdin/stdout logging)"
   echo ""
 fi
+
+# Clear V8 bytecode cache so asar patches take effect after upgrade.
+# These are compilation artifacts only — no user data is affected.
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/Code Cache" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/GPUCache" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/CachedData"
 
 # Run electron with the repacked app.asar
 if [[ "$_dev" == true ]]; then

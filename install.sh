@@ -744,10 +744,28 @@ doctor() {
     if [[ -n "$claude_found" ]]; then
         log_success "Claude binary: $claude_found"
         ok=$((ok + 1))
+        # Check for Mach-O binaries
+        if file "$claude_found" 2>/dev/null | grep -q "Mach-O"; then
+            log_error "Claude binary is macOS Mach-O (won't execute on Linux): $claude_found"
+            fail=$((fail + 1))
+        fi
     else
         log_warn "Claude binary: not found (Cowork will download it on first run)"
         warn=$((warn + 1))
     fi
+
+    # --- Mach-O binary check in SDK dirs ---
+    for _sdk_dir in "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code" \
+                    "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code-vm"; do
+        [[ -d "$_sdk_dir" ]] || continue
+        for _vbin in "$_sdk_dir"/*/claude; do
+            [[ -f "$_vbin" ]] || continue
+            if file "$_vbin" 2>/dev/null | grep -q "Mach-O"; then
+                log_warn "Mach-O binary found: $_vbin (launch.sh will replace on next run)"
+                warn=$((warn + 1))
+            fi
+        done
+    done
 
     # --- /sessions symlink ---
     if [[ -L /sessions ]]; then

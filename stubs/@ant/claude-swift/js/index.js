@@ -1155,7 +1155,41 @@ class SwiftAddonStub extends EventEmitter {
       installSdk: async (subpath, version) => {
         console.log('[claude-swift] vm.installSdk() subpath=' + subpath + ' version=' + version);
         trace('vm.installSdk() subpath=' + subpath + ' version=' + version);
-        return { success: true };
+
+        // On macOS the VM handles, here we grab from CDN
+        const targetDir = path.join('/', subpath, version);
+        const targetBin = path.join(targetDir, 'claude');
+        const verifiedMarker = path.join(targetDir, '.verified');
+
+        // Skip if already installed
+        try {
+          fs.accessSync(targetBin, fs.constants.X_OK);
+          fs.accessSync(verifiedMarker);
+          trace('vm.installSdk() already installed at ' + targetBin);
+          return { success: true };
+        } catch {}
+
+        const arch = os.arch() === 'arm64' ? 'linux-arm64' : 'linux-x64';
+        const url = 'https://downloads.claude.ai/claude-code-releases/' + version + '/' + arch + '/claude.zst';
+        console.log('[claude-swift] Downloading Cowork binary from ' + url);
+        trace('vm.installSdk() downloading ' + url + ' -> ' + targetBin);
+
+        try {
+          fs.mkdirSync(targetDir, { recursive: true });
+          execFileSync('sh', ['-c', 'curl -sfL "$1" | zstd -d -o "$2"', '--', url, targetBin], {
+            timeout: 120000,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          fs.chmodSync(targetBin, 0o755);
+          fs.writeFileSync(verifiedMarker, '');
+          console.log('[claude-swift] Cowork binary installed at ' + targetBin);
+          trace('vm.installSdk() installed successfully');
+          return { success: true };
+        } catch (e) {
+          console.error('[claude-swift] vm.installSdk() download failed:', e.message);
+          trace('vm.installSdk() FAILED: ' + e.message);
+          return { success: false, error: e.message };
+        }
       },
 
       // Check VM download/install status
@@ -1462,7 +1496,7 @@ class SwiftAddonStub extends EventEmitter {
 
   async installSdk(subpath, version) {
     console.log('[claude-swift] installSdk() subpath=' + subpath + ' version=' + version);
-    return { success: true };
+    return this.vm.installSdk(subpath, version);
   }
 
   kill(id, signal) {

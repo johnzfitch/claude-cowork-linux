@@ -55,6 +55,70 @@ def find_function_bounds(content, start):
 
 PATCH_MARKER = '/*cowork-patched*/'
 
+# Regex for getHostPlatform(): matches `throw new Error(...)` containing
+# "Unsupported platform" — the platform block in the session-init path.
+# Must not match unrelated "Unsupported platform" in chrome mcp
+HOST_PLATFORM_THROW_RE = re.compile(
+    r'throw new Error\([^)]*Unsupported platform[^)]*\)'
+)
+
+
+# Regex for VM file-list lookups: .files[platform][arch]??[]
+# Eo.files only has darwin/win32 keys. First bracket returned undefined
+VM_FILES_LOOKUP_RE = re.compile(
+    r'(\.files\[\w+\])\[(\w+)\](\?\?\[\])'
+)
+
+
+def patch_vm_files_lookup(filepath):
+    """Add optional chaining to VM file-list lookups for Linux safety.
+
+    The minified asar has functions like:
+        function hae(){const e=process.platform,A=Qae();return Eo.files[e][A]??[]}
+    Eo.files only has 'darwin' and 'win32' keys. On Linux, Eo.files["linux"]
+    is undefined, so [A] on it throws TypeError. Adding ?. makes the access
+    return undefined instead, which ?? catches and returns [].
+    """
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    matches = VM_FILES_LOOKUP_RE.findall(content)
+    if not matches:
+        print("  vm files lookup: no unsafe patterns found (already patched or not present)")
+        return True
+
+    content = VM_FILES_LOOKUP_RE.sub(r'\1?.[\2]\3', content)
+
+    with open(filepath, 'w') as f:
+        f.write(content)
+
+    print(f"  vm files lookup patched: {len(matches)} unsafe .files[platform][arch] access(es) fixed")
+    return True
+
+
+def patch_host_platform(filepath):
+    """Patch getHostPlatform() to return 'darwin-x64' instead of throwing on Linux.
+
+    The minified getHostPlatform() method only handles darwin and win32,
+    throwing Error('Unsupported platform: ...') for anything else.
+    Replace the throw with return"darwin-x64" so session init succeeds.
+    """
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    match = HOST_PLATFORM_THROW_RE.search(content)
+    if not match:
+        print(f"  getHostPlatform(): no throw found (already patched or not present)")
+        return True
+
+    content = HOST_PLATFORM_THROW_RE.sub('return"darwin-x64"', content)
+
+    with open(filepath, 'w') as f:
+        f.write(content)
+
+    print(f"  getHostPlatform() patched: throw replaced with return\"darwin-x64\"")
+    return True
+
 
 def patch_file(filepath):
     with open(filepath, 'r') as f:
@@ -106,4 +170,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     success = patch_file(sys.argv[1])
+    if success:
+        patch_host_platform(sys.argv[1])
+        patch_vm_files_lookup(sys.argv[1])
     sys.exit(0 if success else 1)
