@@ -437,11 +437,13 @@ install_stubs() {
         cp -f "$stub_src"/stubs/cowork/*.js "$target_dir/cowork/"
     fi
 
-    # Also sync stubs into the install dir's stubs/ so future launches
+    # Also sync stubs and launch scripts into the install dir so future launches
     # from the install dir (via claude-desktop launcher) use current code
     if [[ "$stub_src" != "$INSTALL_DIR" && -d "$INSTALL_DIR" ]]; then
-        log_info "Syncing stubs to install dir..."
+        log_info "Syncing stubs and launch scripts to install dir..."
         cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
+        cp -f "$stub_src/launch.sh" "$INSTALL_DIR/launch.sh"
+        cp -f "$stub_src/launch-devtools.sh" "$INSTALL_DIR/launch-devtools.sh"
     fi
 
     log_success "Stubs installed"

@@ -7,9 +7,15 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Ensure ~/.local/bin is in PATH (common for user-local electron installs)
+export PATH="$HOME/.local/bin:$PATH"
+
 # Resolve electron binary: prefer system electron + local .asar-cache, fall back to AppImage
 if command -v electron >/dev/null 2>&1; then
   ELECTRON_BIN="$(command -v electron)"
+  ASAR_FILE=".asar-cache/app.asar"
+elif [[ -x "$HOME/.local/bin/electron" ]]; then
+  ELECTRON_BIN="$HOME/.local/bin/electron"
   ASAR_FILE=".asar-cache/app.asar"
 elif [[ -x "./squashfs-root/usr/lib/node_modules/electron/dist/electron" ]]; then
   ELECTRON_BIN="./squashfs-root/usr/lib/node_modules/electron/dist/electron"
