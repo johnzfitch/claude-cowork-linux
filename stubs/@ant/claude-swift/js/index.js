@@ -461,6 +461,10 @@ function createMountSymlinks(sessionName, additionalMounts) {
         }
       }
 
+      // Ensure parent dir exists -- nested mount keys like ".claude/skills"
+      // need ".claude/" to exist before symlinkSync can place "skills" inside.
+      // Idempotent for non-nested keys (parent already equals mntDir).
+      fs.mkdirSync(path.dirname(mountPoint), { recursive: true, mode: 0o700 });
       fs.symlinkSync(hostPath, mountPoint);
       trace('  SUCCESS: Created symlink ' + mountPoint + ' -> ' + hostPath);
     } catch (e) {
