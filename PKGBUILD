@@ -9,6 +9,9 @@ license=('custom:proprietary')
 depends=(
     'electron'
     'nodejs'
+    'curl'
+    'zstd'
+    'file'
 )
 # gnome-keyring is recommended but not required; launcher detects SecretService
 # at runtime and falls back to --password-store=basic if unavailable
@@ -258,6 +261,34 @@ if ! dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesk
      | grep -q "boolean true"; then
     PW_STORE="basic"
 fi
+
+# getHostPlatform() spoofs darwin-x64, so the app downloads macOS binaries.
+for _ccd in "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code" \
+             "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude-code-vm"; do
+    [[ -d "$_ccd" ]] || continue
+    for _vdir in "$_ccd"/*/; do
+        [[ -d "$_vdir" ]] || continue
+        _bin="${_vdir}claude"
+        [[ -f "$_bin" ]] || continue
+        file "$_bin" 2>/dev/null | grep -q "Mach-O" || continue
+        _ver="$(basename "$_vdir")"
+        _arch="$(uname -m)"
+        [[ "$_arch" == "aarch64" ]] && _plat="linux-arm64" || _plat="linux-x64"
+        _url="https://downloads.claude.ai/claude-code-releases/${_ver}/${_plat}/claude.zst"
+        mv "$_bin" "${_bin}.macho-backup"
+        if curl -sfL "$_url" | zstd -d -o "$_bin" 2>/dev/null; then
+            chmod +x "$_bin"
+        else
+            mv "${_bin}.macho-backup" "$_bin"
+        fi
+    done
+done
+
+# Clear V8 bytecode cache so asar patches take effect after upgrade.
+# These are compilation artifacts only — no user data is affected.
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/Code Cache" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/GPUCache" \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/Claude/CachedData"
 
 exec electron /usr/lib/claude-cowork/app.asar \
     --no-sandbox \
