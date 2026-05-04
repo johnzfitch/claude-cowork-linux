@@ -19,7 +19,7 @@ const fs = require('fs');
 //   VM path:   /sessions/<name>/mnt/.claude
 //   Host path: ~/.config/Claude/local-agent-mode-sessions/sessions/<name>/mnt/.claude
 //
-// SECURITY:
+//
 //   - Path traversal protection (blocks ../ patterns)
 //   - Validates all paths stay within sessions base directory
 //   - Canonicalization to resolve symlinks safely
@@ -144,7 +144,7 @@ function createDirs(options) {
 }
 
 function isPathSafe(basePath, targetPath) {
-  // SECURITY: Check if targetPath stays within basePath (path traversal protection).
+  // Check if targetPath stays within basePath.
   // Returns false if targetPath contains ../ patterns that escape basePath.
   // 
   // Example:
@@ -155,7 +155,7 @@ function isPathSafe(basePath, targetPath) {
 }
 
 function translateVmPathStrict(sessionsBase, vmPath) {
-  // SECURITY: Translate VM path to host path with strict validation.
+  // Translate VM path to host path with strict validation.
   // VM paths start with /sessions/ and must be translated to the real
   // sessions directory on the Linux host.
   //
@@ -163,7 +163,7 @@ function translateVmPathStrict(sessionsBase, vmPath) {
   //   /sessions/demo/mnt/.claude
   //     → ~/.config/Claude/local-agent-mode-sessions/sessions/demo/mnt/.claude
   //
-  // SECURITY CHECKS:
+  // Validation:
   //   - Validates path starts with /sessions/
   //   - Blocks path traversal attempts (../)
   //   - Ensures result stays within sessions base directory
@@ -252,6 +252,20 @@ function validateRelativePathWithinHome(relativePath) {
   return isPathSafe(os.homedir(), relativePath);
 }
 
+const VM_PATH_RE = /\/sessions\/[^\/\s'"`<>|&;()$\n]+\/mnt\/[^\/\s'"`<>|&;()$\n]+(?:\/[^\s'"`<>|&;()$\n]*)?/g;
+
+function translateVmPathsInString(sessionsBase, str) {
+  if (typeof str !== 'string') return str;
+  return str.replace(VM_PATH_RE, (match) => {
+    if (match.includes('/..')) return match;
+    try {
+      return canonicalizePathForHostAccess(sessionsBase, match);
+    } catch (_) {
+      return match;
+    }
+  });
+}
+
 module.exports = {
   canonicalizeHostPath,
   canonicalizePathForHostAccess,
@@ -262,6 +276,7 @@ module.exports = {
   isPathSafe,
   resolveAbsoluteDirectory,
   translateVmPathStrict,
+  translateVmPathsInString,
   validateMountName,
   validateRelativePathWithinHome,
 };

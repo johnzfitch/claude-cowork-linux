@@ -28,10 +28,6 @@ const {
 const _verbose = process.env.CLAUDE_COWORK_VERBOSE === '1';
 function vlog(msg) { if (_verbose) console.log(msg); }
 
-// SECURITY: Allowlist-only filesystem access.
-// Only allow reads/opens for paths within the user's home directory or /tmp.
-// Everything outside (system dirs, other users, /proc, etc.) is denied by
-// default. No deny-list — the allowlist IS the policy.
 const _homeDir = require('os').homedir();
 const _allowedFsRoots = [_homeDir, '/tmp'];
 
@@ -133,8 +129,6 @@ let _resolvedTerminal = undefined;
 function resolveTerminal() {
   if (_resolvedTerminal !== undefined) return _resolvedTerminal;
   // 1. Respect $TERMINAL env var (user's explicit preference)
-  // SECURITY: Only trust binaries in system directories to prevent
-  // local attackers from setting $TERMINAL to a malicious script
   const SAFE_BIN_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
   const envTerm = process.env.TERMINAL;
   if (envTerm) {
@@ -222,9 +216,6 @@ function whichApplicationForFile(filename) {
 // _$_Namespace_$_Method pattern regardless of UUID prefix.
 
 function createOverrideRegistry(getProcessState) {
-  // Mutable state shared across handler closures
-  const bridgeState = { enabled: false };
-
   return {
     // ClaudeCode — Code tab readiness
     'ClaudeCode_$_getStatus': async () => 'ready',
@@ -397,9 +388,6 @@ function createOverrideRegistry(getProcessState) {
 
     // ================================================================
     // LocalAgentModeSessions — Dispatch/Bridge handlers
-    // The asar's own bridge transport manages the CCR connection.
-    // These handlers provide the webapp-expected API surface so IPC
-    // calls don't fail with "No handler registered" errors.
     // ================================================================
 
     'LocalAgentModeSessions_$_abandonBridgeEnvironment': async (_event, ...args) => {
@@ -418,12 +406,12 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'LocalAgentModeSessions_$_getBridgeConsent': async (_event, ...args) => {
-      vlog('[ipc:getBridgeConsent] called (denied by default)');
+      vlog('[ipc:getBridgeConsent] called');
       return { consented: false };
     },
 
     'LocalAgentModeSessions_$_getSessionsBridgeEnabled': async () => {
-      return bridgeState.enabled;
+      return false;
     },
 
     'LocalAgentModeSessions_$_kickBridgePoll': async (_event, ...args) => {
@@ -452,12 +440,11 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'LocalAgentModeSessions_$_sessionsBridgeStatus': async () => {
-      return { status: bridgeState.enabled ? 'connected' : 'disconnected', enabled: bridgeState.enabled };
+      return { status: 'disconnected', enabled: false };
     },
 
     'LocalAgentModeSessions_$_setSessionsBridgeEnabled': async (_event, enabled) => {
-      bridgeState.enabled = !!enabled;
-      vlog('[ipc:setSessionsBridgeEnabled] enabled=' + bridgeState.enabled);
+      vlog('[ipc:setSessionsBridgeEnabled] called');
       return null;
     },
 

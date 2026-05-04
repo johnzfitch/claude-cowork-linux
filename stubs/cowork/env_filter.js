@@ -1,4 +1,3 @@
-// SECURITY: Allowlist of base process environment variables to forward.
 const ENV_ALLOWLIST = [
   'PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE',
   'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
@@ -7,8 +6,6 @@ const ENV_ALLOWLIST = [
   'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'
 ];
 
-// SECURITY: Positive allowlist for additionalEnv keys from the renderer.
-// Only keys in this set or matching ADDITIONAL_ENV_PREFIX_ALLOWLIST pass through.
 const ADDITIONAL_ENV_ALLOWLIST = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CONFIG_DIR',
@@ -50,7 +47,7 @@ function filterEnv(baseEnv, additionalEnv, trace) {
         filtered[key] = val;
         continue;
       }
-      log('SECURITY: filtered out additionalEnv key not in allowlist: ' + key);
+      log('filtered additionalEnv key: ' + key);
     }
   }
   return filtered;

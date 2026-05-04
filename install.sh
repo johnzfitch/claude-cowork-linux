@@ -597,6 +597,10 @@ EOF
         update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
     fi
 
+    if command_exists xdg-mime; then
+        xdg-mime default claude.desktop x-scheme-handler/claude 2>/dev/null || true
+    fi
+
     log_success "Environment configured"
 }
 

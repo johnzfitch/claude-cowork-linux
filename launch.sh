@@ -238,6 +238,22 @@ if ! dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesk
   PASSWORD_STORE="basic"
 fi
 
+# Register claude:// protocol handler if not already set
+if command -v xdg-mime >/dev/null 2>&1; then
+  _current_handler="$(xdg-mime query default x-scheme-handler/claude 2>/dev/null || true)"
+  if [[ -z "$_current_handler" ]]; then
+    _desktop_dirs=("$HOME/.local/share/applications" "/usr/share/applications")
+    for _dd in "${_desktop_dirs[@]}"; do
+      for _df in "$_dd"/claude*.desktop; do
+        if [[ -f "$_df" ]] && grep -q "x-scheme-handler/claude" "$_df" 2>/dev/null; then
+          xdg-mime default "$(basename "$_df")" x-scheme-handler/claude 2>/dev/null || true
+          break 2
+        fi
+      done
+    done
+  fi
+fi
+
 # Sandbox check: prefer Chromium sandbox when unprivileged user namespaces
 # are available. --no-sandbox is required on distros without userns support
 # (disables Chromium renderer process isolation — see security notes).
