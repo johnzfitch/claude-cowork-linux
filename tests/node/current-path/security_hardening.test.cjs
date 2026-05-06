@@ -141,15 +141,32 @@ describe('FileSystem allowlist-only access', () => {
 });
 
 // ============================================================
-// 3. getBridgeConsent denies by default
+// 3. Bridge handlers
 // ============================================================
 
-describe('getBridgeConsent denies by default', () => {
-  it('returns consented: false', async () => {
+describe('Bridge handlers', () => {
+  it('getBridgeConsent returns consented: false', async () => {
     const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
     const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
     const result = await handler();
     assert.equal(result.consented, false);
+  });
+
+  it('sessionsBridgeStatus reports disconnected', async () => {
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+    const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_sessionsBridgeStatus', registry);
+    const result = await handler();
+    assert.equal(result.status, 'disconnected');
+    assert.equal(result.enabled, false);
+  });
+
+  it('setSessionsBridgeEnabled is a no-op', async () => {
+    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
+    const setHandler = matchOverride('claude.web_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
+    await setHandler({}, true);
+    const statusHandler = matchOverride('claude.web_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled', registry);
+    const result = await statusHandler();
+    assert.equal(result, false, 'bridge must remain disabled regardless of set calls');
   });
 });
 

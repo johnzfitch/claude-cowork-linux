@@ -268,7 +268,7 @@ function listConversationEntriesFromTranscriptFile(transcriptPath) {
   return listConversationEntriesFromTranscriptText(fs.readFileSync(transcriptPath, 'utf8'));
 }
 
-// SECURITY: Sanitize transcript text before injecting into recovery prompts.
+
 // Strips structural markers that the recovery prompt uses, preventing stored
 // prompt injection where prior AI output could manipulate recovery framing.
 function sanitizeTranscriptForRecovery(text) {

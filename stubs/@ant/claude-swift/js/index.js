@@ -37,6 +37,7 @@ const {
   createDirs,
   isPathSafe,
   translateVmPathStrict: _translateVmPathStrict,
+  translateVmPathsInString: _translateVmPathsInString,
   canonicalizeHostPath,
   canonicalizeVmPathStrict: _canonicalizeVmPathStrict,
   canonicalizePathForHostAccess: _canonicalizePathForHostAccess,
@@ -60,7 +61,7 @@ const DIRS = global.__coworkDirs || createDirs();
 const CLAUDE_CONFIG_ROOT = DIRS.claudeConfigRoot;
 const LOCAL_AGENT_ROOT = DIRS.claudeLocalAgentRoot;
 
-// SECURITY: Log to user-writable location with restricted permissions
+
 const LOG_DIR = process.env.CLAUDE_LOG_DIR || DIRS.coworkLogsDir;
 const TRACE_FILE = path.join(LOG_DIR, 'claude-swift-trace.log');
 
@@ -69,7 +70,7 @@ try {
   fs.mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
 } catch (e) {}
 
-// SECURITY: Rotate trace log if it exceeds 50 MB to limit data retention
+
 const MAX_TRACE_FILE_BYTES = 50 * 1024 * 1024;
 try {
   const _traceStats = fs.statSync(TRACE_FILE);
@@ -85,7 +86,7 @@ try {
 
 const TRACE_IO = process.env.CLAUDE_COWORK_TRACE_IO === '1';
 
-// SECURITY: Cap stdinHistory to prevent memory exhaustion and limit replay scope
+
 const MAX_STDIN_HISTORY_BYTES = 10 * 1024 * 1024; // 10 MB
 
 function redactForLogs(input) {
@@ -98,7 +99,7 @@ function trace(msg) {
   const line = `[${ts}] ${safeMsg}\n`;
   console.log('[TRACE] ' + safeMsg);
   try {
-    // SECURITY: Append with restrictive permissions
+    
     fs.appendFileSync(TRACE_FILE, line, { mode: 0o600 });
   } catch(e) {}
 }
@@ -120,10 +121,14 @@ function translateVmPathStrict(vmPath) {
     return _translateVmPathStrict(SESSIONS_BASE, vmPath);
   } catch (err) {
     if (err.message.includes('Path traversal')) {
-      trace('SECURITY: ' + err.message);
+      trace(err.message);
     }
     throw err;
   }
+}
+
+function translateVmPathsInString(str) {
+  return _translateVmPathsInString(SESSIONS_BASE, str);
 }
 
 function extractSessionNameFromVmPathStrict(vmPath) {
@@ -291,7 +296,7 @@ function createMountSymlinks(sessionName, additionalMounts) {
     trace('  Mount info: ' + JSON.stringify(mountInfo));
 
     if (!validateMountName(mountName)) {
-      trace('  SECURITY: Rejected mount name (failed containment check): ' + mountName);
+      trace('  Rejected mount: ' + mountName);
       failedMounts.push(mountName);
       continue;
     }
@@ -311,7 +316,7 @@ function createMountSymlinks(sessionName, additionalMounts) {
       // we symlink to the host uploads dir so Claude Code can see files.
       const uploadsRelPath = (typeof mountInfo === 'object' && mountInfo !== null) ? (mountInfo.path || '') : String(mountInfo || '');
       if (uploadsRelPath !== '' && !validateRelativePathWithinHome(uploadsRelPath)) {
-        trace('  SECURITY: Rejected uploads path (failed home containment check)');
+        trace('  Rejected uploads path');
         failedMounts.push(mountName);
         continue;
       }
@@ -383,7 +388,7 @@ function createMountSymlinks(sessionName, additionalMounts) {
     }
 
     if (relativePath !== '' && !validateRelativePathWithinHome(relativePath)) {
-      trace('  SECURITY: Rejected relativePath (failed home containment check)');
+      trace('  Rejected relativePath');
       failedMounts.push(mountName);
       continue;
     }
@@ -393,13 +398,15 @@ function createMountSymlinks(sessionName, additionalMounts) {
     // Since Claude Desktop v1.569.0+, getVMStorageSubpath returns root-relative
     // subpaths (e.g. "home/user/.config/...") instead of homedir-relative paths.
     // Detect this format to avoid doubled paths like /home/user/home/user/...
+    const _homedir = os.homedir();
+    const _asAbsolute = '/' + relativePath;
     const hostPath = relativePath === ''
-      ? os.homedir()
+      ? _homedir
       : path.isAbsolute(relativePath)
         ? relativePath
-        : ('/' + relativePath).startsWith(os.homedir())
-          ? '/' + relativePath
-          : path.join(os.homedir(), relativePath);
+        : (_asAbsolute === _homedir || _asAbsolute.startsWith(_homedir + '/'))
+          ? _asAbsolute
+          : path.join(_homedir, relativePath);
 
     trace('  Relative path: "' + relativePath + '"');
     trace('  Host path: ' + hostPath);
@@ -544,7 +551,7 @@ function findSessionName(args, envVars, sharedCwdPath) {
   try {
     return extractSessionName(args, envVars, sharedCwdPath);
   } catch (err) {
-    trace('SECURITY: Invalid VM path while extracting session name: ' + err.message);
+    trace('Invalid VM path: ' + err.message);
     throw err;
   }
 }
@@ -554,7 +561,7 @@ function canonicalizeVmPathStrict(vmPath) {
     return _canonicalizeVmPathStrict(SESSIONS_BASE, vmPath);
   } catch (err) {
     if (err.message.includes('Path traversal')) {
-      trace('SECURITY: ' + err.message);
+      trace(err.message);
     }
     throw err;
   }
@@ -766,7 +773,7 @@ class SwiftAddonStub extends EventEmitter {
         try {
           const title = String((options && options.title) || 'Claude').substring(0, 200);
           const body = String((options && options.body) || '').substring(0, 1000);
-          // SECURITY: Use execFileSync with argument array to prevent command injection
+
           execFileSync('notify-send', [title, body], { timeout: 5000, stdio: 'ignore' });
         } catch (e) {
           // Notification failed - not critical
@@ -1134,7 +1141,43 @@ class SwiftAddonStub extends EventEmitter {
       installSdk: async (subpath, version) => {
         console.log('[claude-swift] vm.installSdk() subpath=' + subpath + ' version=' + version);
         trace('vm.installSdk() subpath=' + subpath + ' version=' + version);
-        return { success: true };
+
+        const claudeConfigRoot = DIRS.claudeConfigRoot;
+        const targetDir = path.join('/', subpath, version);
+        const targetBin = path.join(targetDir, 'claude');
+
+        if (!targetDir.startsWith(claudeConfigRoot + '/')) {
+          trace('vm.installSdk() REJECTED: subpath resolves outside Claude config: ' + targetDir);
+          return { success: false, error: 'Install path outside allowed directory' };
+        }
+
+        try {
+          fs.accessSync(targetBin, fs.constants.X_OK);
+          fs.accessSync(path.join(targetDir, '.verified'));
+          trace('vm.installSdk() already installed at ' + targetBin);
+          return { success: true };
+        } catch {}
+
+        const arch = os.arch() === 'arm64' ? 'linux-arm64' : 'linux-x64';
+        const url = 'https://downloads.claude.ai/claude-code-releases/' + encodeURIComponent(version) + '/' + arch + '/claude.zst';
+        console.log('[claude-swift] Downloading SDK binary from ' + url);
+        trace('vm.installSdk() downloading ' + url + ' -> ' + targetBin);
+
+        try {
+          fs.mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+          execFileSync('curl', ['-sfL', '-o', targetBin + '.zst', url], { timeout: 120000 });
+          execFileSync('zstd', ['-d', '-f', targetBin + '.zst', '-o', targetBin], { timeout: 30000 });
+          fs.unlinkSync(targetBin + '.zst');
+          fs.chmodSync(targetBin, 0o755);
+          fs.writeFileSync(path.join(targetDir, '.verified'), '');
+          console.log('[claude-swift] SDK binary installed at ' + targetBin);
+          return { success: true };
+        } catch (e) {
+          console.error('[claude-swift] vm.installSdk() download failed:', e.message);
+          trace('vm.installSdk() FAILED: ' + e.message);
+          try { fs.unlinkSync(targetBin + '.zst'); } catch {}
+          return { success: false, error: e.message };
+        }
       },
 
       // Check VM download/install status
@@ -1313,6 +1356,15 @@ class SwiftAddonStub extends EventEmitter {
       /**
        * Enable/disable debug logging
        */
+      setGuestRequestCallback: (callback) => {
+        trace('vm.setGuestRequestCallback() registered');
+        self._guestRequestCallback = callback;
+      },
+
+      sendGuestResponse: async (id, resultJson, error) => {
+        trace('vm.sendGuestResponse() id=' + id);
+      },
+
       setDebugLogging: (enabled) => {
         console.log('[claude-swift] vm.setDebugLogging(' + enabled + ')');
         // In our stub, this is controlled by env var, so we just log
@@ -1441,7 +1493,7 @@ class SwiftAddonStub extends EventEmitter {
 
   async installSdk(subpath, version) {
     console.log('[claude-swift] installSdk() subpath=' + subpath + ' version=' + version);
-    return { success: true };
+    return this.vm.installSdk(subpath, version);
   }
 
   kill(id, signal) {
@@ -1468,13 +1520,20 @@ class SwiftAddonStub extends EventEmitter {
       trace('spawn envVars keys from asar: ' + Object.keys(envVars).join(', '));
     }
     try {
+      const translatedArgs = Array.isArray(args)
+        ? args.map(a => typeof a === 'string' ? translateVmPathsInString(a) : a)
+        : [];
+      const translatedEnvVars = envVars && typeof envVars === 'object'
+        ? Object.fromEntries(Object.entries(envVars).map(([k, v]) =>
+            [k, typeof v === 'string' ? translateVmPathsInString(v) : v]))
+        : {};
       const processState = {
         id,
         processName,
         command,
-        args: Array.isArray(args) ? args.slice() : [],
+        args: translatedArgs,
         options: options && typeof options === 'object' ? { ...options } : {},
-        envVars: envVars && typeof envVars === 'object' ? { ...envVars } : {},
+        envVars: translatedEnvVars,
         additionalMounts,
         allowedDomains,
         sharedCwdPath,
@@ -1510,7 +1569,10 @@ class SwiftAddonStub extends EventEmitter {
       if (optEnv && typeof optEnv === 'object') {
         trace('WARNING: spawnSync() ignoring options.env override');
       }
-      const result = nodeSpawnSync(command, args || [], { encoding: 'utf-8', cwd, ...safeOptions });
+      const translatedArgs = Array.isArray(args)
+        ? args.map(a => typeof a === 'string' ? translateVmPathsInString(a) : a)
+        : [];
+      const result = nodeSpawnSync(command, translatedArgs, { encoding: 'utf-8', cwd, ...safeOptions });
       return { stdout: result.stdout, stderr: result.stderr, status: result.status, signal: result.signal, error: result.error };
     } catch (err) {
       console.error('[claude-swift] spawnSync error:', err);

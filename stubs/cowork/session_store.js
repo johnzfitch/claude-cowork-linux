@@ -433,7 +433,7 @@ class SessionStore {
 
     const checksumResult = verifyMetadataChecksum(rawSessionData);
     if (checksumResult.reason === 'checksum_mismatch') {
-      console.error('[session_store] SECURITY WARNING: checksum mismatch for ' + metadataPath);
+      console.error('[session_store] checksum mismatch: ' + metadataPath);
     }
 
     const normalizedSessionData = this.normalizeSessionRecordForMetadataPath(metadataPath, rawSessionData);

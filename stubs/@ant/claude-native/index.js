@@ -113,7 +113,7 @@ class AuthRequest extends EventEmitter {
   }
 
   start(url, _callbackUrl) {
-    // SECURITY: Validate URL is an Anthropic OAuth origin before opening
+
     const ALLOWED_AUTH_ORIGINS = [
       'https://claude.ai', 'https://auth.anthropic.com',
       'https://accounts.anthropic.com', 'https://console.anthropic.com',
@@ -129,7 +129,7 @@ class AuthRequest extends EventEmitter {
       return;
     }
 
-    // SECURITY: Use execFile (not exec) to prevent command injection
+
     const { execFile } = require('child_process');
     execFile('xdg-open', [url], (err) => {
       if (err) console.error('[claude-native] Failed to open browser:', err.message);

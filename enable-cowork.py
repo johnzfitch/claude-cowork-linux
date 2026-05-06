@@ -100,10 +100,41 @@ def patch_file(filepath):
     print(f"  {func_name}() now returns {{status:\"supported\"}} unconditionally")
     return True
 
+HOST_PLATFORM_THROW_RE = re.compile(
+    r'throw new Error\([^)]*Unsupported platform[^)]*\)'
+)
+
+
+def patch_host_platform(filepath):
+    """Patch getHostPlatform() to return 'darwin-x64' instead of throwing on Linux.
+
+    The minified getHostPlatform() method only handles darwin and win32,
+    throwing Error('Unsupported platform: ...') for anything else.
+    Replace the throw with return"darwin-x64" so session init succeeds.
+    """
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    match = HOST_PLATFORM_THROW_RE.search(content)
+    if not match:
+        print(f"  getHostPlatform(): no throw found (already patched or not present)")
+        return True
+
+    content = HOST_PLATFORM_THROW_RE.sub('return"darwin-x64"', content)
+
+    with open(filepath, 'w') as f:
+        f.write(content)
+
+    print(f"  getHostPlatform() patched: throw replaced with return\"darwin-x64\"")
+    return True
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
 
     success = patch_file(sys.argv[1])
+    if success:
+        patch_host_platform(sys.argv[1])
     sys.exit(0 if success else 1)

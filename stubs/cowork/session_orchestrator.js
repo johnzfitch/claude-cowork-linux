@@ -325,7 +325,7 @@ function buildBridgeSpawnArgs(args, remoteSessionId, sdkUrl) {
   ];
 
   if (typeof sdkUrl === 'string' && sdkUrl.trim()) {
-    // SECURITY: Only allow --sdk-url pointing to Anthropic endpoints
+
     try {
       const parsedSdkUrl = new URL(sdkUrl);
       const ALLOWED_SDK_HOSTS = ['api.anthropic.com'];
@@ -333,16 +333,16 @@ function buildBridgeSpawnArgs(args, remoteSessionId, sdkUrl) {
         parsedSdkUrl.hostname === h || parsedSdkUrl.hostname.endsWith('.' + h)
       );
       if (!hostAllowed) {
-        console.warn('[Cowork] SECURITY: Blocked --sdk-url with disallowed host:', parsedSdkUrl.hostname);
+        console.warn('[Cowork] Blocked --sdk-url with disallowed host:', parsedSdkUrl.hostname);
       } else if (parsedSdkUrl.protocol !== 'https:') {
-        console.warn('[Cowork] SECURITY: Blocked non-HTTPS --sdk-url');
+        console.warn('[Cowork] Blocked non-HTTPS --sdk-url');
       } else {
         bridgeArgs.push('--sdk-url', sdkUrl);
       }
     } catch (_e) {
       // Don't log sdkUrl verbatim — user-controlled, may contain
       // newlines (log injection) or credentials
-      console.warn('[Cowork] SECURITY: Blocked malformed --sdk-url');
+      console.warn('[Cowork] Blocked malformed --sdk-url');
     }
   }
 
@@ -547,7 +547,7 @@ class SessionOrchestrator {
       const bashCandidates = ['/usr/bin/bash', '/bin/bash'];
       hostCommand = bashCandidates.find((c) => fs.existsSync(c));
       if (!hostCommand) {
-        trace('SECURITY: bash requested but not found on host');
+        trace('bash requested but not found on host');
         if (typeof onError === 'function') {
           onError(processId, 'bash not found', '');
         }
@@ -563,7 +563,7 @@ class SessionOrchestrator {
         trace('Allowed absolute path missing, resolved: ' + normalizedCommand + ' -> ' + hostCommand);
       }
     } else {
-      trace('SECURITY: Unexpected command blocked: "' + String(command) + '" (type=' + typeof command + ')');
+      trace('Unexpected command blocked: "' + String(command) + '" (type=' + typeof command + ')');
       if (typeof onError === 'function') {
         onError(processId, 'Unexpected command: ' + String(command), '');
       }
@@ -574,7 +574,7 @@ class SessionOrchestrator {
     const commandIsAllowed = hostCommand === 'claude' ||
       allowedPrefixes.some((prefix) => hostCommand.startsWith(prefix));
     if (!commandIsAllowed) {
-      trace('SECURITY: Command outside allowed directories: ' + hostCommand);
+      trace('Command outside allowed directories: ' + hostCommand);
       if (typeof onError === 'function') {
         onError(processId, 'Invalid binary path', '');
       }

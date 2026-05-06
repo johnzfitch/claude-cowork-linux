@@ -1,3 +1,23 @@
+{
+  const _fs = require('fs');
+  const _path = require('path');
+  const _existing = _path.join(_path.dirname(process.resourcesPath || ''), 'Helpers', 'disclaimer');
+  let _haveSystemDisclaimer = false;
+  try {
+    const _stat = _fs.statSync(_existing);
+    _haveSystemDisclaimer = _stat.uid === 0;
+  } catch (_) {}
+  if (!_haveSystemDisclaimer) {
+    const _xdgConfigHome = process.env.XDG_CONFIG_HOME || _path.join(require('os').homedir(), '.config');
+    Object.defineProperty(process, 'resourcesPath', {
+      value: _path.join(_xdgConfigHome, 'Claude', 'cowork-resources'),
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
+}
+
 // Patch macOS-only systemPreferences methods that don't exist on Linux
 const { systemPreferences } = require('electron');
 if (typeof systemPreferences.setUserDefault !== 'function') {
@@ -548,35 +568,53 @@ try {
   {
     try {
       fs.mkdirSync(disclaimerDir, { recursive: true, mode: 0o755 });
-      // The disclaimer wrapper must resolve macOS binary paths to Linux equivalents.
-      // The asar constructs paths like claude.app/Contents/MacOS/claude because
-      // we spoof darwin. Without this redirect, exec hits "Exec format error"
-      // on the arm64 Mach-O binary and marketplace/plugin operations fail (exit 126).
-      fs.writeFileSync(disclaimerBin, [
-        '#!/bin/sh',
-        'CMD="$1"',
-        'shift',
-        'case "$CMD" in',
-        '  *claude.app/Contents/MacOS/claude|*claude.app/Contents/MacOS/Claude)',
-        '    for c in \\',
-        '      "$HOME/.local/bin/claude" \\',
-        '      "$HOME/.local/share/mise/shims/claude" \\',
-        '      "$HOME/.asdf/shims/claude" \\',
-        '      "/usr/local/bin/claude" \\',
-        '      "/usr/bin/claude"; do',
-        '      [ -x "$c" ] && exec "$c" "$@"',
-        '    done',
-        '    echo "disclaimer: no Linux claude binary found" >&2',
-        '    exit 1',
-        '    ;;',
-        'esac',
-        'exec "$CMD" "$@"',
-        '',
-      ].join('\n'), { mode: 0o755 });
-      console.log('[disclaimer] Installed platform-aware wrapper: ' + disclaimerBin);
-    } catch (de) {
-      console.warn('[disclaimer] Could not create passthrough: ' + de.message);
+      fs.writeFileSync(disclaimerBin, '#!/bin/sh\nexit 127\n', { mode: 0o444 });
+    } catch (_) {}
+
+    const _cp = require('child_process');
+    const _origExecFile = _cp.execFile;
+    const _origSpawn = _cp.spawn;
+    const CLAUDE_SEARCH_PATHS = [
+      path.join(os.homedir(), '.local', 'bin', 'claude'),
+      path.join(os.homedir(), '.local', 'share', 'mise', 'shims', 'claude'),
+      path.join(os.homedir(), '.asdf', 'shims', 'claude'),
+      '/usr/local/bin/claude',
+      '/usr/bin/claude',
+    ];
+    const ALLOWED_CMD_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+
+    function _resolveDisclaimerArgs(file, args) {
+      if (file !== disclaimerBin) return null;
+      if (!Array.isArray(args) || args.length === 0) return null;
+      let cmd = args[0];
+      const rest = args.slice(1);
+      if (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd)) {
+        cmd = null;
+        for (const candidate of CLAUDE_SEARCH_PATHS) {
+          try { fs.accessSync(candidate, fs.constants.X_OK); cmd = candidate; break; } catch (_) {}
+        }
+        if (!cmd) return null;
+      } else if (!ALLOWED_CMD_DIRS.some(d => cmd.startsWith(d))) {
+        return null;
+      }
+      return { cmd, rest };
     }
+
+    _cp.execFile = function(file, args, ...rest) {
+      const resolved = _resolveDisclaimerArgs(file, args);
+      if (resolved) return _origExecFile.call(_cp, resolved.cmd, resolved.rest, ...rest);
+      return _origExecFile.call(_cp, file, args, ...rest);
+    };
+    Object.assign(_cp.execFile, _origExecFile);
+
+    _cp.spawn = function(file, args, ...rest) {
+      const resolved = _resolveDisclaimerArgs(file, args);
+      if (resolved) return _origSpawn.call(_cp, resolved.cmd, resolved.rest, ...rest);
+      return _origSpawn.call(_cp, file, args, ...rest);
+    };
+    Object.assign(_cp.spawn, _origSpawn);
+
+    console.log('[disclaimer] Intercepting exec calls at ' + disclaimerBin);
   }
 } catch (e) {
   console.error('[TMPDIR] Setup failed:', e.message);
@@ -830,7 +868,7 @@ try {
       // Find the claude:// URL in the argv of the second instance
       const url = argv.find(a => a.startsWith('claude://'));
       if (url) {
-        // SECURITY: Validate URL structure before forwarding to asar handler
+
         try {
           const parsed = new URL(url);
           if (parsed.protocol !== 'claude:') {
