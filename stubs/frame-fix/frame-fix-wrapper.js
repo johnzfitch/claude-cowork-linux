@@ -31,6 +31,22 @@ if (typeof systemPreferences.getUserDefault !== 'function') {
   };
 }
 
+// Patch macOS-only app activity methods that don't exist on Linux.
+// frame-fix spoofs process.platform to 'darwin', so app code gated by
+// `process.platform === "darwin"` will call these on Linux. Without
+// stubs the main process crashes with "X is not a function".
+const { app } = require('electron');
+if (typeof app.invalidateCurrentActivity !== 'function') {
+  app.invalidateCurrentActivity = function() {
+    // no-op on Linux
+  };
+}
+if (typeof app.setUserActivity !== 'function') {
+  app.setUserActivity = function(type, userInfo, webpageURL) {
+    // no-op on Linux
+  };
+}
+
 // Inject frame fix and Cowork support before main app loads
 const Module = require('module');
 const originalRequire = Module.prototype.require;
