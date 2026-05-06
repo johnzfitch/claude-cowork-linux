@@ -173,6 +173,16 @@ JSEOF
         echo "WARN: file:// preload patch skipped (target not found)"
     fi
 
+    # Add linux branch to getHostPlatform() (without this, the minified
+    # platform switch throws "Unsupported platform: linux-x64" and the
+    # ClaudeCode.prepare IPC fails -- Cowork tasks fail in the UI with a
+    # generic "Something went wrong" banner).
+    if grep -q 'win32-arm64":"win32-x64";throw new Error' "$_indexjs"; then
+        sed -i 's|win32-arm64":"win32-x64";throw new Error|win32-arm64":"win32-x64";if(process.platform==="linux")return A==="arm64"?"linux-arm64":"linux-x64";throw new Error|' "$_indexjs"
+    else
+        echo "WARN: linux-x64 platform patch skipped (target not found)"
+    fi
+
     # Duplicate i18n JSONs into resources/i18n/ (bundle reads from both paths).
     if ls "${_ext}/resources/"*.json >/dev/null 2>&1; then
         mkdir -p "${_ext}/resources/i18n"
