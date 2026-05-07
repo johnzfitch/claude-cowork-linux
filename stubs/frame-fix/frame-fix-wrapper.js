@@ -19,7 +19,7 @@
 }
 
 // Patch macOS-only systemPreferences methods that don't exist on Linux
-const { systemPreferences } = require('electron');
+const { systemPreferences, app: _earlyApp } = require('electron');
 if (typeof systemPreferences.setUserDefault !== 'function') {
   systemPreferences.setUserDefault = function(key, type, value) {
     // no-op on Linux
@@ -29,6 +29,37 @@ if (typeof systemPreferences.getUserDefault !== 'function') {
   systemPreferences.getUserDefault = function(key, type) {
     return undefined;
   };
+}
+if (typeof systemPreferences.promptTouchID !== 'function') {
+  systemPreferences.promptTouchID = function(reason) {
+    return Promise.reject(new Error('Touch ID unavailable on Linux'));
+  };
+}
+
+// Patch macOS-only Electron app methods (NSUserActivity / Handoff APIs).
+// We spoof process.platform === "darwin" so the asar's darwin-gated callsites
+// reach these methods; on Linux Electron they don't exist, throwing
+// `TypeError: app.invalidateCurrentActivity is not a function` and crashing
+// the main process with a JS error dialog.
+// See: claude-cowork-linux issues #104, #106
+if (_earlyApp) {
+  const _macOnlyAppMethods = [
+    'invalidateCurrentActivity',
+    'setUserActivity',
+    'updateCurrentActivity',
+    'resignCurrentActivity',
+    'getCurrentActivityType',
+  ];
+  for (const _m of _macOnlyAppMethods) {
+    if (typeof _earlyApp[_m] !== 'function') {
+      _earlyApp[_m] = function() { /* no-op on Linux */ };
+    }
+  }
+  // moveToApplicationsFolder is macOS-only; the asar's prompt path is gated
+  // by a confirm dialog but stub it defensively so a stray call can't crash.
+  if (typeof _earlyApp.moveToApplicationsFolder !== 'function') {
+    _earlyApp.moveToApplicationsFolder = function() { return false; };
+  }
 }
 
 // Inject frame fix and Cowork support before main app loads
