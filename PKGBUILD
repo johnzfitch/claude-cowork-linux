@@ -9,6 +9,8 @@ license=('custom:proprietary')
 depends=(
     'electron'
     'nodejs'
+    'curl'
+    'zstd'
 )
 # gnome-keyring is recommended but not required; launcher detects SecretService
 # at runtime and falls back to --password-store=basic if unavailable
@@ -219,8 +221,8 @@ package() {
     install -m755 "${srcdir}/linux-app-extracted/cowork/cowork-plugin-shim.sh" \
         "${pkgdir}/usr/lib/claude-cowork/resources/cowork-plugin-shim.sh"
 
-    # Disclaimer shim: pre-installed (frame-fix-wrapper would write this at
-    # runtime but our root-owned dir blocks it). Same content, no-op for it.
+    # Disclaimer stub: exists so the asar's path check passes.
+    # Exec calls are intercepted in-process by frame-fix-wrapper.
     install -Dm755 /dev/stdin "${pkgdir}/usr/lib/claude-cowork/Helpers/disclaimer" <<'EOF'
 #!/bin/sh
 CMD="$1"
@@ -235,8 +237,7 @@ case "$CMD" in
       "/usr/bin/claude"; do
       [ -x "$c" ] && exec "$c" "$@"
     done
-    echo "disclaimer: no Linux claude binary found" >&2
-    exit 1
+    exit 127
     ;;
 esac
 exec "$CMD" "$@"
@@ -259,8 +260,25 @@ if ! dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesk
     PW_STORE="basic"
 fi
 
+# Register claude:// protocol handler if not already set
+if command -v xdg-mime >/dev/null 2>&1; then
+    _current_handler="$(xdg-mime query default x-scheme-handler/claude 2>/dev/null || true)"
+    if [[ -z "$_current_handler" ]]; then
+        xdg-mime default claude-cowork.desktop x-scheme-handler/claude 2>/dev/null || true
+    fi
+fi
+
+# Sandbox: prefer Chromium sandbox when user namespaces are available
+_sandbox_flag="--no-sandbox"
+if [[ -f /proc/sys/kernel/unprivileged_userns_clone ]]; then
+    [[ "$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null)" == "1" ]] && _sandbox_flag=""
+elif [[ -f /proc/sys/user/max_user_namespaces ]]; then
+    _max_ns="$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)"
+    [[ "$_max_ns" -gt 0 ]] 2>/dev/null && _sandbox_flag=""
+fi
+
 exec electron /usr/lib/claude-cowork/app.asar \
-    --no-sandbox \
+    ${_sandbox_flag} \
     --disable-gpu \
     --class=Claude \
     --password-store="$PW_STORE" \
