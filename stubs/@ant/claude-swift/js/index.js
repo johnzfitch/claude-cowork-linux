@@ -1088,6 +1088,33 @@ class SwiftAddonStub extends EventEmitter {
       getEnabled: () => false,
     };
 
+    // Computer Use (TCC) — graceful denial on Linux. The asar accesses
+    // claude-swift.computerUse.* directly when its IPC fallback misses.
+    this.computerUse = {
+      getState: () => Promise.resolve({ accessibility: 'denied', screenCapture: 'denied', canPrompt: false }),
+      requestAccess: () => Promise.resolve({ success: false, accessibility: 'denied', screenCapture: 'denied', canPrompt: false }),
+      requestAccessibility: () => Promise.resolve({ success: false, accessibility: 'denied', canPrompt: false }),
+      requestScreenRecording: () => Promise.resolve({ success: false, screenCapture: 'denied', canPrompt: false }),
+      getCurrentSessionGrants: () => Promise.resolve([]),
+      revokeGrant: () => Promise.resolve(true),
+      openSystemSettings: () => Promise.resolve(null),
+      canPrompt: () => Promise.resolve(false),
+      listAvailablePermissions: () => Promise.resolve(['accessibility', 'screenCapture']),
+      listInstalledApps: () => Promise.resolve([]),
+      tcc: {
+        checkAccessibility: () => false,
+        checkScreenRecording: () => false,
+        requestAccessibility: () => false,
+        requestScreenRecording: () => false,
+      },
+    };
+
+    // Updater (ShipIt is macOS-only). Stub empty job info so the asar's
+    // updater logic short-circuits instead of throwing on null access.
+    this.updater = {
+      getShipItJobInfo: () => ({ label: null, isPrivileged: false }),
+    };
+
     // VM Management (nested object)
     // CRITICAL: The app accesses methods via module.default.vm, so all methods must be here
     const self = this;
@@ -1158,7 +1185,7 @@ class SwiftAddonStub extends EventEmitter {
           return { success: true };
         } catch {}
 
-        const arch = os.arch() === 'arm64' ? 'linux-arm64' : 'linux-x64';
+        const arch = process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
         const url = 'https://downloads.claude.ai/claude-code-releases/' + encodeURIComponent(version) + '/' + arch + '/claude.zst';
         console.log('[claude-swift] Downloading SDK binary from ' + url);
         trace('vm.installSdk() downloading ' + url + ' -> ' + targetBin);
@@ -1251,6 +1278,17 @@ class SwiftAddonStub extends EventEmitter {
         );
 
         return spawnResult;
+      },
+
+      // Guest request interface — required by cliPluginBridge to classify CLI
+      // plugins. Without these the bridge skips init and dispatch reports
+      // "can't connect". (PR #112)
+      setGuestRequestCallback: (callback) => {
+        trace('vm.setGuestRequestCallback() registered');
+        self._guestRequestCallback = callback;
+      },
+      sendGuestResponse: async (id, resultJson, error) => {
+        trace('vm.sendGuestResponse() id=' + id);
       },
 
       kill: (id, signal) => {
