@@ -791,7 +791,7 @@ Object.defineProperty(process, 'platform', {
 });
 
 Object.defineProperty(process, 'arch', {
-  get() { return _inOurCode ? REAL_ARCH : 'arm64'; },
+  get() { return REAL_ARCH; },
   configurable: true
 });
 
@@ -799,7 +799,7 @@ const originalOsPlatform = os.platform;
 const originalOsArch = os.arch;
 
 os.platform = function() { return _inOurCode ? originalOsPlatform.call(os) : 'darwin'; };
-os.arch = function() { return _inOurCode ? originalOsArch.call(os) : 'arm64'; };
+os.arch = function() { return originalOsArch.call(os); };
 
 // Spoof macOS version
 const originalGetSystemVersion = process.getSystemVersion;
@@ -807,7 +807,7 @@ process.getSystemVersion = function() {
   return '14.0.0';
 };
 
-console.log('[Platform] Spoofing: darwin/arm64 macOS 14.0 (immediate)');
+console.log('[Platform] Spoofing: darwin/' + REAL_ARCH + ' macOS 14.0 (immediate)');
 console.log('[Platform] Real platform was:', REAL_PLATFORM);
 
 // ============================================================
