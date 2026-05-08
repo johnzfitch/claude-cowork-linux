@@ -677,22 +677,32 @@ try {
     }
 
     // macOS-only commands the asar reaches via the spoof but can't run on Linux.
-    // Reroute to /bin/true (success no-op) so the asar's try/catch sees exit 0
-    // instead of ENOENT, keeping downstream features (MCP bundle accept, gh path
-    // discovery) in their happy path.
+    // Reroute to /bin/true (success no-op) or a Linux equivalent so the asar's
+    // try/catch sees exit 0 instead of ENOENT.
     function _macOnlyCmdNoop(file, args) {
       if (typeof file !== 'string' || !Array.isArray(args)) return null;
       const base = file.endsWith('/security') || file === 'security' ? 'security'
                  : file.endsWith('/xcrun') || file === 'xcrun' ? 'xcrun'
+                 : file.endsWith('/osascript') || file === 'osascript' ? 'osascript'
+                 : file.endsWith('/scutil') || file === 'scutil' ? 'scutil'
+                 : file.endsWith('/kextstat') || file === 'kextstat' ? 'kextstat'
+                 : file.endsWith('/system_profiler') || file === 'system_profiler' ? 'system_profiler'
+                 : file.endsWith('/pgrep') || file === 'pgrep' ? 'pgrep'
+                 : (file === '/usr/bin/open' || file.endsWith('/open') && file !== 'xdg-open') ? 'open'
                  : null;
       if (!base) return null;
-      if (base === 'security' && args[0] === 'verify-cert') return { cmd: '/bin/true', rest: [] };
-      if (base === 'xcrun') {
-        // xcrun git --version → pretend git is at /usr/bin/git (the Linux default).
-        if (args[0] === 'git') return { cmd: '/usr/bin/git', rest: args.slice(1) };
-        return { cmd: '/bin/true', rest: [] };
+      if (base === 'security') return { cmd: '/bin/true', rest: [] };
+      if (base === 'xcrun' && args[0] === 'git') return { cmd: '/usr/bin/git', rest: args.slice(1) };
+      if (base === 'xcrun') return { cmd: '/bin/true', rest: [] };
+      if (base === 'open') {
+        // /usr/bin/open <args> → xdg-open with the first non-flag URL/path arg.
+        const target = args.filter(a => !a.startsWith('-')).pop();
+        return target
+          ? { cmd: 'xdg-open', rest: [target] }
+          : { cmd: '/bin/true', rest: [] };
       }
-      return null;
+      // osascript / scutil / kextstat / system_profiler / pgrep — return empty success.
+      return { cmd: '/bin/true', rest: [] };
     }
 
     function _wrap(orig) {
