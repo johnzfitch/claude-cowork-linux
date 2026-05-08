@@ -100,32 +100,36 @@ def patch_file(filepath):
     print(f"  {func_name}() now returns {{status:\"supported\"}} unconditionally")
     return True
 
+HOST_PLATFORM_FINGERPRINT_RE = re.compile(
+    r'darwin-arm64.{0,50}darwin-x64.{0,120}win32-arm64.{0,50}win32-x64'
+)
 HOST_PLATFORM_THROW_RE = re.compile(
-    r'throw new Error\([^)]*Unsupported platform[^)]*\)'
+    r'throw new Error\([^)]*[Uu]nsupported.{0,20}platform[^)]*\)'
 )
 
 
 def patch_host_platform(filepath):
-    """Patch getHostPlatform() to return 'darwin-x64' instead of throwing on Linux.
-
-    The minified getHostPlatform() method only handles darwin and win32,
-    throwing Error('Unsupported platform: ...') for anything else.
-    Replace the throw with return"darwin-x64" so session init succeeds.
-    """
     with open(filepath, 'r') as f:
         content = f.read()
 
-    match = HOST_PLATFORM_THROW_RE.search(content)
-    if not match:
-        print(f"  getHostPlatform(): no throw found (already patched or not present)")
+    fp = HOST_PLATFORM_FINGERPRINT_RE.search(content)
+    if not fp:
+        print("  getHostPlatform(): fingerprint not found (build changed)")
         return True
 
-    content = HOST_PLATFORM_THROW_RE.sub('return"darwin-x64"', content)
+    region = content[fp.end():fp.end() + 500]
+    throw = HOST_PLATFORM_THROW_RE.search(region)
+    if not throw:
+        print("  getHostPlatform(): no throw near fingerprint (already returns darwin-x64)")
+        return True
+
+    abs_start = fp.end() + throw.start()
+    abs_end = fp.end() + throw.end()
+    content = content[:abs_start] + 'return"darwin-x64"' + content[abs_end:]
 
     with open(filepath, 'w') as f:
         f.write(content)
-
-    print(f"  getHostPlatform() patched: throw replaced with return\"darwin-x64\"")
+    print('  getHostPlatform() patched: throw -> return"darwin-x64"')
     return True
 
 
