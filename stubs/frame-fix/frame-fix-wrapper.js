@@ -18,18 +18,82 @@
   }
 }
 
-// Patch macOS-only systemPreferences methods that don't exist on Linux
-const { systemPreferences } = require('electron');
+// macOS-only Electron APIs that the asar reaches through the darwin spoof.
+// Stub everything as graceful no-op / sensible-default so the asar's own
+// darwin code paths run without TypeError. Returning null/undefined makes
+// the asar disable downstream features; returning shaped values keeps them.
+const { systemPreferences, app: _earlyApp } = require('electron');
+
 if (typeof systemPreferences.setUserDefault !== 'function') {
-  systemPreferences.setUserDefault = function(key, type, value) {
-    // no-op on Linux
-  };
+  systemPreferences.setUserDefault = function() {};
 }
 if (typeof systemPreferences.getUserDefault !== 'function') {
-  systemPreferences.getUserDefault = function(key, type) {
-    return undefined;
+  systemPreferences.getUserDefault = function() { return undefined; };
+}
+if (typeof systemPreferences.promptTouchID !== 'function') {
+  systemPreferences.promptTouchID = function() {
+    return Promise.reject(new Error('Touch ID unavailable on Linux'));
   };
 }
+if (typeof systemPreferences.getMediaAccessStatus !== 'function') {
+  systemPreferences.getMediaAccessStatus = function() { return 'unknown'; };
+}
+if (typeof systemPreferences.askForMediaAccess !== 'function') {
+  systemPreferences.askForMediaAccess = function() { return Promise.resolve(true); };
+}
+
+if (_earlyApp) {
+  for (const _m of [
+    'invalidateCurrentActivity',
+    'setUserActivity',
+    'updateCurrentActivity',
+    'resignCurrentActivity',
+    'getCurrentActivityType',
+  ]) {
+    if (typeof _earlyApp[_m] !== 'function') {
+      _earlyApp[_m] = function() {};
+    }
+  }
+  if (typeof _earlyApp.moveToApplicationsFolder !== 'function') {
+    _earlyApp.moveToApplicationsFolder = function() { return false; };
+  }
+  if (typeof _earlyApp.isInApplicationsFolder !== 'function') {
+    _earlyApp.isInApplicationsFolder = function() { return true; };
+  }
+  if (typeof _earlyApp.hide !== 'function') {
+    _earlyApp.hide = function() {};
+  }
+  // app.dock namespace — referenced via optional chaining in many places but
+  // some sites assume it exists.
+  if (!_earlyApp.dock) {
+    Object.defineProperty(_earlyApp, 'dock', {
+      value: {
+        show: function() { return Promise.resolve(); },
+        hide: function() {},
+        isVisible: function() { return false; },
+        bounce: function() { return -1; },
+        cancelBounce: function() {},
+        downloadFinished: function() {},
+        setBadge: function() {},
+        getBadge: function() { return ''; },
+        setIcon: function() {},
+        setMenu: function() {},
+        getMenu: function() { return null; },
+      },
+      configurable: true,
+    });
+  }
+}
+
+// BrowserWindow.prototype.setHiddenInMissionControl — patched once the
+// electron module is intercepted. Hooked late via our require interceptor;
+// also stubbed via prototype here as belt-and-braces.
+try {
+  const { BrowserWindow: _BW } = require('electron');
+  if (_BW && _BW.prototype && typeof _BW.prototype.setHiddenInMissionControl !== 'function') {
+    _BW.prototype.setHiddenInMissionControl = function() {};
+  }
+} catch (_) {}
 
 // Inject frame fix and Cowork support before main app loads
 const Module = require('module');
