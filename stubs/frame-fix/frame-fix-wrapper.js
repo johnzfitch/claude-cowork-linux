@@ -1,13 +1,26 @@
 {
   const _fs = require('fs');
   const _path = require('path');
-  const _existing = _path.join(_path.dirname(process.resourcesPath || ''), 'Helpers', 'disclaimer');
-  let _haveSystemDisclaimer = false;
-  try {
-    _fs.accessSync(_existing, _fs.constants.X_OK);
-    _haveSystemDisclaimer = true;
-  } catch (_) {}
-  if (!_haveSystemDisclaimer) {
+  const _candidates = [
+    _path.join(_path.dirname(process.resourcesPath || ''), 'Helpers', 'disclaimer'),
+    '/usr/lib/claude-cowork/Helpers/disclaimer',
+  ];
+  let _systemRoot = null;
+  for (const _bin of _candidates) {
+    try {
+      _fs.accessSync(_bin, _fs.constants.X_OK);
+      _systemRoot = _path.dirname(_path.dirname(_bin));
+      break;
+    } catch (_) {}
+  }
+  if (_systemRoot) {
+    Object.defineProperty(process, 'resourcesPath', {
+      value: _path.join(_systemRoot, 'resources'),
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  } else {
     const _xdgConfigHome = process.env.XDG_CONFIG_HOME || _path.join(require('os').homedir(), '.config');
     Object.defineProperty(process, 'resourcesPath', {
       value: _path.join(_xdgConfigHome, 'Claude', 'cowork-resources'),
@@ -664,7 +677,20 @@ try {
       if (!Array.isArray(args) || args.length === 0) return null;
       let cmd = args[0];
       const rest = args.slice(1);
-      if (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd)) {
+      const m = /\/claude-code\/([^/]+)\/claude\.app\/Contents\/MacOS\/[Cc]laude$/.exec(cmd);
+      if (m) {
+        const xdgCfg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+        const vmBin = path.join(xdgCfg, 'Claude', 'claude-code-vm', m[1], 'claude');
+        let resolved = null;
+        try { fs.accessSync(vmBin, fs.constants.X_OK); resolved = vmBin; } catch (_) {}
+        if (!resolved) {
+          for (const candidate of CLAUDE_SEARCH_PATHS) {
+            try { fs.accessSync(candidate, fs.constants.X_OK); resolved = candidate; break; } catch (_) {}
+          }
+        }
+        if (!resolved) return null;
+        cmd = resolved;
+      } else if (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd)) {
         cmd = null;
         for (const candidate of CLAUDE_SEARCH_PATHS) {
           try { fs.accessSync(candidate, fs.constants.X_OK); cmd = candidate; break; } catch (_) {}
