@@ -1088,8 +1088,8 @@ class SwiftAddonStub extends EventEmitter {
       getEnabled: () => false,
     };
 
-    // Computer Use (TCC) — graceful denial on Linux. The asar accesses
-    // claude-swift.computerUse.* directly when its IPC fallback misses.
+    // Computer Use — full namespace shape the asar accesses via hE().
+    // Linux has no Apple TCC; everything degrades to denied / empty.
     this.computerUse = {
       getState: () => Promise.resolve({ accessibility: 'denied', screenCapture: 'denied', canPrompt: false }),
       requestAccess: () => Promise.resolve({ success: false, accessibility: 'denied', screenCapture: 'denied', canPrompt: false }),
@@ -1107,6 +1107,29 @@ class SwiftAddonStub extends EventEmitter {
         requestAccessibility: () => false,
         requestScreenRecording: () => false,
       },
+      apps: {
+        listInstalled: () => Promise.resolve([]),
+        listRunning: () => Promise.resolve([]),
+        appUnderPoint: () => Promise.resolve(null),
+        iconDataUrl: () => undefined,
+        open: () => Promise.resolve(false),
+        unhide: () => Promise.resolve(),
+        prepareDisplay: () => Promise.resolve({ activated: null, hidden: [] }),
+        previewHideSet: () => Promise.resolve([]),
+        findWindowDisplays: () => Promise.resolve([]),
+      },
+      display: {
+        getSize: () => Promise.resolve({ width: 0, height: 0 }),
+        listAll: () => [],
+      },
+      // Mouse/keyboard primitives used by the executor — no-op on Linux.
+      key: () => Promise.resolve(),
+      moveMouse: () => Promise.resolve(),
+      mouseLocation: () => Promise.resolve({ x: 0, y: 0 }),
+      click: () => Promise.resolve(),
+      type: () => Promise.resolve(),
+      scroll: () => Promise.resolve(),
+      screenshot: () => Promise.resolve(null),
     };
 
     // Updater (ShipIt is macOS-only). Stub empty job info so the asar's
