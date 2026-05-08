@@ -4,8 +4,8 @@
   const _existing = _path.join(_path.dirname(process.resourcesPath || ''), 'Helpers', 'disclaimer');
   let _haveSystemDisclaimer = false;
   try {
-    const _stat = _fs.statSync(_existing);
-    _haveSystemDisclaimer = _stat.uid === 0;
+    _fs.accessSync(_existing, _fs.constants.X_OK);
+    _haveSystemDisclaimer = true;
   } catch (_) {}
   if (!_haveSystemDisclaimer) {
     const _xdgConfigHome = process.env.XDG_CONFIG_HOME || _path.join(require('os').homedir(), '.config');
@@ -638,6 +638,8 @@ try {
     const _cp = require('child_process');
     const _origExecFile = _cp.execFile;
     const _origSpawn = _cp.spawn;
+    const _origExecFileSync = _cp.execFileSync;
+    const _origSpawnSync = _cp.spawnSync;
     const CLAUDE_SEARCH_PATHS = [
       path.join(os.homedir(), '.local', 'bin', 'claude'),
       path.join(os.homedir(), '.local', 'share', 'mise', 'shims', 'claude'),
@@ -645,7 +647,17 @@ try {
       '/usr/local/bin/claude',
       '/usr/bin/claude',
     ];
-    const ALLOWED_CMD_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+
+    function _isSafeCmd(cmd) {
+      if (typeof cmd !== 'string' || cmd.length === 0) return false;
+      const normalized = path.normalize(cmd);
+      if (normalized.split(path.sep).includes('..')) return false;
+      if (path.isAbsolute(normalized)) {
+        try { fs.accessSync(normalized, fs.constants.X_OK); return true; }
+        catch (_) { return false; }
+      }
+      return !normalized.includes(path.sep);
+    }
 
     function _resolveDisclaimerArgs(file, args) {
       if (file !== disclaimerBin) return null;
@@ -658,25 +670,44 @@ try {
           try { fs.accessSync(candidate, fs.constants.X_OK); cmd = candidate; break; } catch (_) {}
         }
         if (!cmd) return null;
-      } else if (!ALLOWED_CMD_DIRS.some(d => cmd.startsWith(d))) {
+      } else if (!_isSafeCmd(cmd)) {
         return null;
       }
       return { cmd, rest };
     }
 
-    _cp.execFile = function(file, args, ...rest) {
-      const resolved = _resolveDisclaimerArgs(file, args);
-      if (resolved) return _origExecFile.call(_cp, resolved.cmd, resolved.rest, ...rest);
-      return _origExecFile.call(_cp, file, args, ...rest);
-    };
-    Object.assign(_cp.execFile, _origExecFile);
+    // macOS-only commands the asar reaches via the spoof but can't run on Linux.
+    // Reroute to /bin/true (success no-op) so the asar's try/catch sees exit 0
+    // instead of ENOENT, keeping downstream features (MCP bundle accept, gh path
+    // discovery) in their happy path.
+    function _macOnlyCmdNoop(file, args) {
+      if (typeof file !== 'string' || !Array.isArray(args)) return null;
+      const base = file.endsWith('/security') || file === 'security' ? 'security'
+                 : file.endsWith('/xcrun') || file === 'xcrun' ? 'xcrun'
+                 : null;
+      if (!base) return null;
+      if (base === 'security' && args[0] === 'verify-cert') return { cmd: '/bin/true', rest: [] };
+      if (base === 'xcrun') {
+        // xcrun git --version → pretend git is at /usr/bin/git (the Linux default).
+        if (args[0] === 'git') return { cmd: '/usr/bin/git', rest: args.slice(1) };
+        return { cmd: '/bin/true', rest: [] };
+      }
+      return null;
+    }
 
-    _cp.spawn = function(file, args, ...rest) {
-      const resolved = _resolveDisclaimerArgs(file, args);
-      if (resolved) return _origSpawn.call(_cp, resolved.cmd, resolved.rest, ...rest);
-      return _origSpawn.call(_cp, file, args, ...rest);
-    };
-    Object.assign(_cp.spawn, _origSpawn);
+    function _wrap(orig) {
+      return function(file, args, ...rest) {
+        const noop = _macOnlyCmdNoop(file, args);
+        if (noop) return orig.call(_cp, noop.cmd, noop.rest, ...rest);
+        const resolved = _resolveDisclaimerArgs(file, args);
+        if (resolved) return orig.call(_cp, resolved.cmd, resolved.rest, ...rest);
+        return orig.call(_cp, file, args, ...rest);
+      };
+    }
+    _cp.execFile = _wrap(_origExecFile);     Object.assign(_cp.execFile, _origExecFile);
+    _cp.spawn = _wrap(_origSpawn);            Object.assign(_cp.spawn, _origSpawn);
+    _cp.execFileSync = _wrap(_origExecFileSync); Object.assign(_cp.execFileSync, _origExecFileSync);
+    _cp.spawnSync = _wrap(_origSpawnSync);    Object.assign(_cp.spawnSync, _origSpawnSync);
 
     console.log('[disclaimer] Intercepting exec calls at ' + disclaimerBin);
   }
