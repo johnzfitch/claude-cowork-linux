@@ -431,7 +431,13 @@ function installLinuxMenuInterceptors(electronModule) {
     hideLinuxMenuBars(electronModule);
     return undefined;
   };
-
+  if (app && typeof app.invalidateCurrentActivity !== 'function') {
+    app.invalidateCurrentActivity = function() {};
+  }
+  if (app && typeof app.updateCurrentActivity !== 'function') {
+    app.updateCurrentActivity = function() {};
+  }
+  
   if (originalSetDefaultAppMenu) {
     menuApi.setDefaultApplicationMenu = function(...args) {
       if (REAL_PLATFORM === 'linux') {
