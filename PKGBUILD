@@ -250,6 +250,17 @@ EOF
 #!/bin/bash
 # Claude Cowork Linux launcher
 
+# Wipe build-time caches so asar patches and chromium GPU/font caches
+# rebuild fresh. User data (IndexedDB, Local Storage, Cookies, sessions)
+# is left intact.
+_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/Claude"
+for _c in "$_CFG/Cache" "$_CFG/Code Cache" "$_CFG/GPUCache" "$_CFG/CachedData" \
+          "$_CFG/DawnGraphiteCache" "$_CFG/DawnWebGPUCache" "$_CFG/fcache" \
+          "$_CFG/Shared Dictionary/cache"; do
+    [ -e "$_c" ] && rm -rf "$_c"
+done
+unset _CFG _c
+
 if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
     export ELECTRON_OZONE_PLATFORM_HINT=wayland
 fi
