@@ -207,12 +207,14 @@ JSEOF
 package() {
     cd "${srcdir}"
 
-    # Install repacked app.asar
+    # Mirror macOS Contents/Resources/ layout. Two lookups in the asar key off
+    # this layout: path.join(resourcesPath, 'app.asar', ...) for MCP nodeHost
+    # discovery, and path.join(path.dirname(resourcesPath), 'Helpers',
+    # 'disclaimer') for the disclaimer wrapper. Putting app.asar inside
+    # resources/ and the disclaimer one level up makes both resolve.
     install -Dm644 "${srcdir}/app.asar" \
-                   "${pkgdir}/usr/lib/claude-cowork/app.asar"
+                   "${pkgdir}/usr/lib/claude-cowork/resources/app.asar"
 
-    # Resources in our namespace (avoid /usr/lib/electronNN/, foreign-owned).
-    # i18n in BOTH root and i18n/ -- bundle reads from both paths.
     install -d "${pkgdir}/usr/lib/claude-cowork/resources/i18n"
     install -m644 "${srcdir}/linux-app-extracted/resources/"*.json \
         "${pkgdir}/usr/lib/claude-cowork/resources/"
@@ -277,7 +279,7 @@ elif [[ -f /proc/sys/user/max_user_namespaces ]]; then
     [[ "$_max_ns" -gt 0 ]] 2>/dev/null && _sandbox_flag=""
 fi
 
-exec electron /usr/lib/claude-cowork/app.asar \
+exec electron /usr/lib/claude-cowork/resources/app.asar \
     ${_sandbox_flag} \
     --disable-gpu \
     --class=Claude \
