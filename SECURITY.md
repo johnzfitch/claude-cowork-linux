@@ -12,9 +12,9 @@ directly to Anthropic at <https://www.anthropic.com/security>.
 
 ## Reporting a Vulnerability
 
-**Please do not open a public GitHub issue for security vulnerabilities.**
+**You may open an issue for any security or permission problem you see.**
 
-Report vulnerabilities by emailing: **zack@johnzfitch.com**
+You can also Report vulnerabilities by emailing me at: **zack@definitelynot.ai**
 
 Include:
 - A description of the vulnerability and its impact
@@ -23,21 +23,9 @@ Include:
 
 ## What Counts as a Vulnerability Here
 
-Areas of highest sensitivity in this codebase:
+You may report anything you see as a risk around here. I will workshop it and then reply.
 
-| Area | File | Risk |
-|------|------|------|
-| Token passthrough | `stubs/@ant/claude-swift/js/index.js` -- `filterEnv()` | OAuth token leaking to unexpected processes |
-| Process spawning | `stubs/@ant/claude-swift/js/index.js` -- `spawn()` | Command injection via path or env var |
-| Auth URL validation | `stubs/@ant/claude-native/index.js` -- `AuthRequest.start()` | Open redirect to non-Anthropic domain |
-| Log redaction | `stubs/@ant/claude-swift/js/index.js` -- `redactForLogs()` | Token appearing in trace log |
-| Path traversal | `stubs/@ant/claude-swift/js/index.js` -- `isPathSafe()` | Session path escaping SESSIONS_BASE |
-| Credential detection | `stubs/cowork/credential_classifier.js` | False negatives allowing token leakage |
-| HTTP header injection | `stubs/cowork/sessions_api.js` | CRLF injection in API headers |
-| File descriptor bounds | `stubs/cowork/sessions_api.js` | FD exhaustion or out-of-bounds access |
-| Asar path handling | `stubs/cowork/asar_adapter.js` | Path traversal in asar file operations |
-
-## Response Commitment
+ Response Commitment
 
 - Acknowledgement within **48 hours**
 - Assessment and patch timeline within **7 days**
