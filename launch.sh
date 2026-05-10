@@ -59,6 +59,16 @@ if [ -d "stubs/cowork" ]; then
   cp -f stubs/cowork/*.js "linux-app-extracted/cowork/"
 fi
 
+# Replace macOS pty.node with the Linux ELF build. The DMG ships a Mach-O
+# universal binary that dlopen rejects ("invalid ELF header"), breaking
+# any LocalSessions.startShellPty path. Built against Electron 41 ABI.
+if [ -f "stubs/node-pty-linux/pty.node" ]; then
+  _PTY_DEST="linux-app-extracted/node_modules/node-pty/build/Release"
+  if [ -d "$_PTY_DEST" ]; then
+    cp -f stubs/node-pty-linux/pty.node "$_PTY_DEST/pty.node"
+  fi
+fi
+
 # Install plugin permission shim so the asar can find it.
 # The asar resolves the shim from its own resources/ directory (inside the asar),
 # so we copy it into the extracted tree before repacking. Also copy to Electron's
