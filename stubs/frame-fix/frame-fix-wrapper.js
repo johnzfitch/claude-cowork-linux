@@ -19,7 +19,7 @@
 }
 
 // Patch macOS-only systemPreferences methods that don't exist on Linux
-const { systemPreferences } = require('electron');
+const { systemPreferences, app: _earlyApp } = require('electron');
 if (typeof systemPreferences.setUserDefault !== 'function') {
   systemPreferences.setUserDefault = function(key, type, value) {
     // no-op on Linux
@@ -29,6 +29,23 @@ if (typeof systemPreferences.getUserDefault !== 'function') {
   systemPreferences.getUserDefault = function(key, type) {
     return undefined;
   };
+}
+
+// Patch macOS-only app methods (NSUserActivity API) — must run before Module.prototype.require
+// override so the stubs are in place before any asar code executes. The asar calls
+// app.invalidateCurrentActivity() when the user navigates between views (e.g. selecting
+// certain UI options), but this is a macOS/NSUserActivity-only Electron method that does
+// not exist on Linux, causing an uncaught TypeError crash dialog. Same pattern as the
+// systemPreferences stubs above.
+if (_earlyApp) {
+  for (const _m of ['invalidateCurrentActivity', 'updateCurrentActivity', 'setCurrentActivity']) {
+    if (typeof _earlyApp[_m] !== 'function') {
+      _earlyApp[_m] = function() { return undefined; };
+    }
+  }
+  if (typeof _earlyApp.getCurrentActivityType !== 'function') {
+    _earlyApp.getCurrentActivityType = function() { return ''; };
+  }
 }
 
 // Inject frame fix and Cowork support before main app loads
@@ -1113,6 +1130,22 @@ Module.prototype.require = function(id) {
         return undefined;
       };
       console.log('[Frame Fix] systemPreferences patched for Linux');
+    }
+
+    // Belt-and-suspenders: also stub NSUserActivity app methods inside the
+    // require intercept in case anything requires electron after our early patch.
+    const _appForStub = resolveElectronApp(module);
+    if (_appForStub && !global.__coworkAppMacStubsPatched) {
+      global.__coworkAppMacStubsPatched = true;
+      for (const _m of ['invalidateCurrentActivity', 'updateCurrentActivity', 'setCurrentActivity']) {
+        if (typeof _appForStub[_m] !== 'function') {
+          _appForStub[_m] = function() { return undefined; };
+        }
+      }
+      if (typeof _appForStub.getCurrentActivityType !== 'function') {
+        _appForStub.getCurrentActivityType = function() { return ''; };
+      }
+      console.log('[Frame Fix] macOS-only app methods stubbed for Linux');
     }
 
     // Patch BrowserWindow to stub macOS-only methods and handle close events
