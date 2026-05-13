@@ -80,12 +80,17 @@ const { createSessionStore } = require('./cowork/session_store.js');
 const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
 const { createAutoPermissionsCap } = require('./cowork/auto_permissions_cap.js');
+const { createBridgeCanary } = require('./cowork/bridge_canary.js');
 
 // Single cap instance for the process. Closure-private state lives inside
 // the factory; we just keep the wrapHandler reference. The cap is one of
 // the "wrapper-side rails" that bounds the manual permission flow which
 // Phase 1 stopped shadowing -- see SECURITY notes in the cap module.
 const _autoPermissionsCap = createAutoPermissionsCap();
+// Opt-in canary that observes bridge-related channel registrations and
+// warns once when a previously-unseen one shows up. The regression alarm
+// for "Anthropic shipped a new bridge channel between releases."
+const _bridgeCanary = createBridgeCanary();
 
 // Suppress EPIPE errors on stdout/stderr (normal in piped/Electron environments)
 // and prevent them from becoming uncaught exception crash dialogs.
@@ -1092,6 +1097,9 @@ Module.prototype.require = function(id) {
       }
 
       ipcMain.handle = function(channel, handler) {
+        // Phase 4: canary observation -- side-effect only, never blocks.
+        _bridgeCanary.observe(channel);
+
         // Extract UUID from first EIPC channel and proactively register all overrides.
         // Handlers like ComputerUseTcc are never registered by the asar on Linux
         // (macOS-only native dependency), so registration-time interception can't
@@ -1243,6 +1251,9 @@ Module.prototype.require = function(id) {
         contents.ipc.__coworkHandlePatched = true;
         const origIpcHandle = contents.ipc.handle.bind(contents.ipc);
         contents.ipc.handle = function(channel, handler) {
+          // Phase 4: canary observation -- side-effect only, never blocks.
+          _bridgeCanary.observe(channel);
+
           // Extract UUID and proactively register overrides on ipcMain for
           // handlers the asar never registers (ComputerUseTcc, CoworkSpaces).
           const uuid = extractEipcUuid(channel);
