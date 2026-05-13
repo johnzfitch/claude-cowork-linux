@@ -857,6 +857,39 @@ const ipcOverrides = createOverrideRegistry(function getProcessState(args) {
   return getCoworkProcessRunningState(processId);
 });
 
+// Phase 7: startup self-test. Verifies the three load-bearing rails
+// (bridge overrides absent, auto-permissions cap armed, mount-bound
+// armed) are present at app-ready time. On failure, logs a single
+// [COWORK STARTUP CHECK FAILED] line and surfaces a desktop notification.
+(function scheduleStartupCheck() {
+  try {
+    const { runStartupCheck } = require('./cowork/startup_check.js');
+    const mountRootBound = require('./cowork/mount_root_bound.js');
+    const { app: _readyApp, Notification: _ReadyNotification } = require('electron');
+    if (!_readyApp || typeof _readyApp.whenReady !== 'function') return;
+    _readyApp.whenReady().then(() => {
+      try {
+        runStartupCheck({
+          ipcOverridesRegistry: ipcOverrides,
+          autoPermissionsCap: _autoPermissionsCap,
+          mountRootBound,
+          notify: (msg) => {
+            try {
+              if (_ReadyNotification && typeof _ReadyNotification.isSupported === 'function' && _ReadyNotification.isSupported()) {
+                new _ReadyNotification({ title: 'Claude', body: msg }).show();
+              }
+            } catch (_) {}
+          },
+        });
+      } catch (e) {
+        console.warn('[cowork-startup] check threw:', e && e.message);
+      }
+    }).catch((e) => console.warn('[cowork-startup] whenReady rejected:', e && e.message));
+  } catch (e) {
+    console.warn('[cowork-startup] failed to schedule check:', e && e.message);
+  }
+})();
+
 // ============================================================
 // GRACEFUL SHUTDOWN — on Linux, closing all windows must quit the
 // app. The asar's handler checks `process.platform === "darwin"`
