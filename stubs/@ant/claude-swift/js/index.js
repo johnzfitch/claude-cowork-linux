@@ -44,6 +44,7 @@ const {
   validateMountName,
   validateRelativePathWithinHome,
 } = require('../../../../cowork/dirs.js');
+const { isMountRootTooBroad } = require('../../../../cowork/mount_root_bound.js');
 const { createSessionStore } = require('../../../../cowork/session_store.js');
 const { createSessionsApi } = require('../../../../cowork/sessions_api.js');
 const { createSessionOrchestrator } = require('../../../../cowork/session_orchestrator.js');
@@ -411,6 +412,25 @@ function createMountSymlinks(sessionName, additionalMounts) {
     trace('  Relative path: "' + relativePath + '"');
     trace('  Host path: ' + hostPath);
     trace('  Mount point: ' + mountPoint);
+
+    // Phase 3: refuse mount roots that are too broad to bound the agent.
+    // Rules: not $HOME, not '/', not shallower than three path segments.
+    // The user picks the boundary by picking cwd; the wrapper enforces a
+    // sensible default. See stubs/cowork/mount_root_bound.js.
+    if (isMountRootTooBroad(hostPath, _homedir)) {
+      trace('  REJECTED: mount root too broad — Cowork refuses sessions rooted at $HOME or shallower than 3 path segments. Pick a project subdirectory.');
+      failedMounts.push(mountName);
+      try {
+        const { Notification } = require('electron');
+        if (Notification && typeof Notification.isSupported === 'function' && Notification.isSupported()) {
+          new Notification({
+            title: 'Cowork session refused',
+            body: 'Selected folder is too broad to use as a session root. Pick a project subdirectory.',
+          }).show();
+        }
+      } catch (_) {}
+      continue;
+    }
 
     // Verify host path exists
     if (!fs.existsSync(hostPath)) {
