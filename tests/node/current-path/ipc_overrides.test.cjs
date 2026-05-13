@@ -201,19 +201,6 @@ test('override registry covers all known broken handlers', () => {
     'MainWindowTitleBar_$_requestMainMenuPopup',
     'BrowserNavigation_$_requestMainMenuPopup',
     'CoworkSpaces_$_getAllSpaces',
-    // Phase 4: Dispatch/Bridge
-    'LocalAgentModeSessions_$_abandonBridgeEnvironment',
-    'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
-    'LocalAgentModeSessions_$_deleteBridgeSession',
-    'LocalAgentModeSessions_$_getBridgeConsent',
-    'LocalAgentModeSessions_$_getSessionsBridgeEnabled',
-    'LocalAgentModeSessions_$_kickBridgePoll',
-    'LocalAgentModeSessions_$_onBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_resetBridge',
-    'LocalAgentModeSessions_$_resetBridgeSession',
-    'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
-    'LocalAgentModeSessions_$_sessionsBridgeStatus',
-    'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
     // Phase 4: MCP
     'LocalAgentModeSessions_$_mcpCallTool',
     'LocalAgentModeSessions_$_mcpListResources',
@@ -379,30 +366,32 @@ test('override handlers return fresh objects for object results (not shared refe
 });
 
 // ================================================================
-// Phase 4: Dispatch/Bridge handler tests
+// Phase 4: Dispatch/Bridge — handlers intentionally NOT overridden.
+// The asar's LocalAgentModeSessionManager owns these to drive the
+// manual user-acceptance flow. matchOverride() must return falsy for
+// every bridge channel so the asar's handler runs unimpeded.
 // ================================================================
 
-test('getBridgeConsent returns denied', async () => {
+test('bridge handlers are not overridden (asar owns them)', async () => {
   const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const handler = matchOverride('test_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
-  const result = await handler(null);
-  assert.deepEqual(result, { consented: false });
-});
-
-test('bridge status always reports disconnected', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const handler = matchOverride('test_$_LocalAgentModeSessions_$_sessionsBridgeStatus', registry);
-  const result = await handler();
-  assert.equal(result.status, 'disconnected');
-  assert.equal(result.enabled, false);
-});
-
-test('setSessionsBridgeEnabled is a no-op (stays disabled)', async () => {
-  const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-  const setHandler = matchOverride('test_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
-  const getHandler = matchOverride('test_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled', registry);
-  await setHandler(null, true);
-  assert.equal(await getHandler(), false);
+  const bridgeChannels = [
+    'LocalAgentModeSessions_$_abandonBridgeEnvironment',
+    'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
+    'LocalAgentModeSessions_$_deleteBridgeSession',
+    'LocalAgentModeSessions_$_getBridgeConsent',
+    'LocalAgentModeSessions_$_getSessionsBridgeEnabled',
+    'LocalAgentModeSessions_$_kickBridgePoll',
+    'LocalAgentModeSessions_$_onBridgePermissionPreflight',
+    'LocalAgentModeSessions_$_resetBridge',
+    'LocalAgentModeSessions_$_resetBridgeSession',
+    'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
+    'LocalAgentModeSessions_$_sessionsBridgeStatus',
+    'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
+  ];
+  for (const suffix of bridgeChannels) {
+    const handler = matchOverride('test_$_' + suffix, registry);
+    assert.ok(!handler, 'bridge channel must not be overridden: ' + suffix);
+  }
 });
 
 // ================================================================

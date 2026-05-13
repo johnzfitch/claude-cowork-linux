@@ -386,67 +386,13 @@ function createOverrideRegistry(getProcessState) {
       return null;
     },
 
-    // ================================================================
-    // LocalAgentModeSessions — Dispatch/Bridge handlers
-    // ================================================================
-
-    'LocalAgentModeSessions_$_abandonBridgeEnvironment': async (_event, ...args) => {
-      vlog('[ipc:abandonBridgeEnvironment] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_deleteBridgeAgentMemory': async (_event, ...args) => {
-      vlog('[ipc:deleteBridgeAgentMemory] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_deleteBridgeSession': async (_event, ...args) => {
-      vlog('[ipc:deleteBridgeSession] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_getBridgeConsent': async (_event, ...args) => {
-      vlog('[ipc:getBridgeConsent] called');
-      return { consented: false };
-    },
-
-    'LocalAgentModeSessions_$_getSessionsBridgeEnabled': async () => {
-      return false;
-    },
-
-    'LocalAgentModeSessions_$_kickBridgePoll': async (_event, ...args) => {
-      vlog('[ipc:kickBridgePoll] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_onBridgePermissionPreflight': async (_event, ...args) => {
-      vlog('[ipc:onBridgePermissionPreflight] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_resetBridge': async (_event, ...args) => {
-      vlog('[ipc:resetBridge] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_resetBridgeSession': async (_event, ...args) => {
-      vlog('[ipc:resetBridgeSession] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_respondBridgePermissionPreflight': async (_event, ...args) => {
-      vlog('[ipc:respondBridgePermissionPreflight] called');
-      return null;
-    },
-
-    'LocalAgentModeSessions_$_sessionsBridgeStatus': async () => {
-      return { status: 'disconnected', enabled: false };
-    },
-
-    'LocalAgentModeSessions_$_setSessionsBridgeEnabled': async (_event, enabled) => {
-      vlog('[ipc:setSessionsBridgeEnabled] called');
-      return null;
-    },
+    // LocalAgentModeSessions — Bridge handlers are intentionally NOT overridden.
+    // The asar's LocalAgentModeSessionManager owns these; overriding them blocks
+    // the manual user-acceptance flow (Allow/Deny clicks) from reaching the
+    // bridge. Wrapper-side bounds on this flow are enforced elsewhere:
+    //   - Auto-permissions toggle TTL cap: see Phase 2 in frame-fix-wrapper.js
+    //   - Working-dir refusals: see Phase 3 in claude-swift/js/index.js
+    //   - Channel surface canary: see Phase 4 in ipc_tap.js
 
     // ================================================================
     // MCP handlers — Desktop MCP integration (not CLI MCP)
