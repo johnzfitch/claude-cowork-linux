@@ -79,6 +79,13 @@ const { createSessionOrchestrator } = require('./cowork/session_orchestrator.js'
 const { createSessionStore } = require('./cowork/session_store.js');
 const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
+const { createAutoPermissionsCap } = require('./cowork/auto_permissions_cap.js');
+
+// Single cap instance for the process. Closure-private state lives inside
+// the factory; we just keep the wrapHandler reference. The cap is one of
+// the "wrapper-side rails" that bounds the manual permission flow which
+// Phase 1 stopped shadowing -- see SECURITY notes in the cap module.
+const _autoPermissionsCap = createAutoPermissionsCap();
 
 // Suppress EPIPE errors on stdout/stderr (normal in piped/Electron environments)
 // and prevent them from becoming uncaught exception crash dialogs.
@@ -1098,6 +1105,16 @@ Module.prototype.require = function(id) {
         if (overrideHandler) {
           if (isProactiveChannel(channel)) return; // Already registered proactively
           return originalHandle(channel, overrideHandler);
+        }
+
+        // Auto-permissions toggle TTL cap (Phase 2). The asar exposes two
+        // toggles -- autoPermissionsModeEnabled, bypassPermissionsModeEnabled
+        // -- that skip permission prompts. Both default to false with no
+        // built-in TTL. Wrap the setPreference handler so flipping either
+        // to true schedules an auto-revert to false after the cap.
+        // EIPC UUID prefix varies per build; match by suffix.
+        if (typeof channel === 'string' && channel.endsWith('AppPreferences_$_setPreference')) {
+          return originalHandle(channel, _autoPermissionsCap.wrapHandler(handler));
         }
 
         // Debounce connect-to-mcp-server: the renderer fires duplicate connect
