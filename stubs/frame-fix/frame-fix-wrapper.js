@@ -1115,6 +1115,34 @@ Module.prototype.require = function(id) {
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
 
+    // Stub macOS-only NSUserActivity handoff methods on `app`. The asar's
+    // session-switch handler is guarded by `process.platform === "darwin"`,
+    // which we spoof, so it runs on Linux and calls these methods. Without
+    // stubs, switching sessions crashes the main process with
+    // `app.invalidateCurrentActivity is not a function`.
+    {
+      const _appForHandoff = resolveElectronApp(module);
+      if (_appForHandoff && !global.__coworkAppHandoffPatched) {
+        global.__coworkAppHandoffPatched = true;
+        if (typeof _appForHandoff.invalidateCurrentActivity !== 'function') {
+          _appForHandoff.invalidateCurrentActivity = function() {};
+        }
+        if (typeof _appForHandoff.setUserActivity !== 'function') {
+          _appForHandoff.setUserActivity = function() {};
+        }
+        if (typeof _appForHandoff.resignCurrentActivity !== 'function') {
+          _appForHandoff.resignCurrentActivity = function() {};
+        }
+        if (typeof _appForHandoff.updateCurrentActivity !== 'function') {
+          _appForHandoff.updateCurrentActivity = function() {};
+        }
+        if (typeof _appForHandoff.getCurrentActivityType !== 'function') {
+          _appForHandoff.getCurrentActivityType = function() { return ''; };
+        }
+        console.log('[Frame Fix] app NSUserActivity handoff methods stubbed for Linux');
+      }
+    }
+
     // Patch BrowserWindow to stub macOS-only methods and handle close events
     // The asar's close handler does `if (isMac()) return;` which swallows
     // close events since we spoof darwin. We prepend a listener that forces
