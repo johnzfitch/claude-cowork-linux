@@ -11,6 +11,21 @@ cd "$SCRIPT_DIR"
 # Ensure ~/.local/bin is in PATH (common for user-local electron installs)
 export PATH="$HOME/.local/bin:$PATH"
 
+# Point Cowork at the user's Claude Code CLI binary
+if [ -z "$CLAUDE_CODE_PATH" ]; then
+  for _candidate in "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude" "/usr/local/bin/claude"; do
+    if [ -x "$_candidate" ]; then
+      export CLAUDE_CODE_PATH="$_candidate"
+      break
+    fi
+  done
+fi
+
+# Wayland auto-detect: let Electron use native Wayland when available
+if [ -z "$ELECTRON_OZONE_PLATFORM_HINT" ]; then
+  export ELECTRON_OZONE_PLATFORM_HINT=auto
+fi
+
 # Resolve electron binary: prefer system electron + local .asar-cache, fall back to AppImage
 if command -v electron >/dev/null 2>&1; then
   ELECTRON_BIN="$(command -v electron)"

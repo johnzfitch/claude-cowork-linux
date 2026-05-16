@@ -1102,10 +1102,17 @@ class SwiftAddonStub extends EventEmitter {
         trace('vm.isSupported() called');
         return true;
       },
-      isGuestConnected: () => {
-        console.log('[claude-swift] vm.isGuestConnected() called - returning', self._guestConnected);
-        return Promise.resolve(self._guestConnected);
-      },
+      isGuestConnected: (() => {
+        let _lastLog = 0;
+        return () => {
+          const now = Date.now();
+          if (now - _lastLog > 60000) {
+            console.log('[claude-swift] vm.isGuestConnected() ->', self._guestConnected);
+            _lastLog = now;
+          }
+          return Promise.resolve(self._guestConnected);
+        };
+      })(),
       getRunningStatus: () => {
         const status = {
           running: true,
@@ -1239,9 +1246,6 @@ class SwiftAddonStub extends EventEmitter {
         }
 
         console.log('[claude-swift] vm.spawn() id=' + id + ' cmd=' + preparedSpawn.command);
-        console.log('[claude-swift] vm.spawn() FULL ARGS=' + JSON.stringify(preparedSpawn.args));
-        console.log('[claude-swift] vm.spawn() ENV KEYS=' + Object.keys(preparedSpawn.envVars || {}).join(','));
-        console.log('[claude-swift] vm.spawn() CWD=' + preparedSpawn.sharedCwdPath);
         const spawnResult = self.spawn(
           id,
           processName,
