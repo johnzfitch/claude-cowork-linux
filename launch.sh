@@ -130,6 +130,13 @@ if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!
   sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
 fi
 
+# Fix --effort xhigh: Claude Desktop may pass --effort xhigh but the SDK binary
+# only supports low/medium/high/max. Remap xhigh -> max in the CLI arg builder.
+if [ -f "$INDEX_JS" ] && grep -q 'O\.push("--effort",this\.options\.effort)' "$INDEX_JS"; then
+  echo "Patching --effort xhigh -> max..."
+  sed -i 's/O\.push("--effort",this\.options\.effort)/O.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/' "$INDEX_JS"
+fi
+
 # Fix macOS Handoff API: invalidateCurrentActivity() and setUserActivity() are
 # macOS-only Electron APIs that crash on Linux. Replace with safe no-op fallbacks.
 if [ -f "$INDEX_JS" ] && grep -q 'cA\.app\.invalidateCurrentActivity()' "$INDEX_JS"; then
