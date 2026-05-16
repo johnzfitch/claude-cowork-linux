@@ -11,6 +11,21 @@ cd "$SCRIPT_DIR"
 # Ensure ~/.local/bin is in PATH (common for user-local electron installs)
 export PATH="$HOME/.local/bin:$PATH"
 
+# Point Cowork at the user's Claude Code CLI binary
+if [ -z "$CLAUDE_CODE_PATH" ]; then
+  for _candidate in "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude" "/usr/local/bin/claude"; do
+    if [ -x "$_candidate" ]; then
+      export CLAUDE_CODE_PATH="$_candidate"
+      break
+    fi
+  done
+fi
+
+# Wayland auto-detect: let Electron use native Wayland when available
+if [ -z "$ELECTRON_OZONE_PLATFORM_HINT" ]; then
+  export ELECTRON_OZONE_PLATFORM_HINT=auto
+fi
+
 # Resolve electron binary: prefer system electron + local .asar-cache, fall back to AppImage
 if command -v electron >/dev/null 2>&1; then
   ELECTRON_BIN="$(command -v electron)"
@@ -113,6 +128,21 @@ fi
 if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!0' "$INDEX_JS"; then
   echo "Patching origin validation for file:// preloads..."
   sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
+fi
+
+# Fix --effort xhigh: Claude Desktop may pass --effort xhigh but the SDK binary
+# only supports low/medium/high/max. Remap xhigh -> max in the CLI arg builder.
+if [ -f "$INDEX_JS" ] && grep -q 'O\.push("--effort",this\.options\.effort)' "$INDEX_JS"; then
+  echo "Patching --effort xhigh -> max..."
+  sed -i 's/O\.push("--effort",this\.options\.effort)/O.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/' "$INDEX_JS"
+fi
+
+# Fix macOS Handoff API: invalidateCurrentActivity() and setUserActivity() are
+# macOS-only Electron APIs that crash on Linux. Replace with safe no-op fallbacks.
+if [ -f "$INDEX_JS" ] && grep -q 'cA\.app\.invalidateCurrentActivity()' "$INDEX_JS"; then
+  echo "Patching macOS Handoff APIs for Linux..."
+  sed -i 's/cA\.app\.invalidateCurrentActivity()/(cA.app.invalidateCurrentActivity||function(){})()/' "$INDEX_JS"
+  sed -i 's/cA\.app\.setUserActivity(adt,/((cA.app.setUserActivity||function(){}))(adt,/' "$INDEX_JS"
 fi
 
 # Fix resource path lookup for i18n, shim-lib, icon, etc.

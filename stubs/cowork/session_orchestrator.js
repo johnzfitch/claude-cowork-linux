@@ -608,6 +608,16 @@ class SessionOrchestrator {
     }
     hostArgs = filteredArgs;
 
+    // Step 5b: Remap unsupported CLI flags
+    // Claude Desktop may pass --effort xhigh, but the SDK binary only supports
+    // low/medium/high/max. Remap xhigh -> max to prevent exit code 1.
+    for (let i = 0; i < hostArgs.length; i += 1) {
+      if (hostArgs[i] === '--effort' && i + 1 < hostArgs.length && hostArgs[i + 1] === 'xhigh') {
+        trace('Remapped --effort xhigh -> max');
+        hostArgs[i + 1] = 'max';
+      }
+    }
+
     // Step 6: Ensure sessions base directory exists
     try {
       if (!fs.existsSync(sessionsBase)) {
