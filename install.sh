@@ -85,6 +85,46 @@ detect_pkg_manager() {
 }
 
 # ============================================================
+# Compatibility helpers (COMPAT.md)
+# ============================================================
+#
+# install.sh and the launcher grep machine-readable lines from
+# COMPAT.md to find the last tested asar version. The user chooses
+# whether to install a newer (untested) version when prompted.
+
+compat_read_last_tested() {
+    # Reads LAST_TESTED_ASAR_VERSION from the given COMPAT.md (or the
+    # one next to this script if no argument given). Falls back to a
+    # baked-in default if the file is missing.
+    local compat_file="${1:-}"
+    if [[ -z "$compat_file" ]]; then
+        compat_file="$(dirname "$0")/COMPAT.md"
+    fi
+    if [[ -f "$compat_file" ]]; then
+        local value
+        value=$(grep -oE '^<!-- LAST_TESTED_ASAR_VERSION=[^[:space:]]+ -->$' "$compat_file" \
+            | head -1 | sed -E 's/.*=([^[:space:]]+) -->/\1/')
+        if [[ -n "$value" ]]; then
+            printf '%s' "$value"
+            return 0
+        fi
+    fi
+    # Baked-in fallback so a malformed/missing COMPAT.md never blocks install.
+    printf '1.6259.1'
+}
+
+compat_version_is_newer() {
+    # Returns 0 (true) if $1 > $2 by semver-ish ordering (sort -V).
+    # Returns 1 otherwise (equal or older).
+    local a="$1" b="$2"
+    [[ -z "$a" || -z "$b" ]] && return 1
+    [[ "$a" == "$b" ]] && return 1
+    local newer
+    newer=$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)
+    [[ "$newer" == "$a" ]]
+}
+
+# ============================================================
 # Step 1: Dependencies
 # ============================================================
 
@@ -290,12 +330,62 @@ get_archive() {
         return 0
     fi
 
-    # 2. Auto-download via Node.js (Homebrew cask API)
+    # 2. Prompt before downloading. The user picks whether to fetch
+    #    the latest available version (which may be untested) or to
+    #    abort and supply a specific version via CLAUDE_ARCHIVE.
     if command_exists node; then
-        if fetch_archive_via_node "$archive_path"; then
-            return 0
+        local last_tested
+        last_tested=$(compat_read_last_tested "$script_dir/COMPAT.md")
+        local latest_version=""
+        if [[ -f "$script_dir/fetch-dmg.js" ]]; then
+            local json
+            json=$(node "$script_dir/fetch-dmg.js" --json 2>/dev/null) || true
+            if [[ -n "$json" ]]; then
+                latest_version=$(printf '%s' "$json" \
+                    | node -e "process.stdin.on('data',d=>{try{process.stdout.write(JSON.parse(d).version||'')}catch{}})" \
+                    2>/dev/null)
+            fi
         fi
-        log_warn "Auto-download failed"
+
+        echo ""
+        log_info "Last tested asar:  $last_tested  (see COMPAT.md)"
+        if [[ -n "$latest_version" ]]; then
+            log_info "Latest on CDN:     $latest_version"
+            if compat_version_is_newer "$latest_version" "$last_tested"; then
+                log_warn "Latest is newer than the last tested version."
+                log_warn "Untested versions may break features. Review COMPAT.md first."
+            fi
+        fi
+
+        local proceed=0
+        if [[ "${INSTALL_FORCE:-0}" -eq 1 ]]; then
+            proceed=1
+        elif [[ ! -t 0 ]]; then
+            # Non-interactive (piped) install: refuse without --force to
+            # avoid silently downloading an untested upstream.
+            log_error "Non-interactive install requires --force (or --yes) to confirm download."
+            log_error "Re-run as: bash install.sh --force"
+            die "Aborting: no confirmation possible"
+        else
+            local prompt_target="${latest_version:-the latest available version}"
+            echo -n "  Download Claude Desktop ${prompt_target}? [y/N] "
+            local reply
+            read -r reply
+            case "$reply" in
+                y|Y|yes|YES) proceed=1 ;;
+                *) proceed=0 ;;
+            esac
+        fi
+
+        if [[ "$proceed" -eq 1 ]]; then
+            if fetch_archive_via_node "$archive_path"; then
+                return 0
+            fi
+            log_warn "Auto-download failed"
+        else
+            log_info "Download declined. To use a specific version, set CLAUDE_ARCHIVE=/path/to/Claude.zip"
+            die "Install aborted by user"
+        fi
     fi
 
     # 3. Scan common locations, then prompt user to download if needed
@@ -450,6 +540,40 @@ install_stubs() {
 }
 
 # ============================================================
+# Version sentinel
+# ============================================================
+#
+# Write the installed asar version to $INSTALL_DIR/.installed-asar-version
+# so the launcher can compare it against COMPAT.md without re-parsing the
+# bundled package.json on every launch.
+
+seed_version_sentinel() {
+    local sentinel="$INSTALL_DIR/.installed-asar-version"
+    local pkg="$INSTALL_DIR/linux-app-extracted/package.json"
+    if [[ ! -f "$pkg" ]]; then
+        log_warn "package.json not found at $pkg; cannot seed version sentinel"
+        return 0
+    fi
+    if ! command_exists node; then
+        # Fallback: extract via grep. Less reliable but works without node.
+        local v
+        v=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$pkg" \
+            | head -1 | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+        if [[ -n "$v" ]]; then
+            printf '%s\n' "$v" > "$sentinel"
+            log_success "Version sentinel: $v (via grep fallback)"
+        fi
+        return 0
+    fi
+    local v
+    v=$(node -e "try{process.stdout.write(require('$pkg').version||'')}catch{}" 2>/dev/null)
+    if [[ -n "$v" ]]; then
+        printf '%s\n' "$v" > "$sentinel"
+        log_success "Version sentinel: $v"
+    fi
+}
+
+# ============================================================
 # Step 6: Apply patches
 # ============================================================
 
@@ -484,7 +608,7 @@ create_launcher() {
 
     cat > "$HOME/.local/bin/claude-desktop" << EOF
 #!/bin/bash
-# Claude Desktop for Linux — launcher
+# Claude Desktop for Linux -- launcher
 # Generated by install.sh v$VERSION
 
 COWORK_DIR="${INSTALL_DIR}"
@@ -495,12 +619,33 @@ mkdir -p "\$LOG_DIR"
 
 cd "\$COWORK_DIR"
 
+# Asar version vs COMPAT.md: warn once per version mismatch.
+_warn_if_untested_asar() {
+    local installed last_tested last_warned newer
+    installed=\$(cat "\$COWORK_DIR/.installed-asar-version" 2>/dev/null | tr -d '[:space:]')
+    [[ -z "\$installed" ]] && return 0
+    last_tested=\$(grep -oE '^<!-- LAST_TESTED_ASAR_VERSION=[^[:space:]]+ -->\$' \\
+        "\$COWORK_DIR/COMPAT.md" 2>/dev/null | head -1 \\
+        | sed -E 's/.*=([^[:space:]]+) -->/\\1/')
+    [[ -z "\$last_tested" || "\$installed" == "\$last_tested" ]] && return 0
+    newer=\$(printf '%s\\n%s\\n' "\$last_tested" "\$installed" | sort -V | tail -n1)
+    [[ "\$newer" != "\$installed" ]] && return 0
+    last_warned=\$(cat "\$LOG_DIR/.last-warned-asar-version" 2>/dev/null | tr -d '[:space:]')
+    [[ "\$last_warned" == "\$installed" ]] && return 0
+    printf >&2 '\\n[WARN] Installed asar %s is newer than last tested %s.\\n' "\$installed" "\$last_tested"
+    printf >&2 '[WARN] Some features may break. See COMPAT.md before reporting bugs:\\n'
+    printf >&2 '[WARN]   https://github.com/johnzfitch/claude-cowork-linux/blob/master/COMPAT.md\\n\\n'
+    printf '%s\\n' "\$installed" > "\$LOG_DIR/.last-warned-asar-version"
+}
+
 case "\${1:-}" in
-    --devtools) shift; export CLAUDE_DEVTOOLS=1; exec ./launch.sh "\$@" ;;
-    --debug)    shift; export CLAUDE_TRACE=1; exec ./launch.sh "\$@" ;;
+    --devtools) shift; export CLAUDE_DEVTOOLS=1; _warn_if_untested_asar; exec ./launch.sh "\$@" ;;
+    --debug)    shift; export CLAUDE_TRACE=1; _warn_if_untested_asar; exec ./launch.sh "\$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
+    --update)   shift; exec ./install.sh --update "\$@" ;;
     *)
-        nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \
+        _warn_if_untested_asar
+        nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
             -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
         disown
         ;;
@@ -780,6 +925,30 @@ doctor() {
         warn=$((warn + 1))
     fi
 
+    # --- Asar version vs last tested ---
+    local sentinel="$INSTALL_DIR/.installed-asar-version"
+    local last_tested
+    last_tested=$(compat_read_last_tested "$INSTALL_DIR/COMPAT.md")
+    if [[ -f "$sentinel" ]]; then
+        local installed
+        installed=$(head -n1 "$sentinel" | tr -d '[:space:]')
+        if [[ -n "$installed" && -n "$last_tested" ]]; then
+            if compat_version_is_newer "$installed" "$last_tested"; then
+                log_warn "Asar version: $installed (newer than last tested $last_tested -- see COMPAT.md)"
+                warn=$((warn + 1))
+            elif [[ "$installed" == "$last_tested" ]]; then
+                log_success "Asar version: $installed (matches last tested)"
+                ok=$((ok + 1))
+            else
+                log_success "Asar version: $installed (older than last tested $last_tested)"
+                ok=$((ok + 1))
+            fi
+        fi
+    else
+        log_warn "Asar version sentinel not found; run install.sh to seed it"
+        warn=$((warn + 1))
+    fi
+
     # --- Extracted app ---
     local app_dir="${INSTALL_DIR}/linux-app-extracted"
     if [[ -d "$app_dir/.vite/build" ]]; then
@@ -844,11 +1013,15 @@ doctor() {
 
 main() {
     local archive_arg=""
+    local update_only=0
     for arg in "$@"; do
         case "$arg" in
             --doctor)
                 doctor
                 exit $?
+                ;;
+            --update)
+                update_only=1
                 ;;
             --force|--yes)
                 INSTALL_FORCE=1
@@ -886,12 +1059,31 @@ main() {
     setup_repo
     echo ""
 
+    # --update flow: re-fetch the asar, re-extract, re-apply stubs and
+    # patches, re-seed the version sentinel. Skip launcher/env/icon
+    # setup (already in place from the original install).
+    if [[ "$update_only" -eq 1 ]]; then
+        local archive_path="$WORK_DIR/Claude.archive"
+        get_archive "$archive_path"
+        echo ""
+        extract_archive "$archive_path"
+        echo ""
+        install_stubs
+        echo ""
+        apply_patches
+        echo ""
+        seed_version_sentinel
+        echo ""
+        log_info "Update complete. Restart claude-desktop to pick up the new asar."
+        exit 0
+    fi
+
     # Step 3: Get Claude archive (ZIP or DMG)
     local archive_path="$WORK_DIR/Claude.archive"
     get_archive "$archive_path"
     echo ""
 
-    # Step 4: Extract archive → linux-app-extracted/
+    # Step 4: Extract archive -> linux-app-extracted/
     extract_archive "$archive_path"
     echo ""
 
@@ -915,6 +1107,10 @@ main() {
     setup_icon
     echo ""
 
+    # Step 9b: Seed version sentinel for COMPAT.md launcher warnings
+    seed_version_sentinel
+    echo ""
+
     # Step 10: Preflight validation
     log_info "Running post-install checks..."
     doctor || true
@@ -932,10 +1128,17 @@ main() {
     echo "  claude-desktop --debug      Enable trace logging"
     echo "  claude-desktop --devtools   Open with DevTools"
     echo "  claude-desktop --doctor     Run preflight diagnostics"
-    echo "  bash install.sh --force     Skip confirmation before replacing old installs"
+    echo "  claude-desktop --update     Re-fetch the Claude Desktop asar"
+    echo "  bash install.sh --force     Skip the download confirmation prompt"
     echo ""
     echo "Update:"
-    echo "  cd $INSTALL_DIR && git pull && bash install.sh"
+    echo "  claude-desktop --update                    (preferred)"
+    echo "  cd $INSTALL_DIR && git pull && bash install.sh --update"
+    echo ""
+    echo "Compatibility:"
+    echo "  See COMPAT.md for the tested asar versions matrix."
+    echo "  The launcher prints a [WARN] line once if your installed"
+    echo "  asar is newer than the last tested version."
     echo ""
     echo "Installed: $INSTALL_DIR"
     echo "Logs:      \${XDG_STATE_HOME:-~/.local/state}/claude-cowork/logs/startup.log"
