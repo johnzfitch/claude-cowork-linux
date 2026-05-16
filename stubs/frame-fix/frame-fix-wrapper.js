@@ -945,6 +945,19 @@ Module.prototype.require = function(id) {
     global.__coworkElectronPatched = true;
     console.log('[Frame Fix] Intercepting electron module');
 
+    // ── macOS Handoff API stubs (NSUserActivity) ────────────────────────
+    // app.invalidateCurrentActivity() and app.setUserActivity() are
+    // macOS-only Electron APIs. Stub them as no-ops on Linux.
+    if (module.app) {
+      if (typeof module.app.invalidateCurrentActivity !== 'function') {
+        module.app.invalidateCurrentActivity = function() {};
+      }
+      if (typeof module.app.setUserActivity !== 'function') {
+        module.app.setUserActivity = function(_type, _userInfo) {};
+      }
+      console.log('[Frame Fix] Stubbed macOS Handoff APIs (invalidateCurrentActivity, setUserActivity)');
+    }
+
     // ── Native titlebar for Linux/Wayland (KDE, GNOME, etc.) ──────────
     // On macOS, titleBarStyle:"hidden" + titleBarOverlay works fine:
     // the OS draws traffic lights and clicks pass through to child elements.

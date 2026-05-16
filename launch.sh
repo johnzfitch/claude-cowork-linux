@@ -115,6 +115,14 @@ if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!
   sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
 fi
 
+# Fix macOS Handoff API: invalidateCurrentActivity() and setUserActivity() are
+# macOS-only Electron APIs that crash on Linux. Replace with safe no-op fallbacks.
+if [ -f "$INDEX_JS" ] && grep -q 'cA\.app\.invalidateCurrentActivity()' "$INDEX_JS"; then
+  echo "Patching macOS Handoff APIs for Linux..."
+  sed -i 's/cA\.app\.invalidateCurrentActivity()/(cA.app.invalidateCurrentActivity||function(){})()/' "$INDEX_JS"
+  sed -i 's/cA\.app\.setUserActivity(adt,/((cA.app.setUserActivity||function(){}))(adt,/' "$INDEX_JS"
+fi
+
 # Fix resource path lookup for i18n, shim-lib, icon, etc.
 # The asar uses `app.isPackaged ? process.resourcesPath : <asar-relative path>`.
 # On Arch Linux, `process.resourcesPath` is the system electron's dir

@@ -1158,7 +1158,9 @@ class SwiftAddonStub extends EventEmitter {
           return { success: true };
         } catch {}
 
-        const arch = os.arch() === 'arm64' ? 'linux-arm64' : 'linux-x64';
+        // Use real arch, not spoofed (process.arch is spoofed to arm64 for macOS compat)
+        const realArch = require('child_process').execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim();
+        const arch = realArch === 'aarch64' ? 'linux-arm64' : 'linux-x64';
         const url = 'https://downloads.claude.ai/claude-code-releases/' + encodeURIComponent(version) + '/' + arch + '/claude.zst';
         console.log('[claude-swift] Downloading SDK binary from ' + url);
         trace('vm.installSdk() downloading ' + url + ' -> ' + targetBin);
