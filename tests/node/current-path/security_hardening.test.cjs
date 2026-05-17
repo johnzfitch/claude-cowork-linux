@@ -141,32 +141,34 @@ describe('FileSystem allowlist-only access', () => {
 });
 
 // ============================================================
-// 3. Bridge handlers
+// 3. Bridge handlers — intentionally NOT overridden.
+// The asar's LocalAgentModeSessionManager owns these to drive the
+// manual user-acceptance flow (Allow/Deny clicks reach the bridge).
+// Wrapper-side bounds on this flow are enforced elsewhere
+// (auto-permissions TTL cap, mount-root refusal, channel canary).
 // ============================================================
 
 describe('Bridge handlers', () => {
-  it('getBridgeConsent returns consented: false', async () => {
+  it('matchOverride returns falsy for every bridge channel', async () => {
     const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-    const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_getBridgeConsent', registry);
-    const result = await handler();
-    assert.equal(result.consented, false);
-  });
-
-  it('sessionsBridgeStatus reports disconnected', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-    const handler = matchOverride('claude.web_$_LocalAgentModeSessions_$_sessionsBridgeStatus', registry);
-    const result = await handler();
-    assert.equal(result.status, 'disconnected');
-    assert.equal(result.enabled, false);
-  });
-
-  it('setSessionsBridgeEnabled is a no-op', async () => {
-    const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));
-    const setHandler = matchOverride('claude.web_$_LocalAgentModeSessions_$_setSessionsBridgeEnabled', registry);
-    await setHandler({}, true);
-    const statusHandler = matchOverride('claude.web_$_LocalAgentModeSessions_$_getSessionsBridgeEnabled', registry);
-    const result = await statusHandler();
-    assert.equal(result, false, 'bridge must remain disabled regardless of set calls');
+    const bridgeChannels = [
+      'LocalAgentModeSessions_$_abandonBridgeEnvironment',
+      'LocalAgentModeSessions_$_deleteBridgeAgentMemory',
+      'LocalAgentModeSessions_$_deleteBridgeSession',
+      'LocalAgentModeSessions_$_getBridgeConsent',
+      'LocalAgentModeSessions_$_getSessionsBridgeEnabled',
+      'LocalAgentModeSessions_$_kickBridgePoll',
+      'LocalAgentModeSessions_$_onBridgePermissionPreflight',
+      'LocalAgentModeSessions_$_resetBridge',
+      'LocalAgentModeSessions_$_resetBridgeSession',
+      'LocalAgentModeSessions_$_respondBridgePermissionPreflight',
+      'LocalAgentModeSessions_$_sessionsBridgeStatus',
+      'LocalAgentModeSessions_$_setSessionsBridgeEnabled',
+    ];
+    for (const suffix of bridgeChannels) {
+      const handler = matchOverride('claude.web_$_' + suffix, registry);
+      assert.ok(!handler, 'bridge channel must not be overridden: ' + suffix);
+    }
   });
 });
 

@@ -86,14 +86,16 @@ Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to vali
 ```bash
 git clone https://github.com/johnzfitch/claude-cowork-linux.git
 cd claude-cowork-linux
-./install.sh          # auto-downloads the latest DMG via Node.js
+./install.sh          # prompts before downloading the Claude Desktop asar
 claude-desktop
 ```
+
+The installer prompts before downloading the Claude Desktop asar so you can confirm the version. See [COMPAT.md](COMPAT.md) for the tested-versions matrix. Pass `--force` (or `--yes`) to skip the prompt for scripted installs.
 
 ### Method 2: AUR (Arch Linux)
 
 ```bash
-yay -S claude-cowork-linux       # auto-downloads the latest DMG
+yay -S claude-cowork-linux
 ```
 
 ### Method 3: curl pipe
@@ -102,13 +104,27 @@ yay -S claude-cowork-linux       # auto-downloads the latest DMG
 bash <(curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh)
 ```
 
-The installer automatically downloads the latest Claude Desktop DMG using Node.js (`scripts/fetch-dmg.js`). You can also provide a DMG manually:
+Piped (non-interactive) installs refuse to download without an explicit confirmation flag. Use:
+
+```bash
+bash <(curl -fsSL .../install.sh) --force
+```
+
+You can also provide an archive manually:
 
 ```bash
 ./install.sh ~/Downloads/Claude-*.dmg
 # or
-CLAUDE_DMG=~/Downloads/Claude-1.1.4010.dmg ./install.sh
+CLAUDE_ARCHIVE=~/Downloads/Claude-1.6259.1.dmg ./install.sh
 ```
+
+### Updating
+
+```bash
+claude-desktop --update          # re-fetch and repack with prompt
+```
+
+The launcher prints a `[WARN]` line once if your installed asar is newer than the last tested version listed in [COMPAT.md](COMPAT.md). To dismiss the warning permanently for the current version, just keep using the app -- it only fires once per asar version change.
 
 > [!IMPORTANT]
 > This repo does not include Anthropic's proprietary code. The installer downloads it directly from Anthropic's CDN.
@@ -421,6 +437,68 @@ npm install -g electron @electron/asar
 ```
 
 </details>
+
+---
+
+## Recovery
+
+If your install was working and then stopped after an update, the upstream
+asar likely changed in a way claude-cowork-linux has not yet caught up to.
+Two recovery paths:
+
+### Option 1: roll back to the last tested asar
+
+The installer reads `LAST_TESTED_ASAR_VERSION` from [COMPAT.md](COMPAT.md)
+and prompts before downloading. To roll back:
+
+```bash
+cd ~/.local/share/claude-desktop
+git pull
+
+# Wipe cached chromium artifacts (preserves your sessions and credentials):
+rm -rf ~/.config/Claude/Cache \
+       "~/.config/Claude/Code Cache" \
+       ~/.config/Claude/GPUCache \
+       ~/.config/Claude/DawnGraphiteCache
+
+# Reinstall:
+bash install.sh --force
+```
+
+When the prompt offers to download an untested version, decline and supply
+the last-tested archive manually:
+
+```bash
+CLAUDE_ARCHIVE=/path/to/Claude-<last-tested>.dmg bash install.sh --force
+```
+
+### Option 2: stay on your current install, wait for a fix
+
+The launcher prints a `[WARN]` line on the first launch after an untested
+version is installed. If the warning appears and the app is broken for
+you, the issue is likely already being tracked. Search the open issues at
+<https://github.com/johnzfitch/claude-cowork-linux/issues> for the asar
+version in the warning.
+
+To update later once a fix is published:
+
+```bash
+claude-desktop --update
+```
+
+You will be prompted before the new asar is downloaded.
+
+### Diagnostics
+
+```bash
+claude-desktop --doctor
+```
+
+Reports the installed-vs-tested asar versions plus the rest of the
+preflight checks. An `[OK] Asar version: X (matches last tested)` line
+means you are on the verified baseline. A `[WARN] Asar version: X (newer
+than last tested Y -- see COMPAT.md)` line means you are ahead of the
+matrix.
 
 ---
 

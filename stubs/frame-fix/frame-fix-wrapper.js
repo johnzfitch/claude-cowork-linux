@@ -19,7 +19,7 @@
 }
 
 // Patch macOS-only systemPreferences methods that don't exist on Linux
-const { systemPreferences } = require('electron');
+const { systemPreferences, app: _earlyApp } = require('electron');
 if (typeof systemPreferences.setUserDefault !== 'function') {
   systemPreferences.setUserDefault = function(key, type, value) {
     // no-op on Linux
@@ -29,6 +29,37 @@ if (typeof systemPreferences.getUserDefault !== 'function') {
   systemPreferences.getUserDefault = function(key, type) {
     return undefined;
   };
+}
+if (typeof systemPreferences.promptTouchID !== 'function') {
+  systemPreferences.promptTouchID = function(reason) {
+    return Promise.reject(new Error('Touch ID unavailable on Linux'));
+  };
+}
+
+// Patch macOS-only Electron app methods (NSUserActivity / Handoff APIs).
+// We spoof process.platform === "darwin" so the asar's darwin-gated callsites
+// reach these methods; on Linux Electron they don't exist, throwing
+// `TypeError: app.invalidateCurrentActivity is not a function` and crashing
+// the main process with a JS error dialog.
+// See: claude-cowork-linux issues #104, #106
+if (_earlyApp) {
+  const _macOnlyAppMethods = [
+    'invalidateCurrentActivity',
+    'setUserActivity',
+    'updateCurrentActivity',
+    'resignCurrentActivity',
+    'getCurrentActivityType',
+  ];
+  for (const _m of _macOnlyAppMethods) {
+    if (typeof _earlyApp[_m] !== 'function') {
+      _earlyApp[_m] = function() { /* no-op on Linux */ };
+    }
+  }
+  // moveToApplicationsFolder is macOS-only; the asar's prompt path is gated
+  // by a confirm dialog but stub it defensively so a stray call can't crash.
+  if (typeof _earlyApp.moveToApplicationsFolder !== 'function') {
+    _earlyApp.moveToApplicationsFolder = function() { return false; };
+  }
 }
 
 // Inject frame fix and Cowork support before main app loads
@@ -48,6 +79,18 @@ const { createSessionOrchestrator } = require('./cowork/session_orchestrator.js'
 const { createSessionStore } = require('./cowork/session_store.js');
 const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
+const { createAutoPermissionsCap } = require('./cowork/auto_permissions_cap.js');
+const { createBridgeCanary } = require('./cowork/bridge_canary.js');
+
+// Single cap instance for the process. Closure-private state lives inside
+// the factory; we just keep the wrapHandler reference. The cap is one of
+// the "wrapper-side rails" that bounds the manual permission flow which
+// Phase 1 stopped shadowing -- see SECURITY notes in the cap module.
+const _autoPermissionsCap = createAutoPermissionsCap();
+// Opt-in canary that observes bridge-related channel registrations and
+// warns once when a previously-unseen one shows up. The regression alarm
+// for "Anthropic shipped a new bridge channel between releases."
+const _bridgeCanary = createBridgeCanary();
 
 // Suppress EPIPE errors on stdout/stderr (normal in piped/Electron environments)
 // and prevent them from becoming uncaught exception crash dialogs.
@@ -814,6 +857,39 @@ const ipcOverrides = createOverrideRegistry(function getProcessState(args) {
   return getCoworkProcessRunningState(processId);
 });
 
+// Phase 7: startup self-test. Verifies the three load-bearing rails
+// (bridge overrides absent, auto-permissions cap armed, mount-bound
+// armed) are present at app-ready time. On failure, logs a single
+// [COWORK STARTUP CHECK FAILED] line and surfaces a desktop notification.
+(function scheduleStartupCheck() {
+  try {
+    const { runStartupCheck } = require('./cowork/startup_check.js');
+    const mountRootBound = require('./cowork/mount_root_bound.js');
+    const { app: _readyApp, Notification: _ReadyNotification } = require('electron');
+    if (!_readyApp || typeof _readyApp.whenReady !== 'function') return;
+    _readyApp.whenReady().then(() => {
+      try {
+        runStartupCheck({
+          ipcOverridesRegistry: ipcOverrides,
+          autoPermissionsCap: _autoPermissionsCap,
+          mountRootBound,
+          notify: (msg) => {
+            try {
+              if (_ReadyNotification && typeof _ReadyNotification.isSupported === 'function' && _ReadyNotification.isSupported()) {
+                new _ReadyNotification({ title: 'Claude', body: msg }).show();
+              }
+            } catch (_) {}
+          },
+        });
+      } catch (e) {
+        console.warn('[cowork-startup] check threw:', e && e.message);
+      }
+    }).catch((e) => console.warn('[cowork-startup] whenReady rejected:', e && e.message));
+  } catch (e) {
+    console.warn('[cowork-startup] failed to schedule check:', e && e.message);
+  }
+})();
+
 // ============================================================
 // GRACEFUL SHUTDOWN — on Linux, closing all windows must quit the
 // app. The asar's handler checks `process.platform === "darwin"`
@@ -1054,6 +1130,9 @@ Module.prototype.require = function(id) {
       }
 
       ipcMain.handle = function(channel, handler) {
+        // Phase 4: canary observation -- side-effect only, never blocks.
+        _bridgeCanary.observe(channel);
+
         // Extract UUID from first EIPC channel and proactively register all overrides.
         // Handlers like ComputerUseTcc are never registered by the asar on Linux
         // (macOS-only native dependency), so registration-time interception can't
@@ -1067,6 +1146,16 @@ Module.prototype.require = function(id) {
         if (overrideHandler) {
           if (isProactiveChannel(channel)) return; // Already registered proactively
           return originalHandle(channel, overrideHandler);
+        }
+
+        // Auto-permissions toggle TTL cap (Phase 2). The asar exposes two
+        // toggles -- autoPermissionsModeEnabled, bypassPermissionsModeEnabled
+        // -- that skip permission prompts. Both default to false with no
+        // built-in TTL. Wrap the setPreference handler so flipping either
+        // to true schedules an auto-revert to false after the cap.
+        // EIPC UUID prefix varies per build; match by suffix.
+        if (typeof channel === 'string' && channel.endsWith('AppPreferences_$_setPreference')) {
+          return originalHandle(channel, _autoPermissionsCap.wrapHandler(handler));
         }
 
         // Debounce connect-to-mcp-server: the renderer fires duplicate connect
@@ -1195,6 +1284,9 @@ Module.prototype.require = function(id) {
         contents.ipc.__coworkHandlePatched = true;
         const origIpcHandle = contents.ipc.handle.bind(contents.ipc);
         contents.ipc.handle = function(channel, handler) {
+          // Phase 4: canary observation -- side-effect only, never blocks.
+          _bridgeCanary.observe(channel);
+
           // Extract UUID and proactively register overrides on ipcMain for
           // handlers the asar never registers (ComputerUseTcc, CoworkSpaces).
           const uuid = extractEipcUuid(channel);
