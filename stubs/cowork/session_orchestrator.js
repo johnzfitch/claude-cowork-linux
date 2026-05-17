@@ -484,9 +484,32 @@ class SessionOrchestrator {
       args,
       envVars,
       additionalMounts,
-      sharedCwdPath,
+      sharedCwdPath: rawSharedCwdPath,
       onError,
     } = context || {};
+
+    // Fix: asar passes sharedCwdPath=false (boolean) instead of a path string.
+    // When falsy, recover from session metadata's userSelectedFolders so the CLI
+    // gets the correct cwd and project key persists across restarts.
+    const trace = this._deps.trace || (() => {});
+    let sharedCwdPath = rawSharedCwdPath;
+    if (!sharedCwdPath || typeof sharedCwdPath !== 'string') {
+      const sessionStore = this._deps.sessionStore;
+      if (sessionStore) {
+        // Try active session first, then look up by processId (session ID)
+        const activeInfo = sessionStore.getActiveSessionInfo();
+        if (activeInfo && activeInfo.preferredRoot) {
+          sharedCwdPath = activeInfo.preferredRoot;
+          trace('[cwd-fix] Recovered sharedCwdPath from active session: ' + sharedCwdPath);
+        } else if (typeof processId === 'string' && processId.startsWith('local_')) {
+          const sessionInfo = sessionStore.getSessionInfo(processId);
+          if (sessionInfo && sessionInfo.preferredRoot) {
+            sharedCwdPath = sessionInfo.preferredRoot;
+            trace('[cwd-fix] Recovered sharedCwdPath from session metadata: ' + sharedCwdPath);
+          }
+        }
+      }
+    }
     const {
       appSupportRoot,
       canonicalizePathForHostAccess,
@@ -494,7 +517,6 @@ class SessionOrchestrator {
       claudeVmRoots,
       resolveClaudeBinaryPath,
       sessionsBase,
-      trace = () => {},
       translateVmPathStrict,
     } = this._deps;
 

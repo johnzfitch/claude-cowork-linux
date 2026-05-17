@@ -115,6 +115,18 @@ if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!
   sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
 fi
 
+# Fix preload origin validation: the mainView.js preload's h() guard checks
+# if window.location.href origin matches claude.ai/preview.claude.ai etc.
+# On Linux with file:// protocol, origin is "null" and h() returns false,
+# preventing CoworkSpaces (and other IPC bridges) from being exposed to the
+# renderer. This causes the Projects page to be empty and spaces to not persist.
+# Patch: add file:// protocol as an allowed origin.
+MAINVIEW_JS="linux-app-extracted/.vite/build/mainView.js"
+if [ -f "$MAINVIEW_JS" ] && ! grep -q 'e\.protocol==="file:"' "$MAINVIEW_JS"; then
+  echo "Patching preload origin validation for file:// protocol..."
+  sed -i 's/e\.hostname==="localhost"/e.hostname==="localhost"||e.protocol==="file:"/g' "$MAINVIEW_JS"
+fi
+
 # Fix resource path lookup for i18n, shim-lib, icon, etc.
 # The asar uses `app.isPackaged ? process.resourcesPath : <asar-relative path>`.
 # On Arch Linux, `process.resourcesPath` is the system electron's dir

@@ -20,6 +20,7 @@ const {
   COMPUTER_USE_TCC_GRANTED,
   COMPUTER_USE_TCC_REQUEST_GRANTED,
 } = require('./linux_ipc_stubs.js');
+const { createSpacesStore } = require('./spaces_store.js');
 
 // -- Helpers --
 
@@ -30,6 +31,44 @@ function vlog(msg) { if (_verbose) console.log(msg); }
 
 const _homeDir = require('os').homedir();
 const _allowedFsRoots = [_homeDir, '/tmp'];
+
+// Lazy-initialized spaces store — uses global.__coworkDirs set by frame-fix-wrapper.js
+let _spacesStore = null;
+function getSpacesStore() {
+  if (!_spacesStore) {
+    const dirs = global.__coworkDirs;
+    const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_homeDir, '.config', 'Claude', 'local-agent-mode-sessions');
+    _spacesStore = createSpacesStore({ localAgentRoot, trace: vlog });
+  }
+  return _spacesStore;
+}
+
+function createSpacesOverrides() {
+  const store = getSpacesStore();
+  return {
+    'CoworkSpaces_$_getAllSpaces': async (event) => store.getAllSpaces(),
+    'CoworkSpaces_$_getSpace': async (event, spaceId) => store.getSpace(event, spaceId),
+    'CoworkSpaces_$_createSpace': async (event, spaceData) => store.createSpace(event, spaceData),
+    'CoworkSpaces_$_updateSpace': async (event, spaceId, updates) => store.updateSpace(event, spaceId, updates),
+    'CoworkSpaces_$_deleteSpace': async (event, spaceId) => store.deleteSpace(event, spaceId),
+    'CoworkSpaces_$_addFolderToSpace': async (event, spaceId, folderPath) => store.addFolderToSpace(event, spaceId, folderPath),
+    'CoworkSpaces_$_removeFolderFromSpace': async (event, spaceId, folderPath) => store.removeFolderFromSpace(event, spaceId, folderPath),
+    'CoworkSpaces_$_addProjectToSpace': async (event, spaceId, project) => store.addProjectToSpace(event, spaceId, project),
+    'CoworkSpaces_$_removeProjectFromSpace': async (event, spaceId, projectId) => store.removeProjectFromSpace(event, spaceId, projectId),
+    'CoworkSpaces_$_addLinkToSpace': async (event, spaceId, link) => store.addLinkToSpace(event, spaceId, link),
+    'CoworkSpaces_$_removeLinkFromSpace': async (event, spaceId, linkId) => store.removeLinkFromSpace(event, spaceId, linkId),
+    'CoworkSpaces_$_getAutoMemoryDir': async (event, spaceId) => store.getAutoMemoryDir(event, spaceId),
+    'CoworkSpaces_$_listFolderContents': async (event, folderPath) => store.listFolderContents(event, folderPath),
+    'CoworkSpaces_$_readFileContents': async (event, filePath) => store.readFileContents(event, filePath),
+    'CoworkSpaces_$_openFile': async (event, filePath) => store.openFile(event, filePath),
+    'CoworkSpaces_$_copyFilesToSpaceFolder': async (event, spaceId, files) => store.copyFilesToSpaceFolder(event, spaceId, files),
+    'CoworkSpaces_$_createSpaceFolder': async (event, spaceId, folderName) => store.createSpaceFolder(event, spaceId, folderName),
+    'CoworkSpaces_$_classifySessions': async (event, sessions) => store.classifySessions(event, sessions),
+    'CoworkSpaces_$_setAutoDescription': async (event, spaceId, description) => store.setAutoDescription(event, spaceId, description),
+    'CoworkSpaces_$_summarizeSpace': async (event, spaceId) => store.summarizeSpace(event, spaceId),
+    'CoworkSpaces_$_onSpaceEvent': async (event, callback) => store.onSpaceEvent(event, callback),
+  };
+}
 
 function isPathWithinAllowedRoots(filePath) {
   // Reject non-absolute up front: path.resolve would fall back to process.cwd()
@@ -371,8 +410,8 @@ function createOverrideRegistry(getProcessState) {
       try { menu.popup({ window: win || undefined }); } catch (_) {}
     },
 
-    // CoworkSpaces — not implemented on Linux
-    'CoworkSpaces_$_getAllSpaces': async () => ([]),
+    // CoworkSpaces — file-backed implementation for Linux
+    ...createSpacesOverrides(),
 
     // Startup — Linux has no macOS login items; report disabled
     'Startup_$_isStartupOnLoginEnabled': async () => false,
@@ -579,7 +618,30 @@ const PROACTIVE_ONLY_SUFFIXES = new Set([
   'ComputerUseTcc_$_openSystemSettings',
   'ComputerUseTcc_$_getCurrentSessionGrants',
   'ComputerUseTcc_$_revokeGrant',
+  // CoworkSpaces — proactive because the asar's native handler registration
+  // depends on account IPC from the renderer, which often never arrives on Linux.
+  // Without proactive registration, getAllSpaces has no handler and fails silently.
   'CoworkSpaces_$_getAllSpaces',
+  'CoworkSpaces_$_getSpace',
+  'CoworkSpaces_$_createSpace',
+  'CoworkSpaces_$_updateSpace',
+  'CoworkSpaces_$_deleteSpace',
+  'CoworkSpaces_$_addFolderToSpace',
+  'CoworkSpaces_$_removeFolderFromSpace',
+  'CoworkSpaces_$_addProjectToSpace',
+  'CoworkSpaces_$_removeProjectFromSpace',
+  'CoworkSpaces_$_addLinkToSpace',
+  'CoworkSpaces_$_removeLinkFromSpace',
+  'CoworkSpaces_$_getAutoMemoryDir',
+  'CoworkSpaces_$_listFolderContents',
+  'CoworkSpaces_$_readFileContents',
+  'CoworkSpaces_$_openFile',
+  'CoworkSpaces_$_copyFilesToSpaceFolder',
+  'CoworkSpaces_$_createSpaceFolder',
+  'CoworkSpaces_$_classifySessions',
+  'CoworkSpaces_$_setAutoDescription',
+  'CoworkSpaces_$_summarizeSpace',
+  'CoworkSpaces_$_onSpaceEvent',
   // Startup — Linux has no macOS login items. The asar's handler calls
   // app.getLoginItemSettings() which crashes on Linux. The asar registers
   // these on webContents.ipc.handle() which our patch intercepts, but
@@ -619,7 +681,7 @@ function proactivelyRegisterOverrides(ipcMainHandle, ipcMainRemoveHandler, regis
       }
     }
   }
-  vlog('[Cowork] Proactively registered ' + _proactiveChannels.size + ' fallback handlers on ipcMain for UUID ' + uuid);
+  console.log('[Cowork] Proactively registered ' + _proactiveChannels.size + ' fallback handlers on ipcMain for UUID ' + uuid);
   return _proactiveChannels;
 }
 
