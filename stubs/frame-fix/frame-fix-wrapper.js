@@ -624,7 +624,29 @@ try {
       '/usr/local/bin/claude',
       '/usr/bin/claude',
     ];
-    const ALLOWED_CMD_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+    // Disclaimer-unwrap allowlist. On macOS the asar wraps every spawn with
+    // Helpers/disclaimer; the spoofed-darwin Linux path activates the same
+    // wrap, so we unwrap it back to the original command. Restrict the unwrap
+    // to known-good directories so a compromised caller can't trivially
+    // smuggle in arbitrary binaries via the disclaimer args.
+    //
+    // System paths are always trusted. User-local paths cover MCP servers and
+    // CLI tools the user installs via cargo, npm-global, mise, asdf, volta,
+    // and Linux distro conventions. These are user-controlled regardless, so
+    // including them adds no privilege the caller doesn't already have.
+    const ALLOWED_CMD_DIRS = [
+      '/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/', '/opt/',
+      os.homedir() + '/.local/bin/',
+      os.homedir() + '/.npm-global/bin/',
+      os.homedir() + '/.cargo/bin/',
+      os.homedir() + '/go/bin/',
+      os.homedir() + '/.bun/bin/',
+      os.homedir() + '/.deno/bin/',
+      os.homedir() + '/.local/share/mise/shims/',
+      os.homedir() + '/.asdf/shims/',
+      os.homedir() + '/.volta/bin/',
+      os.homedir() + '/bin/',
+    ];
 
     function _resolveDisclaimerArgs(file, args) {
       if (file !== disclaimerBin) return null;
