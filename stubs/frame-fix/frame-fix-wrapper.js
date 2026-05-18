@@ -520,6 +520,72 @@ try {
 }
 
 // ============================================================
+// CRITICAL: Register CoworkSpaces handlers on ipcMain IMMEDIATELY
+// ============================================================
+// The asar's native SpacesStore only registers handlers after account IPC
+// from the renderer, which is unreliable on Linux. Without a handler,
+// ipcRenderer.invoke() fails silently and the Projects page stays empty.
+//
+// We register our file-backed handlers on ipcMain.handle() BEFORE any
+// webContents exists. Per GPT-5.2 analysis: when no webContents.ipc.handle()
+// exists for a channel, Electron falls back to ipcMain.handle(). If/when the
+// asar's native handler registers later (account init succeeds), it uses
+// webContents.ipc.handle() which takes priority over our ipcMain handler.
+try {
+  const _electron = require('electron');
+  const { createSpacesStore } = require('./cowork/spaces_store.js');
+  const _spacesStore = createSpacesStore({
+    localAgentRoot: path.join(
+      process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+      'Claude', 'local-agent-mode-sessions'
+    ),
+    trace: (msg) => console.log(msg),
+  });
+
+  const EIPC_UUID = 'c42bb833-f6f9-4563-9861-03480449cfb1';
+  const EIPC_NS = 'claude.web';
+  const prefix = `$eipc_message$_${EIPC_UUID}_$_${EIPC_NS}_$_CoworkSpaces_$_`;
+
+  const handlers = {
+    getAllSpaces: async () => _spacesStore.getAllSpaces(),
+    getSpace: async (_e, id) => _spacesStore.getSpace(_e, id),
+    createSpace: async (_e, data) => _spacesStore.createSpace(_e, data),
+    updateSpace: async (_e, id, upd) => _spacesStore.updateSpace(_e, id, upd),
+    deleteSpace: async (_e, id) => _spacesStore.deleteSpace(_e, id),
+    addFolderToSpace: async (_e, id, p) => _spacesStore.addFolderToSpace(_e, id, p),
+    removeFolderFromSpace: async (_e, id, p) => _spacesStore.removeFolderFromSpace(_e, id, p),
+    addProjectToSpace: async (_e, id, p) => _spacesStore.addProjectToSpace(_e, id, p),
+    removeProjectFromSpace: async (_e, id, p) => _spacesStore.removeProjectFromSpace(_e, id, p),
+    addLinkToSpace: async (_e, id, l) => _spacesStore.addLinkToSpace(_e, id, l),
+    removeLinkFromSpace: async (_e, id, l) => _spacesStore.removeLinkFromSpace(_e, id, l),
+    getAutoMemoryDir: async (_e, id) => _spacesStore.getAutoMemoryDir(_e, id),
+    listFolderContents: async (_e, p) => _spacesStore.listFolderContents(_e, p),
+    readFileContents: async (_e, p) => _spacesStore.readFileContents(_e, p),
+    openFile: async (_e, p) => _spacesStore.openFile(_e, p),
+    copyFilesToSpaceFolder: async (_e, id, f) => _spacesStore.copyFilesToSpaceFolder(_e, id, f),
+    createSpaceFolder: async (_e, id, n) => _spacesStore.createSpaceFolder(_e, id, n),
+    classifySessions: async (_e, s) => _spacesStore.classifySessions(_e, s),
+    setAutoDescription: async (_e, id, d) => _spacesStore.setAutoDescription(_e, id, d),
+    summarizeSpace: async (_e, id) => _spacesStore.summarizeSpace(_e, id),
+    onSpaceEvent: async () => ({ dispose: () => {} }),
+  };
+
+  let registered = 0;
+  for (const [method, handler] of Object.entries(handlers)) {
+    const channel = prefix + method;
+    try {
+      _electron.ipcMain.handle(channel, handler);
+      registered++;
+    } catch (e) {
+      // Already registered — skip
+    }
+  }
+  console.log('[Cowork] Registered ' + registered + ' CoworkSpaces handlers on ipcMain (fallback)');
+} catch (earlyRegErr) {
+  console.error('[Cowork] EARLY CoworkSpaces registration FAILED:', earlyRegErr.message, earlyRegErr.stack);
+}
+
+// ============================================================
 // 0. TMPDIR FIX - MUST BE ABSOLUTELY FIRST
 // ============================================================
 // Fix EXDEV error: App downloads VM to /tmp (tmpfs) then tries to
@@ -1296,6 +1362,9 @@ Module.prototype.require = function(id) {
 
           const overrideHandler = matchOverride(channel, ipcOverrides);
           if (overrideHandler) {
+            if (channel.includes('CoworkSpaces')) {
+              console.log('[Cowork] OVERRIDE applied for: ' + channel.split('_$_').pop());
+            }
             return origIpcHandle(channel, overrideHandler);
           }
           return origIpcHandle(channel, asarAdapter.wrapHandler(channel, handler));
