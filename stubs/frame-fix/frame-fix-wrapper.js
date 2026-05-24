@@ -69,19 +69,14 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-// Verify os.homedir() is owned by the current user. HOME env var can be
-// set to a world-writable dir (e.g. /tmp/fakehome), which would shift the
-// entire trust boundary. Abort early if the homedir isn't ours.
-try {
-  const _homeStat = fs.statSync(os.homedir());
-  if (_homeStat.uid !== process.getuid()) {
-    console.error('[SECURITY] os.homedir() (' + os.homedir() + ') is not owned by uid ' + process.getuid() + ' — aborting');
-    process.exit(1);
-  }
-} catch (e) {
-  console.error('[SECURITY] Cannot verify homedir ownership:', e.message);
-  process.exit(1);
-}
+// Authoritative homedir from /etc/passwd (getpwuid_r), NOT from $HOME.
+// os.homedir() trusts the HOME env var, which can be set to any path.
+// os.userInfo().homedir reads from the system password database — the
+// user's environment can't override it. Use this for all security
+// boundaries (allowlists, path validation). Expose via global so
+// downstream modules (ipc_overrides, spaces_store) use the same source.
+const PASSWD_HOMEDIR = os.userInfo().homedir;
+global.__coworkPasswdHomedir = PASSWD_HOMEDIR;
 const {
   createAsarAdapter,
   DEFAULT_FILESYSTEM_PATH_ALIASES,
@@ -548,8 +543,7 @@ try {
 try {
   const _electron = require('electron');
   const { createSpacesStore } = require('./cowork/spaces_store.js');
-  const _homeDir = os.homedir();
-  const _earlyAllowedRoots = [_homeDir];
+  const _earlyAllowedRoots = [PASSWD_HOMEDIR];
   function _earlyIsPathAllowed(filePath) {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return false;
     const normalized = path.normalize(filePath);

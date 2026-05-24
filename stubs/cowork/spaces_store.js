@@ -44,7 +44,8 @@ function createSpacesStore(options) {
     // Always enforce: no /tmp for space folder registration
     const normalized = path.normalize(p);
     if (normalized === '/tmp' || normalized.startsWith('/tmp/')) return false;
-    const home = require('os').homedir();
+    // Homedir from /etc/passwd, not $HOME
+    const home = global.__coworkPasswdHomedir || require('os').userInfo().homedir;
     return normalized === home || normalized.startsWith(home + path.sep);
   }
 
