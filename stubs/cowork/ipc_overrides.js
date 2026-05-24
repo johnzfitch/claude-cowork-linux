@@ -29,41 +29,52 @@ const _verbose = process.env.CLAUDE_COWORK_VERBOSE === '1';
 function vlog(msg) { if (_verbose) console.log(msg); }
 
 const _homeDir = require('os').homedir();
-const _allowedFsRoots = [_homeDir, '/tmp'];
+// Resolve allowed roots to their canonical form at load time so all
+// comparisons are against real paths, not potentially-symlinked ones.
+var _realHomeDir;
+try { _realHomeDir = fs.realpathSync(_homeDir); } catch (_) { _realHomeDir = _homeDir; }
+var _realTmpDir;
+try { _realTmpDir = fs.realpathSync('/tmp'); } catch (_) { _realTmpDir = '/tmp'; }
+const _allowedFsRoots = [_realHomeDir, _realTmpDir];
 
-function isPathWithinAllowedRoots(filePath) {
-  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
-    return false;
+// Validate and resolve a path in one pass. No normalization, no
+// transformation. The input must be a clean absolute path as-given.
+// Returns the canonical real path if valid, null if anything is wrong.
+//
+// Rules:
+//   - must be a non-empty string starting with /
+//   - must not end with / (except root, which we reject via roots check)
+//   - must not contain null bytes
+//   - must not contain empty segments (// in the middle)
+//   - must not contain . or .. segments
+//   - must exist on disk (realpathSync must succeed)
+//   - real path must be within one of _allowedFsRoots
+function verifyPath(rawPath) {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) return null;
+  if (rawPath.charCodeAt(0) !== 47) return null;
+  if (rawPath.length > 1 && rawPath.charCodeAt(rawPath.length - 1) === 47) return null;
+  if (rawPath.indexOf('\0') >= 0) return null;
+  var segments = rawPath.split('/');
+  for (var i = 1; i < segments.length; i++) {
+    if (segments[i] === '' || segments[i] === '.' || segments[i] === '..') return null;
   }
-  var normalized = path.normalize(filePath);
-  if (normalized.split(path.sep).includes('..')) return false;
-  var resolved;
+  var real;
   try {
-    resolved = fs.realpathSync(normalized);
+    real = fs.realpathSync(rawPath);
   } catch (_) {
-    // File may not exist yet (for open/show). Use normalized form but
-    // only if every ancestor that DOES exist resolves within roots.
-    // Walk up until we find an existing ancestor directory.
-    var ancestor = normalized;
-    while (ancestor !== path.dirname(ancestor)) {
-      ancestor = path.dirname(ancestor);
-      try {
-        var realAncestor = fs.realpathSync(ancestor);
-        if (!_allowedFsRoots.some(function(root) {
-          return realAncestor === root || realAncestor.startsWith(root + path.sep);
-        })) {
-          return false;
-        }
-        break;
-      } catch (_) {
-        continue;
-      }
-    }
-    resolved = normalized;
+    return null;
   }
-  return _allowedFsRoots.some(function(root) {
-    return resolved === root || resolved.startsWith(root + path.sep);
-  });
+  if (!_allowedFsRoots.some(function(root) {
+    return real === root || real.startsWith(root + '/');
+  })) {
+    return null;
+  }
+  return real;
+}
+
+// Legacy name kept for any external callers. Delegates to verifyPath.
+function isPathWithinAllowedRoots(filePath) {
+  return verifyPath(filePath) !== null;
 }
 
 function getMimeType(filePath) {
@@ -262,51 +273,43 @@ function createOverrideRegistry(getProcessState) {
 
     // FileSystem — proper Linux implementations
     'FileSystem_$_readLocalFile': async (_event, sessionId, filePath) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
-        return null;
-      }
-      if (!path.isAbsolute(decoded)) return null;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] readLocalFile BLOCKED (outside allowed roots):', decoded);
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return null; }
+      var real = verifyPath(decoded);
+      if (!real) {
+        console.warn('[Cowork] readLocalFile BLOCKED:', decoded);
         return null;
       }
       try {
-        return readLocalFileContent(decoded);
+        return readLocalFileContent(real);
       } catch (e) {
-        console.error('[Cowork] readLocalFile failed:', decoded, e.code || e.message);
+        console.error('[Cowork] readLocalFile failed:', real, e.code || e.message);
         return null;
       }
     },
 
     'FileSystem_$_openLocalFile': async (_event, sessionId, filePath, showInFolder) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
-        return;
-      }
-      vlog('[Cowork] openLocalFile: ' + decoded + ' showInFolder: ' + showInFolder);
-      if (!path.isAbsolute(decoded)) return;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] openLocalFile BLOCKED (outside allowed roots):', decoded);
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
+      var real = verifyPath(decoded);
+      if (!real) {
+        console.warn('[Cowork] openLocalFile BLOCKED:', decoded);
         return;
       }
       try {
         if (showInFolder) {
-          var parentDir = path.dirname(decoded);
-          if (!isPathWithinAllowedRoots(parentDir)) {
-            console.warn('[Cowork] openLocalFile BLOCKED (dirname outside allowed roots):', parentDir);
+          var parentDir = path.dirname(real);
+          var realParent = verifyPath(parentDir);
+          if (!realParent) {
+            console.warn('[Cowork] openLocalFile BLOCKED (dirname):', parentDir);
             return;
           }
-          xdgOpen(parentDir);
+          xdgOpen(realParent);
         } else {
-          xdgOpen(decoded);
+          xdgOpen(real);
         }
       } catch (e) {
-        console.error('[Cowork] openLocalFile failed:', decoded, e.code || e.message);
+        console.error('[Cowork] openLocalFile failed:', real, e.code || e.message);
       }
     },
 
@@ -315,25 +318,21 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'FileSystem_$_showInFolder': async (_event, filePath) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
+      var real = verifyPath(decoded);
+      if (!real) {
+        console.warn('[Cowork] showInFolder BLOCKED:', decoded);
         return;
       }
-      vlog('[Cowork] showInFolder: ' + decoded);
-      if (!path.isAbsolute(decoded)) return;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] showInFolder BLOCKED (outside allowed roots):', decoded);
-        return;
-      }
-      var parentDir = path.dirname(decoded);
-      if (!isPathWithinAllowedRoots(parentDir)) {
-        console.warn('[Cowork] showInFolder BLOCKED (dirname outside allowed roots):', parentDir);
+      var parentDir = path.dirname(real);
+      var realParent = verifyPath(parentDir);
+      if (!realParent) {
+        console.warn('[Cowork] showInFolder BLOCKED (dirname):', parentDir);
         return;
       }
       try {
-        xdgOpen(parentDir);
+        xdgOpen(realParent);
       } catch (_) {}
     },
 

@@ -99,12 +99,31 @@ describe('TCC stubs deny by default', () => {
 
 describe('FileSystem allowlist-only access', () => {
   it('allows paths within home directory', () => {
-    const homeFile = path.join(os.homedir(), 'test-file.txt');
+    // verifyPath (backing isPathWithinAllowedRoots) requires the file to exist.
+    // Use a file we know is on disk.
+    const homeFile = path.join(os.homedir(), '.bashrc');
+    if (!fs.existsSync(homeFile)) {
+      // Create a temp file inside home if .bashrc is missing (containers)
+      const tmp = path.join(os.homedir(), '.cowork-test-' + process.pid);
+      fs.writeFileSync(tmp, '', { mode: 0o600 });
+      try {
+        assert.ok(isPathWithinAllowedRoots(tmp));
+      } finally {
+        try { fs.unlinkSync(tmp); } catch (_) {}
+      }
+      return;
+    }
     assert.ok(isPathWithinAllowedRoots(homeFile));
   });
 
   it('allows paths within /tmp', () => {
-    assert.ok(isPathWithinAllowedRoots('/tmp/some-file.txt'));
+    const tmp = '/tmp/.cowork-test-' + process.pid;
+    fs.writeFileSync(tmp, '', { mode: 0o600 });
+    try {
+      assert.ok(isPathWithinAllowedRoots(tmp));
+    } finally {
+      try { fs.unlinkSync(tmp); } catch (_) {}
+    }
   });
 
   it('rejects paths outside allowed roots', () => {

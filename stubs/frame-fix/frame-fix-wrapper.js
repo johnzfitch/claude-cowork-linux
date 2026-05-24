@@ -626,16 +626,29 @@ try {
     ];
     const ALLOWED_CMD_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
 
+    // Validate a raw path is a clean absolute path with no tricks.
+    // Returns null on any violation. No normalization, no transformation.
+    function _isCleanAbsPath(p) {
+      if (typeof p !== 'string' || p.length === 0) return false;
+      if (p.charCodeAt(0) !== 47) return false;
+      if (p.indexOf('\0') >= 0) return false;
+      var segs = p.split('/');
+      for (var i = 1; i < segs.length; i++) {
+        if (segs[i] === '' || segs[i] === '.' || segs[i] === '..') return false;
+      }
+      return true;
+    }
+
     function _resolveDisclaimerArgs(file, args) {
       if (file !== disclaimerBin) return null;
       if (!Array.isArray(args) || args.length === 0) return null;
-      let cmd = args[0];
-      const rest = args.slice(1);
+      var cmd = args[0];
+      var rest = args.slice(1);
       if (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd)) {
         cmd = null;
-        for (const candidate of CLAUDE_SEARCH_PATHS) {
+        for (var ci = 0; ci < CLAUDE_SEARCH_PATHS.length; ci++) {
           try {
-            var real = fs.realpathSync(candidate);
+            var real = fs.realpathSync(CLAUDE_SEARCH_PATHS[ci]);
             fs.accessSync(real, fs.constants.X_OK);
             cmd = real;
             break;
@@ -643,12 +656,9 @@ try {
         }
         if (!cmd) return null;
       } else {
-        if (typeof cmd !== 'string' || cmd.length === 0) return null;
+        if (!_isCleanAbsPath(cmd)) return null;
         try {
-          var normalized = path.normalize(cmd);
-          if (normalized.split(path.sep).includes('..')) return null;
-          if (!path.isAbsolute(normalized)) return null;
-          cmd = fs.realpathSync(normalized);
+          cmd = fs.realpathSync(cmd);
           fs.accessSync(cmd, fs.constants.X_OK);
         } catch (_) {
           return null;
