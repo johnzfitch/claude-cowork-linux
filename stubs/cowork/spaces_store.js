@@ -35,6 +35,38 @@ function createSpacesStore(options) {
     }
   }
 
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  function isValidUUID(s) {
+    return typeof s === 'string' && UUID_RE.test(s);
+  }
+
+  // Sanitize a value from the renderer to a plain string (max 10KB).
+  // Rejects objects, arrays, and excessively large strings.
+  function sanitizeString(v, maxLen) {
+    if (typeof v !== 'string') return null;
+    if (v.length > (maxLen || 10240)) return null;
+    return v;
+  }
+
+  // Sanitize an object from the renderer: allow only plain key-value pairs
+  // with string/number/boolean/null values. Rejects nested objects, arrays,
+  // prototype-polluting keys, and enforces max depth of 1 + max size.
+  function sanitizeObject(obj, maxKeys) {
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    const clean = {};
+    const keys = Object.keys(obj);
+    if (keys.length > (maxKeys || 50)) return null;
+    for (const k of keys) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      const v = obj[k];
+      if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        if (typeof v === 'string' && v.length > 10240) continue;
+        clean[k] = v;
+      }
+    }
+    return clean;
+  }
+
   // Read-path validation: the file MUST exist (so realpathSync can resolve it)
   // AND its resolved path must fall within a folder registered in spaces.json.
   // The folder list is the allowlist — read from disk each time so the renderer
@@ -116,7 +148,11 @@ function createSpacesStore(options) {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(p, JSON.stringify({ spaces }, null, 4) + '\n', 'utf8');
+      // Atomic write: write to temp file then rename. Prevents partial
+      // writes from corrupting spaces.json on crash or concurrent access.
+      const tmp = p + '.tmp.' + process.pid;
+      fs.writeFileSync(tmp, JSON.stringify({ spaces }, null, 4) + '\n', 'utf8');
+      fs.renameSync(tmp, p);
       return true;
     } catch (e) {
       trace('[spaces] Write error: ' + e.message);
@@ -139,20 +175,22 @@ function createSpacesStore(options) {
   }
 
   function createSpace(_event, spaceData) {
+    if (!spaceData || typeof spaceData !== 'object') return null;
     const spaces = readSpaces();
     const now = Date.now();
     const newSpace = {
       id: randomUUID(),
-      name: spaceData.name || 'Untitled',
-      folders: Array.isArray(spaceData.folders) ? spaceData.folders : [],
-      projects: Array.isArray(spaceData.projects) ? spaceData.projects : [],
-      links: Array.isArray(spaceData.links) ? spaceData.links : [],
-      origin: spaceData.origin || 'user',
+      name: sanitizeString(spaceData.name, 512) || 'Untitled',
+      folders: [],
+      projects: [],
+      links: [],
+      origin: sanitizeString(spaceData.origin, 64) || 'user',
       createdAt: now,
       updatedAt: now,
     };
-    if (spaceData.instructions) {
-      newSpace.instructions = spaceData.instructions;
+    const instr = sanitizeString(spaceData.instructions, 65536);
+    if (instr) {
+      newSpace.instructions = instr;
     }
     spaces.push(newSpace);
     writeSpaces(spaces);
@@ -161,14 +199,21 @@ function createSpacesStore(options) {
   }
 
   function updateSpace(_event, spaceId, updates) {
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) return null;
     const spaces = readSpaces();
     const index = spaces.findIndex(s => s.id === spaceId);
     if (index === -1) {
       trace('[spaces] updateSpace: not found ' + spaceId);
       return null;
     }
-    const updated = { ...spaces[index], ...updates, updatedAt: Date.now() };
-    // Don't allow overwriting id or createdAt
+    // Allowlist: only permit known scalar fields to be updated.
+    // Structured fields (folders, projects, links) have their own add/remove handlers.
+    const allowed = {};
+    if ('name' in updates) allowed.name = sanitizeString(updates.name, 512);
+    if ('instructions' in updates) allowed.instructions = sanitizeString(updates.instructions, 65536);
+    if ('origin' in updates) allowed.origin = sanitizeString(updates.origin, 64);
+    if ('autoDescription' in updates) allowed.autoDescription = sanitizeString(updates.autoDescription, 65536);
+    const updated = { ...spaces[index], ...allowed, updatedAt: Date.now() };
     updated.id = spaces[index].id;
     updated.createdAt = spaces[index].createdAt;
     spaces[index] = updated;
@@ -193,13 +238,23 @@ function createSpacesStore(options) {
       trace('[spaces] addFolderToSpace BLOCKED (outside allowed roots): ' + folderPath);
       return null;
     }
+    // Store the RESOLVED path so symlink swaps after registration
+    // can't redirect reads to unintended locations.
+    const resolved = resolvePath(folderPath);
+    if (!resolved) {
+      trace('[spaces] addFolderToSpace BLOCKED (path does not exist): ' + folderPath);
+      return null;
+    }
+    if (!requireAllowedPath(resolved)) {
+      trace('[spaces] addFolderToSpace BLOCKED (resolved path outside allowed roots): ' + resolved);
+      return null;
+    }
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space) return null;
     if (!Array.isArray(space.folders)) space.folders = [];
-    // Avoid duplicates
-    if (!space.folders.some(f => f.path === folderPath)) {
-      space.folders.push({ path: folderPath });
+    if (!space.folders.some(f => f.path === resolved)) {
+      space.folders.push({ path: resolved });
     }
     space.updatedAt = Date.now();
     writeSpaces(spaces);
@@ -217,11 +272,13 @@ function createSpacesStore(options) {
   }
 
   function addProjectToSpace(_event, spaceId, project) {
+    const sanitized = sanitizeObject(project, 20);
+    if (!sanitized) return null;
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space) return null;
     if (!Array.isArray(space.projects)) space.projects = [];
-    space.projects.push(project);
+    space.projects.push(sanitized);
     space.updatedAt = Date.now();
     writeSpaces(spaces);
     return space;
@@ -238,11 +295,13 @@ function createSpacesStore(options) {
   }
 
   function addLinkToSpace(_event, spaceId, link) {
+    const sanitized = sanitizeObject(link, 20);
+    if (!sanitized) return null;
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space) return null;
     if (!Array.isArray(space.links)) space.links = [];
-    space.links.push(link);
+    space.links.push(sanitized);
     space.updatedAt = Date.now();
     writeSpaces(spaces);
     return space;
@@ -332,7 +391,7 @@ function createSpacesStore(options) {
       trace('[spaces] createSpaceFolder BLOCKED (invalid name): ' + folderName);
       return null;
     }
-    if (typeof spaceId !== 'string' || !/^[0-9a-f-]+$/i.test(spaceId)) {
+    if (!isValidUUID(spaceId)) {
       trace('[spaces] createSpaceFolder BLOCKED (invalid spaceId): ' + spaceId);
       return null;
     }

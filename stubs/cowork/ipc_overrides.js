@@ -146,6 +146,7 @@ const XDG_APP_DIRS = [
 
 function readDesktopFile(desktopFile) {
   if (!desktopFile) return null;
+  if (path.basename(desktopFile) !== desktopFile) return null;
   for (const dir of XDG_APP_DIRS) {
     try {
       return fs.readFileSync(path.join(dir, desktopFile), 'utf-8');
