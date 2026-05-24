@@ -448,8 +448,9 @@ Two recovery paths:
 
 ### Option 1: roll back to the last tested asar
 
-The installer reads `LAST_TESTED_ASAR_VERSION` from [COMPAT.md](COMPAT.md)
-and prompts before downloading. To roll back:
+When the installer detects the latest CDN version is newer than the last
+tested, it offers three choices: `y` (download untested), `t` (download
+last tested), or `n` (cancel). Pick `t` to get the known-good version:
 
 ```bash
 cd ~/.local/share/claude-desktop
@@ -457,19 +458,25 @@ git pull
 
 # Wipe cached chromium artifacts (preserves your sessions and credentials):
 rm -rf ~/.config/Claude/Cache \
-       "~/.config/Claude/Code Cache" \
+       ~/.config/Claude/Code\ Cache \
        ~/.config/Claude/GPUCache \
        ~/.config/Claude/DawnGraphiteCache
 
-# Reinstall:
-bash install.sh --force
+# Reinstall -- when prompted, press 't' for the tested version:
+bash install.sh
 ```
 
-When the prompt offers to download an untested version, decline and supply
-the last-tested archive manually:
+You can also request a specific version directly:
 
 ```bash
-CLAUDE_ARCHIVE=/path/to/Claude-<last-tested>.dmg bash install.sh --force
+CLAUDE_ASAR_VERSION=1.6259.1 bash install.sh --force
+```
+
+If the CDN no longer serves that version, download the DMG manually and
+point the installer at it:
+
+```bash
+CLAUDE_ARCHIVE=/path/to/Claude.dmg bash install.sh --force
 ```
 
 ### Option 2: stay on your current install, wait for a fix
