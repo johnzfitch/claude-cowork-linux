@@ -30,7 +30,11 @@ const _verbose = process.env.CLAUDE_COWORK_VERBOSE === '1';
 function vlog(msg) { if (_verbose) console.log(msg); }
 
 const _homeDir = require('os').homedir();
-const _allowedFsRoots = [_homeDir, '/tmp'];
+// User-scoped tmpdir: os.tmpdir() is patched by frame-fix-wrapper.js to return
+// a private dir under ~/.config/Claude (mode 0700). We use that instead of
+// the world-writable /tmp to keep the trust boundary within user-owned paths.
+const _userTmpDir = require('os').tmpdir();
+const _allowedFsRoots = [_homeDir, _userTmpDir];
 
 // Lazy-initialized spaces store — uses global.__coworkDirs set by frame-fix-wrapper.js
 let _spacesStore = null;

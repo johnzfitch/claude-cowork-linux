@@ -103,8 +103,9 @@ describe('FileSystem allowlist-only access', () => {
     assert.ok(isPathWithinAllowedRoots(homeFile));
   });
 
-  it('allows paths within /tmp', () => {
-    assert.ok(isPathWithinAllowedRoots('/tmp/some-file.txt'));
+  it('allows paths within os.tmpdir() (user-scoped in production)', () => {
+    const tmpFile = path.join(os.tmpdir(), 'some-file.txt');
+    assert.ok(isPathWithinAllowedRoots(tmpFile));
   });
 
   it('rejects paths outside allowed roots', () => {
