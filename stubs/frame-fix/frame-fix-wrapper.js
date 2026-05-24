@@ -520,6 +520,72 @@ try {
 }
 
 // ============================================================
+// CRITICAL: Register CoworkSpaces handlers on ipcMain IMMEDIATELY
+// ============================================================
+// The asar's native SpacesStore only registers handlers after account IPC
+// from the renderer, which is unreliable on Linux. Without a handler,
+// ipcRenderer.invoke() fails silently and the Projects page stays empty.
+//
+// We register our file-backed handlers on ipcMain.handle() BEFORE any
+// webContents exists. When no webContents.ipc.handle() exists for a channel,
+// Electron falls back to ipcMain.handle(). If/when the asar's native handler
+// registers later (account init succeeds), it uses webContents.ipc.handle()
+// which takes priority over our ipcMain handler.
+try {
+  const _electron = require('electron');
+  const { createSpacesStore } = require('./cowork/spaces_store.js');
+  const _spacesStore = createSpacesStore({
+    localAgentRoot: path.join(
+      process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+      'Claude', 'local-agent-mode-sessions'
+    ),
+    trace: (msg) => console.log(msg),
+  });
+
+  const EIPC_UUID = 'c42bb833-f6f9-4563-9861-03480449cfb1';
+  const EIPC_NS = 'claude.web';
+  const prefix = `$eipc_message$_${EIPC_UUID}_$_${EIPC_NS}_$_CoworkSpaces_$_`;
+
+  const handlers = {
+    getAllSpaces: async () => _spacesStore.getAllSpaces(),
+    getSpace: async (_e, id) => _spacesStore.getSpace(_e, id),
+    createSpace: async (_e, data) => _spacesStore.createSpace(_e, data),
+    updateSpace: async (_e, id, upd) => _spacesStore.updateSpace(_e, id, upd),
+    deleteSpace: async (_e, id) => _spacesStore.deleteSpace(_e, id),
+    addFolderToSpace: async (_e, id, p) => _spacesStore.addFolderToSpace(_e, id, p),
+    removeFolderFromSpace: async (_e, id, p) => _spacesStore.removeFolderFromSpace(_e, id, p),
+    addProjectToSpace: async (_e, id, p) => _spacesStore.addProjectToSpace(_e, id, p),
+    removeProjectFromSpace: async (_e, id, p) => _spacesStore.removeProjectFromSpace(_e, id, p),
+    addLinkToSpace: async (_e, id, l) => _spacesStore.addLinkToSpace(_e, id, l),
+    removeLinkFromSpace: async (_e, id, l) => _spacesStore.removeLinkFromSpace(_e, id, l),
+    getAutoMemoryDir: async (_e, id) => _spacesStore.getAutoMemoryDir(_e, id),
+    listFolderContents: async (_e, p) => _spacesStore.listFolderContents(_e, p),
+    readFileContents: async (_e, p) => _spacesStore.readFileContents(_e, p),
+    openFile: async (_e, p) => _spacesStore.openFile(_e, p),
+    copyFilesToSpaceFolder: async (_e, id, f) => _spacesStore.copyFilesToSpaceFolder(_e, id, f),
+    createSpaceFolder: async (_e, id, n) => _spacesStore.createSpaceFolder(_e, id, n),
+    classifySessions: async (_e, s) => _spacesStore.classifySessions(_e, s),
+    setAutoDescription: async (_e, id, d) => _spacesStore.setAutoDescription(_e, id, d),
+    summarizeSpace: async (_e, id) => _spacesStore.summarizeSpace(_e, id),
+    onSpaceEvent: async () => ({ dispose: () => {} }),
+  };
+
+  let registered = 0;
+  for (const [method, handler] of Object.entries(handlers)) {
+    const channel = prefix + method;
+    try {
+      _electron.ipcMain.handle(channel, handler);
+      registered++;
+    } catch (e) {
+      // Already registered — skip
+    }
+  }
+  console.log('[Cowork] Registered ' + registered + ' CoworkSpaces handlers on ipcMain (fallback)');
+} catch (earlyRegErr) {
+  console.error('[Cowork] EARLY CoworkSpaces registration FAILED:', earlyRegErr.message, earlyRegErr.stack);
+}
+
+// ============================================================
 // 0. TMPDIR FIX - MUST BE ABSOLUTELY FIRST
 // ============================================================
 // Fix EXDEV error: App downloads VM to /tmp (tmpfs) then tries to
@@ -624,7 +690,29 @@ try {
       '/usr/local/bin/claude',
       '/usr/bin/claude',
     ];
-    const ALLOWED_CMD_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+    // Disclaimer-unwrap allowlist. On macOS the asar wraps every spawn with
+    // Helpers/disclaimer; the spoofed-darwin Linux path activates the same
+    // wrap, so we unwrap it back to the original command. Restrict the unwrap
+    // to known-good directories so a compromised caller can't trivially
+    // smuggle in arbitrary binaries via the disclaimer args.
+    //
+    // System paths are always trusted. User-local paths cover MCP servers and
+    // CLI tools the user installs via cargo, npm-global, mise, asdf, volta,
+    // and Linux distro conventions. These are user-controlled regardless, so
+    // including them adds no privilege the caller doesn't already have.
+    const ALLOWED_CMD_DIRS = [
+      '/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/', '/opt/',
+      os.homedir() + '/.local/bin/',
+      os.homedir() + '/.npm-global/bin/',
+      os.homedir() + '/.cargo/bin/',
+      os.homedir() + '/go/bin/',
+      os.homedir() + '/.bun/bin/',
+      os.homedir() + '/.deno/bin/',
+      os.homedir() + '/.local/share/mise/shims/',
+      os.homedir() + '/.asdf/shims/',
+      os.homedir() + '/.volta/bin/',
+      os.homedir() + '/bin/',
+    ];
 
     function _resolveDisclaimerArgs(file, args) {
       if (file !== disclaimerBin) return null;
@@ -662,6 +750,121 @@ try {
 } catch (e) {
   console.error('[TMPDIR] Setup failed:', e.message);
 }
+
+// ============================================================
+// 0a. PATCH fs TO REDIRECT /sessions/ PATHS TO SESSIONS_BASE
+// ============================================================
+// The asar and our stubs use /sessions/<name>/... as the VM-internal path
+// prefix. On macOS a /sessions root symlink is created. On Linux we can't
+// always create root symlinks (immutable rootfs, no sudo). Instead, patch
+// all fs calls to rewrite /sessions/ -> SESSIONS_BASE/ transparently.
+//
+// SESSIONS_BASE is resolved lazily (DIRS is created below) so we capture
+// a getter that reads from the global set during createDirs().
+(function patchFsSessionsPaths() {
+  const VM_SESSIONS_PREFIX = '/sessions/';
+
+  function rewritePath(p) {
+    if (typeof p === 'string' && p.startsWith(VM_SESSIONS_PREFIX)) {
+      const base = (typeof SESSIONS_BASE !== 'undefined' ? SESSIONS_BASE : null)
+        || (global.__coworkDirs && global.__coworkDirs.claudeSessionsBase)
+        || require('path').join(
+            (process.env.XDG_CONFIG_HOME || require('path').join(require('os').homedir(), '.config')),
+            'Claude', 'local-agent-mode-sessions', 'sessions'
+          );
+      return base + '/' + p.slice(VM_SESSIONS_PREFIX.length);
+    }
+    return p;
+  }
+
+  function wrapFsMethod(obj, name) {
+    const orig = obj[name];
+    if (typeof orig !== 'function' || obj[name].__coworkSessionsPatched) return;
+    obj[name] = function(p, ...rest) {
+      return orig.call(this, rewritePath(p), ...rest);
+    };
+    obj[name].__coworkSessionsPatched = true;
+  }
+
+  const PATH_METHODS = [
+    'access', 'accessSync',
+    'chmod', 'chmodSync',
+    'chown', 'chownSync',
+    'copyFile', 'copyFileSync',
+    'createReadStream', 'createWriteStream',
+    'exists', 'existsSync',
+    'lchmod', 'lchmodSync',
+    'lchown', 'lchownSync',
+    'lstat', 'lstatSync',
+    'mkdir', 'mkdirSync',
+    'mkdtemp', 'mkdtempSync',
+    'open', 'openSync',
+    'opendir', 'opendirSync',
+    'readdir', 'readdirSync',
+    'readFile', 'readFileSync',
+    'readlink', 'readlinkSync',
+    'realpath', 'realpathSync',
+    'rmdir', 'rmdirSync',
+    'rm', 'rmSync',
+    'stat', 'statSync',
+    'symlink', 'symlinkSync',
+    'truncate', 'truncateSync',
+    'unlink', 'unlinkSync',
+    'utimes', 'utimesSync',
+    'watch', 'watchFile',
+    'writeFile', 'writeFileSync',
+    'appendFile', 'appendFileSync',
+  ];
+
+  for (const name of PATH_METHODS) {
+    if (typeof fs[name] === 'function') wrapFsMethod(fs, name);
+  }
+
+  const origRenameForSessions = fs.rename;
+  if (origRenameForSessions && !origRenameForSessions.__coworkSessionsRenamePatched) {
+    fs.rename = function(oldPath, newPath, cb) {
+      return origRenameForSessions.call(this, rewritePath(oldPath), rewritePath(newPath), cb);
+    };
+    fs.rename.__coworkSessionsRenamePatched = true;
+  }
+  const origRenameSyncForSessions = fs.renameSync;
+  if (origRenameSyncForSessions && !origRenameSyncForSessions.__coworkSessionsRenamePatched) {
+    fs.renameSync = function(oldPath, newPath) {
+      return origRenameSyncForSessions.call(this, rewritePath(oldPath), rewritePath(newPath));
+    };
+    fs.renameSync.__coworkSessionsRenamePatched = true;
+  }
+
+  try {
+    const fsp = require('fs/promises') || fs.promises;
+    if (fsp) {
+      const ASYNC_PATH_METHODS = [
+        'access', 'chmod', 'chown', 'copyFile', 'lchmod', 'lchown',
+        'lstat', 'mkdir', 'mkdtemp', 'open', 'opendir', 'readdir',
+        'readFile', 'readlink', 'realpath', 'rmdir', 'rm', 'stat',
+        'symlink', 'truncate', 'unlink', 'utimes', 'writeFile', 'appendFile',
+      ];
+      for (const name of ASYNC_PATH_METHODS) {
+        if (typeof fsp[name] === 'function' && !fsp[name].__coworkSessionsPatched) {
+          const origFsp = fsp[name];
+          fsp[name] = function(p, ...rest) {
+            return origFsp.call(this, rewritePath(p), ...rest);
+          };
+          fsp[name].__coworkSessionsPatched = true;
+        }
+      }
+      if (typeof fsp.rename === 'function' && !fsp.rename.__coworkSessionsRenamePatched) {
+        const origFspRename = fsp.rename;
+        fsp.rename = function(oldPath, newPath) {
+          return origFspRename.call(this, rewritePath(oldPath), rewritePath(newPath));
+        };
+        fsp.rename.__coworkSessionsRenamePatched = true;
+      }
+    }
+  } catch (_) {}
+
+  console.log('[Sessions] fs path redirect /sessions/ -> SESSIONS_BASE installed');
+})();
 
 // ============================================================
 // 0b. PATCH fs.rename TO HANDLE EXDEV ERRORS
@@ -923,56 +1126,19 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
 }
 
 // ============================================================
-// SINGLE-INSTANCE LOCK + PROTOCOL URL FORWARDING
-// ============================================================
-// The asar takes the macOS codepath (open-url event) because we
-// spoof darwin. But Linux doesn't have macOS's Apple Event URL
-// routing — launching claude:// URLs spawns a NEW Electron process.
-// Fix: acquire a single-instance lock ourselves. When a second
-// instance launches (e.g. from a claude:// protocol redirect after
-// Google auth), extract the URL from argv, emit 'open-url' on the
-// app (which the asar IS listening for), and quit the duplicate.
+// APP NAME — set before index.js runs so requestSingleInstanceLock() uses the
+// correct userData path (~/.config/Claude). The package.json name is @ant/desktop
+// which would produce ~/.config/@ant/desktop — wrong path, breaks single-instance.
+// The asar's index.js also calls app.setName('Claude') but only inside whenReady(),
+// which is too late for the lock. We set it here at require-time.
+// Protocol URL forwarding is handled by protocol-forwarder.js (invoked from
+// the claude-desktop launcher script for claude:// callbacks).
 try {
   const { app } = require('electron');
-  const gotLock = app.requestSingleInstanceLock();
-  if (!gotLock) {
-    // We're the second instance — the first will get 'second-instance'
-    console.log('[SingleInstance] Another instance is running, quitting');
-    app.quit();
-  } else {
-    app.on('second-instance', (_event, argv, _workingDirectory) => {
-      // Find the claude:// URL in the argv of the second instance
-      const url = argv.find(a => a.startsWith('claude://'));
-      if (url) {
-
-        try {
-          const parsed = new URL(url);
-          if (parsed.protocol !== 'claude:') {
-            console.warn('[SingleInstance] Rejected non-claude protocol URL');
-          } else if (/[<>"'`]/.test(url) || url.length > 2048) {
-            console.warn('[SingleInstance] Rejected suspicious claude:// URL');
-          } else {
-            console.log('[SingleInstance] Forwarding validated protocol URL to open-url handler');
-            app.emit('open-url', { preventDefault() {} }, url);
-          }
-        } catch (e) {
-          console.warn('[SingleInstance] Rejected malformed URL:', e.message);
-        }
-      }
-      // Focus the existing window
-      const { BrowserWindow } = require('electron');
-      const wins = BrowserWindow.getAllWindows();
-      if (wins.length > 0) {
-        const win = wins[0];
-        if (win.isMinimized()) win.restore();
-        win.show();
-        win.focus();
-      }
-    });
-    console.log('[SingleInstance] Lock acquired, protocol URL forwarding enabled');
-  }
+  if (typeof app.setName === 'function') app.setName('Claude');
+  console.log('[SingleInstance] App name set to Claude — lock will use ~/.config/Claude');
 } catch (e) {
-  console.error('[SingleInstance] Failed to set up single-instance lock:', e.message);
+  console.error('[SingleInstance] Failed to set app name:', e.message);
 }
 
 Module.prototype.require = function(id) {
@@ -1204,6 +1370,33 @@ Module.prototype.require = function(id) {
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
 
+    // ── Intercept setAsDefaultProtocolClient ──────────────────────────
+    // On Linux, Electron's setAsDefaultProtocolClient creates/overwrites a
+    // .desktop file pointing to the raw electron binary, breaking our
+    // claude-desktop wrapper as the protocol handler. We already registered
+    // the correct claude.desktop during install. Make this a no-op so
+    // Electron doesn't clobber our registration.
+    const _app = resolveElectronApp(module);
+    if (_app && typeof _app.setAsDefaultProtocolClient === 'function' && !_app.__coworkProtocolClientPatched) {
+      _app.__coworkProtocolClientPatched = true;
+      const _origSetProtocol = _app.setAsDefaultProtocolClient.bind(_app);
+      _app.setAsDefaultProtocolClient = function(protocol, ...rest) {
+        if (REAL_PLATFORM === 'linux') {
+          console.log('[Frame Fix] Suppressed setAsDefaultProtocolClient(' + protocol + ') — using install-time claude.desktop');
+          return true;
+        }
+        return _origSetProtocol(protocol, ...rest);
+      };
+      if (typeof _app.removeAsDefaultProtocolClient === 'function') {
+        const _origRemoveProtocol = _app.removeAsDefaultProtocolClient.bind(_app);
+        _app.removeAsDefaultProtocolClient = function(protocol) {
+          if (REAL_PLATFORM === 'linux') return true;
+          return _origRemoveProtocol(protocol);
+        };
+      }
+      console.log('[Frame Fix] setAsDefaultProtocolClient patched (no-op on Linux)');
+    }
+
     // Patch BrowserWindow to stub macOS-only methods and handle close events
     // The asar's close handler does `if (isMac()) return;` which swallows
     // close events since we spoof darwin. We prepend a listener that forces
@@ -1296,6 +1489,9 @@ Module.prototype.require = function(id) {
 
           const overrideHandler = matchOverride(channel, ipcOverrides);
           if (overrideHandler) {
+            if (channel.includes('CoworkSpaces')) {
+              console.log('[Cowork] OVERRIDE applied for: ' + channel.split('_$_').pop());
+            }
             return origIpcHandle(channel, overrideHandler);
           }
           return origIpcHandle(channel, asarAdapter.wrapHandler(channel, handler));

@@ -363,6 +363,7 @@ get_archive() {
         elif [[ ! -t 0 ]]; then
             # Non-interactive (piped) install: refuse without --force to
             # avoid silently downloading an untested upstream.
+            log_warn "Repository updated. Stub-only fixes are live — run launch.sh to apply them without a re-download."
             log_error "Non-interactive install requires --force (or --yes) to confirm download."
             log_error "Re-run as: bash install.sh --force"
             die "Aborting: no confirmation possible"
@@ -515,7 +516,7 @@ install_stubs() {
     cp "$native_src" "$target_dir/node_modules/@ant/claude-native/index.js"
 
     # Copy frame-fix files
-    for f in frame-fix-wrapper.js frame-fix-entry.js; do
+    for f in frame-fix-wrapper.js frame-fix-entry.js protocol-forwarder.js; do
         if [[ -f "$stub_src/stubs/frame-fix/$f" ]]; then
             cp "$stub_src/stubs/frame-fix/$f" "$target_dir/$f"
         fi
@@ -643,6 +644,34 @@ case "\${1:-}" in
     --debug)    shift; export CLAUDE_TRACE=1; _warn_if_untested_asar; exec ./launch.sh "\$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
     --update)   shift; exec ./install.sh --update "\$@" ;;
+    claude://*)
+        # Protocol handler callback (e.g. OAuth redirect from browser).
+        # Skip the full launch.sh setup — just forward the URL to the already-running
+        # instance via Electron's single-instance mechanism.
+        FORWARDER="\$COWORK_DIR/protocol-forwarder.js"
+        if [ ! -f "\$FORWARDER" ]; then
+            nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
+                -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
+            disown
+        else
+            ELECTRON_BIN=""
+            if [[ -x "\$HOME/.local/lib/node_modules/electron/dist/electron" ]]; then
+                ELECTRON_BIN="\$HOME/.local/lib/node_modules/electron/dist/electron"
+            elif [[ -x "\$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron" ]]; then
+                ELECTRON_BIN="\$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron"
+            elif command -v electron >/dev/null 2>&1; then
+                ELECTRON_BIN="\$(command -v electron)"
+            fi
+            if [ -n "\$ELECTRON_BIN" ]; then
+                nohup "\$ELECTRON_BIN" "\$FORWARDER" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
+                disown
+            else
+                nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
+                    -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
+                disown
+            fi
+        fi
+        ;;
     *)
         _warn_if_untested_asar
         nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
@@ -680,13 +709,14 @@ setup_environment() {
     mkdir -p "$sessions_dir"
     chmod 700 "$data_dir"
 
-    # /sessions symlink — the asar passes VM-internal /sessions/... paths that
-    # our stub translates to host paths under this sessions directory.
+    # /sessions symlink — optional. The frame-fix-wrapper fs patch rewrites
+    # /sessions/ paths to SESSIONS_BASE at the Node.js fs layer, so the
+    # symlink is not required. Create it when possible for compatibility.
     if [[ ! -e /sessions ]]; then
-        log_info "Creating /sessions symlink (requires sudo)..."
+        log_info "Attempting /sessions symlink (optional, requires sudo)..."
         sudo ln -s "$sessions_dir" /sessions \
             && log_success "/sessions -> $sessions_dir" \
-            || log_warn "Failed to create /sessions symlink. Run manually: sudo ln -s \"$sessions_dir\" /sessions"
+            || log_info "/sessions symlink not created (optional — fs patch handles rewriting)"
     elif [[ -L /sessions ]]; then
         local current_target
         current_target=$(readlink /sessions)
@@ -901,6 +931,9 @@ doctor() {
     fi
 
     # --- /sessions symlink ---
+    # Note: the fs path redirect patch in frame-fix-wrapper.js rewrites
+    # /sessions/ paths to SESSIONS_BASE at runtime, so the symlink is
+    # optional. It's still created when possible for compatibility.
     if [[ -L /sessions ]]; then
         local target
         target=$(readlink /sessions)
@@ -910,8 +943,8 @@ doctor() {
         log_warn "/sessions exists but is a directory (should be a symlink)"
         warn=$((warn + 1))
     else
-        log_error "/sessions: NOT FOUND -- run: sudo ln -s \"\${XDG_CONFIG_HOME:-\$HOME/.config}/Claude/local-agent-mode-sessions/sessions\" /sessions"
-        fail=$((fail + 1))
+        log_warn "/sessions symlink not present (optional — fs patch handles path rewriting)"
+        warn=$((warn + 1))
     fi
 
     # --- Secret service (D-Bus) ---

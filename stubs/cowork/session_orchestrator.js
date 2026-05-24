@@ -484,9 +484,31 @@ class SessionOrchestrator {
       args,
       envVars,
       additionalMounts,
-      sharedCwdPath,
+      sharedCwdPath: rawSharedCwdPath,
       onError,
     } = context || {};
+
+    // Fix: asar passes sharedCwdPath=false (boolean) instead of a path string.
+    // When falsy, recover from session metadata's userSelectedFolders so the CLI
+    // gets the correct cwd and project key persists across restarts.
+    const trace = this._deps.trace || (() => {});
+    let sharedCwdPath = rawSharedCwdPath;
+    if (!sharedCwdPath || typeof sharedCwdPath !== 'string') {
+      const sessionStore = this._deps.sessionStore;
+      if (sessionStore) {
+        const activeInfo = sessionStore.getActiveSessionInfo();
+        if (activeInfo && activeInfo.preferredRoot) {
+          sharedCwdPath = activeInfo.preferredRoot;
+          trace('[cwd-fix] Recovered sharedCwdPath from active session: ' + sharedCwdPath);
+        } else if (typeof processId === 'string' && processId.startsWith('local_')) {
+          const sessionInfo = sessionStore.getSessionInfo(processId);
+          if (sessionInfo && sessionInfo.preferredRoot) {
+            sharedCwdPath = sessionInfo.preferredRoot;
+            trace('[cwd-fix] Recovered sharedCwdPath from session metadata: ' + sharedCwdPath);
+          }
+        }
+      }
+    }
     const {
       appSupportRoot,
       canonicalizePathForHostAccess,
@@ -494,7 +516,6 @@ class SessionOrchestrator {
       claudeVmRoots,
       resolveClaudeBinaryPath,
       sessionsBase,
-      trace = () => {},
       translateVmPathStrict,
     } = this._deps;
 
@@ -607,6 +628,16 @@ class SessionOrchestrator {
       filteredArgs.push(hostArgs[index]);
     }
     hostArgs = filteredArgs;
+
+    // Step 5b: Remap unsupported CLI flags
+    // Claude Desktop may pass --effort xhigh, but the SDK binary only supports
+    // low/medium/high/max. Remap xhigh -> max to prevent exit code 1.
+    for (let i = 0; i < hostArgs.length; i += 1) {
+      if (hostArgs[i] === '--effort' && i + 1 < hostArgs.length && hostArgs[i + 1] === 'xhigh') {
+        trace('Remapped --effort xhigh -> max');
+        hostArgs[i + 1] = 'max';
+      }
+    }
 
     // Step 6: Ensure sessions base directory exists
     try {
