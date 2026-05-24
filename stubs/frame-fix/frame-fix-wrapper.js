@@ -538,8 +538,25 @@ try {
   const _earlyAllowedRoots = [_homeDir, '/tmp'];
   function _earlyIsPathAllowed(filePath) {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return false;
+    const normalized = path.normalize(filePath);
     let resolved;
-    try { resolved = fs.realpathSync(filePath); } catch (_) { resolved = path.normalize(filePath); }
+    try {
+      resolved = fs.realpathSync(normalized);
+    } catch (_) {
+      let current = path.dirname(normalized);
+      let tail = path.basename(normalized);
+      resolved = null;
+      while (current !== path.dirname(current)) {
+        try {
+          resolved = path.join(fs.realpathSync(current), tail);
+          break;
+        } catch (_) {
+          tail = path.join(path.basename(current), tail);
+          current = path.dirname(current);
+        }
+      }
+      if (!resolved) resolved = normalized;
+    }
     return _earlyAllowedRoots.some(root => resolved === root || resolved.startsWith(root + path.sep));
   }
   const _spacesStore = createSpacesStore({

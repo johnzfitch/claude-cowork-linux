@@ -71,17 +71,33 @@ function createSpacesOverrides() {
 }
 
 function isPathWithinAllowedRoots(filePath) {
-  // Reject non-absolute up front: path.resolve would fall back to process.cwd()
-  // and make the policy depend on runtime working directory.
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
     return false;
   }
+  const normalized = path.normalize(filePath);
   let resolved;
   try {
-    resolved = fs.realpathSync(filePath);
+    resolved = fs.realpathSync(normalized);
   } catch (_) {
-    // File may not exist yet (for open/show); the input is already absolute
-    resolved = path.normalize(filePath);
+    // File doesn't exist yet. Walk up to the nearest existing ancestor and
+    // resolve symlinks THERE, then reattach the non-existent suffix.
+    // Without this, a symlink at an intermediate component (e.g.
+    // ~/spaces/SPACEID/escape -> /) would pass the prefix check via
+    // path.normalize (which ignores symlinks) and escape on the actual
+    // filesystem operation.
+    let current = path.dirname(normalized);
+    let tail = path.basename(normalized);
+    resolved = null;
+    while (current !== path.dirname(current)) {
+      try {
+        resolved = path.join(fs.realpathSync(current), tail);
+        break;
+      } catch (_) {
+        tail = path.join(path.basename(current), tail);
+        current = path.dirname(current);
+      }
+    }
+    if (!resolved) resolved = normalized;
   }
   return _allowedFsRoots.some(root =>
     resolved === root || resolved.startsWith(root + path.sep)
