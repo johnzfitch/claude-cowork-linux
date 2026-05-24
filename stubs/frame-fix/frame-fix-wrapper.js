@@ -68,6 +68,20 @@ const originalRequire = Module.prototype.require;
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+
+// Verify os.homedir() is owned by the current user. HOME env var can be
+// set to a world-writable dir (e.g. /tmp/fakehome), which would shift the
+// entire trust boundary. Abort early if the homedir isn't ours.
+try {
+  const _homeStat = fs.statSync(os.homedir());
+  if (_homeStat.uid !== process.getuid()) {
+    console.error('[SECURITY] os.homedir() (' + os.homedir() + ') is not owned by uid ' + process.getuid() + ' — aborting');
+    process.exit(1);
+  }
+} catch (e) {
+  console.error('[SECURITY] Cannot verify homedir ownership:', e.message);
+  process.exit(1);
+}
 const {
   createAsarAdapter,
   DEFAULT_FILESYSTEM_PATH_ALIASES,

@@ -274,8 +274,9 @@ if [[ -n "$WAYLAND_DISPLAY" ]] || [[ "$XDG_SESSION_TYPE" == "wayland" ]]; then
   fi
 fi
 
-# Create log directory
+# Create log directory (mode 700: logs may contain session metadata)
 mkdir -p "$LOG_DIR"
+chmod 700 "$LOG_DIR"
 
 # Detect password store backend.
 # gnome-libsecret is preferred (works with gnome-keyring, KeePassXC, KDE Wallet

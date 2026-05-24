@@ -617,6 +617,7 @@ STATE_HOME="\${XDG_STATE_HOME:-\$HOME/.local/state}"
 LOG_DIR="\${CLAUDE_LOG_DIR:-\$STATE_HOME/claude-cowork/logs}"
 export CLAUDE_LOG_DIR="\$LOG_DIR"
 mkdir -p "\$LOG_DIR"
+chmod 700 "\$LOG_DIR"
 
 cd "\$COWORK_DIR"
 
@@ -708,6 +709,9 @@ setup_environment() {
     mkdir -p "$cache_dir"
     mkdir -p "$sessions_dir"
     chmod 700 "$data_dir"
+    chmod 700 "$log_dir"
+    chmod 700 "$cache_dir"
+    chmod 700 "$sessions_dir"
 
     # /sessions symlink — optional. The frame-fix-wrapper fs patch rewrites
     # /sessions/ paths to SESSIONS_BASE at the Node.js fs layer, so the
