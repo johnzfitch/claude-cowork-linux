@@ -634,13 +634,30 @@ try {
       if (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd)) {
         cmd = null;
         for (const candidate of CLAUDE_SEARCH_PATHS) {
-          try { fs.accessSync(candidate, fs.constants.X_OK); cmd = candidate; break; } catch (_) {}
+          try {
+            var real = fs.realpathSync(candidate);
+            fs.accessSync(real, fs.constants.X_OK);
+            cmd = real;
+            break;
+          } catch (_) {}
         }
         if (!cmd) return null;
-      } else if (!ALLOWED_CMD_DIRS.some(d => cmd.startsWith(d))) {
-        return null;
+      } else {
+        if (typeof cmd !== 'string' || cmd.length === 0) return null;
+        try {
+          var normalized = path.normalize(cmd);
+          if (normalized.split(path.sep).includes('..')) return null;
+          if (!path.isAbsolute(normalized)) return null;
+          cmd = fs.realpathSync(normalized);
+          fs.accessSync(cmd, fs.constants.X_OK);
+        } catch (_) {
+          return null;
+        }
+        if (!ALLOWED_CMD_DIRS.some(function(d) { return cmd.startsWith(d); })) {
+          return null;
+        }
       }
-      return { cmd, rest };
+      return { cmd: cmd, rest: rest };
     }
 
     _cp.execFile = function(file, args, ...rest) {
