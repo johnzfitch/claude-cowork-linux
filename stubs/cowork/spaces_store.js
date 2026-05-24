@@ -14,15 +14,46 @@ const { randomUUID } = require('crypto');
 function createSpacesStore(options) {
   const { localAgentRoot, isPathAllowed, trace = () => {} } = options || {};
 
-  // Path validation gate — reuses the caller's isPathWithinAllowedRoots().
-  // Every function that touches user-supplied paths MUST call this.
+  // Path validation gate for folder registration (addFolderToSpace).
+  // Uses the caller's isPathWithinAllowedRoots() which checks [homedir, /tmp].
   function requireAllowedPath(p) {
     if (typeof p !== 'string' || !path.isAbsolute(p)) return false;
     if (typeof isPathAllowed === 'function') return isPathAllowed(p);
-    // Fallback: restrict to homedir if no validator was injected
     const home = require('os').homedir();
     const resolved = path.normalize(p);
     return resolved === home || resolved.startsWith(home + path.sep);
+  }
+
+  // Resolve a path through realpathSync, defeating symlinks.
+  // Returns null if the path doesn't exist (can't be resolved = can't be read).
+  function resolvePath(p) {
+    if (typeof p !== 'string' || !path.isAbsolute(p)) return null;
+    try {
+      return fs.realpathSync(p);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Read-path validation: the file MUST exist (so realpathSync can resolve it)
+  // AND its resolved path must fall within a folder registered in spaces.json.
+  // The folder list is the allowlist — read from disk each time so the renderer
+  // can't influence it. Both sides are resolved via realpathSync to prevent
+  // symlink-based escapes.
+  function isWithinRegisteredFolder(filePath) {
+    const resolved = resolvePath(filePath);
+    if (!resolved) return false;
+    const spaces = readSpaces();
+    for (const space of spaces) {
+      for (const folder of (space.folders || [])) {
+        const folderResolved = resolvePath(folder.path);
+        if (!folderResolved) continue;
+        if (resolved === folderResolved || resolved.startsWith(folderResolved + path.sep)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // Discover the spaces.json path by walking localAgentRoot/<accountId>/<orgId>/
@@ -228,10 +259,12 @@ function createSpacesStore(options) {
   }
 
   function getAutoMemoryDir(_event, spaceId) {
-    // Return the memory directory for the space
+    if (typeof spaceId !== 'string' || !/^[0-9a-f-]+$/i.test(spaceId)) return null;
     const p = discoverSpacesPath();
     if (!p) return null;
     const spacesDir = path.join(path.dirname(p), 'spaces', spaceId, 'memory');
+    const normalized = path.normalize(spacesDir);
+    if (!normalized.startsWith(localAgentRoot + path.sep)) return null;
     try {
       if (!fs.existsSync(spacesDir)) {
         fs.mkdirSync(spacesDir, { recursive: true });
@@ -241,15 +274,16 @@ function createSpacesStore(options) {
   }
 
   function listFolderContents(_event, folderPath) {
-    if (!requireAllowedPath(folderPath)) {
-      trace('[spaces] listFolderContents BLOCKED (outside allowed roots): ' + folderPath);
+    if (!isWithinRegisteredFolder(folderPath)) {
+      trace('[spaces] listFolderContents BLOCKED (not in any registered folder): ' + folderPath);
       return [];
     }
+    const resolved = resolvePath(folderPath);
     try {
-      const entries = fs.readdirSync(folderPath, { withFileTypes: true });
+      const entries = fs.readdirSync(resolved, { withFileTypes: true });
       return entries.map(e => ({
         name: e.name,
-        path: path.join(folderPath, e.name),
+        path: path.join(resolved, e.name),
         isDirectory: e.isDirectory(),
         isFile: e.isFile(),
       }));
@@ -259,25 +293,27 @@ function createSpacesStore(options) {
   }
 
   function readFileContents(_event, filePath) {
-    if (!requireAllowedPath(filePath)) {
-      trace('[spaces] readFileContents BLOCKED (outside allowed roots): ' + filePath);
+    if (!isWithinRegisteredFolder(filePath)) {
+      trace('[spaces] readFileContents BLOCKED (not in any registered folder): ' + filePath);
       return null;
     }
+    const resolved = resolvePath(filePath);
     try {
-      return fs.readFileSync(filePath, 'utf8');
+      return fs.readFileSync(resolved, 'utf8');
     } catch (_) {
       return null;
     }
   }
 
   function openFile(_event, filePath) {
-    if (!requireAllowedPath(filePath)) {
-      trace('[spaces] openFile BLOCKED (outside allowed roots): ' + filePath);
+    if (!isWithinRegisteredFolder(filePath)) {
+      trace('[spaces] openFile BLOCKED (not in any registered folder): ' + filePath);
       return false;
     }
+    const resolved = resolvePath(filePath);
     try {
       const { execFile } = require('child_process');
-      execFile('xdg-open', [filePath], { timeout: 5000 });
+      execFile('xdg-open', [resolved], { timeout: 5000 });
     } catch (_) {}
     return true;
   }
@@ -289,15 +325,24 @@ function createSpacesStore(options) {
   }
 
   function createSpaceFolder(_event, spaceId, folderName) {
-    if (typeof folderName !== 'string' || /\.\.[\\/]/.test(folderName) || path.isAbsolute(folderName)) {
-      trace('[spaces] createSpaceFolder BLOCKED (path traversal): ' + folderName);
+    // Internal operation: only allows simple basenames, no path separators
+    // or traversal. Output is always under localAgentRoot.
+    if (typeof folderName !== 'string' || folderName.length === 0 || folderName.length > 255) return null;
+    if (/[/\\]/.test(folderName) || folderName === '.' || folderName === '..') {
+      trace('[spaces] createSpaceFolder BLOCKED (invalid name): ' + folderName);
+      return null;
+    }
+    if (typeof spaceId !== 'string' || !/^[0-9a-f-]+$/i.test(spaceId)) {
+      trace('[spaces] createSpaceFolder BLOCKED (invalid spaceId): ' + spaceId);
       return null;
     }
     const p = discoverSpacesPath();
     if (!p) return null;
     const spaceFolderPath = path.join(path.dirname(p), 'spaces', spaceId, folderName);
-    if (!requireAllowedPath(spaceFolderPath)) {
-      trace('[spaces] createSpaceFolder BLOCKED (outside allowed roots): ' + spaceFolderPath);
+    // Verify the constructed path is still under localAgentRoot
+    const normalized = path.normalize(spaceFolderPath);
+    if (!normalized.startsWith(localAgentRoot + path.sep)) {
+      trace('[spaces] createSpaceFolder BLOCKED (escaped localAgentRoot): ' + normalized);
       return null;
     }
     try {
