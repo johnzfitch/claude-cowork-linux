@@ -38,7 +38,7 @@ function getSpacesStore() {
   if (!_spacesStore) {
     const dirs = global.__coworkDirs;
     const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_homeDir, '.config', 'Claude', 'local-agent-mode-sessions');
-    _spacesStore = createSpacesStore({ localAgentRoot, trace: vlog });
+    _spacesStore = createSpacesStore({ localAgentRoot, isPathAllowed: isPathWithinAllowedRoots, trace: vlog });
   }
   return _spacesStore;
 }

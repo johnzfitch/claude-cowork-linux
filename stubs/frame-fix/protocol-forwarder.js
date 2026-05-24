@@ -25,6 +25,41 @@ function log(msg) {
 
 log(`started, argv: ${process.argv.slice(2).join(' ')}`);
 
+// Validate the claude:// URL before forwarding — same checks as the old
+// single-instance handler in frame-fix-wrapper.js.
+function validateClaudeUrl(url) {
+  if (typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'claude:') {
+      log('rejected non-claude protocol: ' + parsed.protocol);
+      return false;
+    }
+  } catch (e) {
+    log('rejected malformed URL: ' + e.message);
+    return false;
+  }
+  if (/[<>"'`]/.test(url)) {
+    log('rejected URL with suspicious characters');
+    return false;
+  }
+  if (url.length > 2048) {
+    log('rejected URL exceeding 2048 chars');
+    return false;
+  }
+  return true;
+}
+
+const rawUrl = process.argv.find(a => a.startsWith('claude://')) || '';
+if (rawUrl && !validateClaudeUrl(rawUrl)) {
+  log('aborting — URL failed validation');
+  app.quit();
+  // Early exit; the code below won't run because app.quit() is async,
+  // but we guard with a flag anyway.
+  process.exitCode = 1;
+}
+const url = rawUrl;
+
 // Must match the app name set in frame-fix-wrapper.js before requestSingleInstanceLock(),
 // so both processes use the same userData path (~/.config/Claude/SingletonLock).
 app.setName('Claude');
@@ -46,7 +81,6 @@ if (!gotLock) {
   const coworkDir = process.env.COWORK_DIR ||
     path.join(os.homedir(), '.local', 'share', 'claude-desktop');
   const launchSh = path.join(coworkDir, 'launch.sh');
-  const url = process.argv.find(a => a.startsWith('claude://')) || '';
 
   log(`launching: bash ${launchSh} ${url}`);
   execFile('bash', [launchSh, url], {

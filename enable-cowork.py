@@ -129,7 +129,7 @@ def patch_host_platform(filepath):
     return True
 
 
-# Bypass IPC origin-validation guards.
+# Extend IPC origin-validation guards to accept file:// origins.
 #
 # In a packaged build, the renderer is served via the app:// protocol and each
 # IPC channel's main-process handler checks i.senderFrame.url against an
@@ -142,21 +142,19 @@ def patch_host_platform(filepath):
 #   if(!FUNC(i))throw new Error(`Incoming "METHOD" call on interface "IFACE"
 #                                from '${...}' did not pass origin validation`)
 #
-# 38+ distinct minified validator names. Replacing `!FUNC(i)` with `false`
-# at every site short-circuits the throw without touching validator bodies.
-#
-# Security: bypassing the origin check on a local desktop app is equivalent
-# to standard dev-mode Electron — the renderer is loaded only by Electron
-# from disk, not from network. No new attack surface vs. packaged macOS build.
+# 38+ distinct minified validator names. Rather than disabling all checks, we
+# add a file:// origin exemption at each call site: the original FUNC(i) still
+# validates non-file:// origins (e.g. would reject http://evil.com), so the
+# defense-in-depth layer is preserved for everything except our local renderer.
 IPC_ORIGIN_GUARD_RE = re.compile(
-    r'if\(!\w+\(i\)\)(throw new Error\(`[^`]*did not pass origin validation`\))'
+    r'if\(!(\w+)\(i\)\)(throw new Error\(`[^`]*did not pass origin validation`\))'
 )
 IPC_PATCH_MARKER = '/*cowork-ipc-patched*/'
 
 
 def patch_ipc_origin_guards(filepath):
-    """Bypass all IPC origin-validation throws so preload scripts execute under
-    file:// origin instead of failing on getInitialLocale and similar calls."""
+    """Add file:// as an accepted origin at each IPC validation call site,
+    preserving the original validator for all other origins."""
     with open(filepath, 'r') as f:
         content = f.read()
 
@@ -164,18 +162,22 @@ def patch_ipc_origin_guards(filepath):
         print(f"  IPC origin guards: already patched")
         return True
 
-    new_content, count = IPC_ORIGIN_GUARD_RE.subn(r'if(false)\1', content)
+    # Replace if(!FUNC(i)) with if(!FUNC(i)&&!(i.senderFrame&&i.senderFrame.url&&i.senderFrame.url.startsWith("file://")))
+    # This lets file:// through while keeping the validator for everything else.
+    new_content, count = IPC_ORIGIN_GUARD_RE.subn(
+        r'if(!\1(i)&&!(i.senderFrame&&i.senderFrame.url&&i.senderFrame.url.startsWith("file://")))\2',
+        content
+    )
     if count == 0:
         print(f"  IPC origin guards: no matching sites found")
         return True
 
-    # Stamp once at end so re-runs are no-ops
     new_content += IPC_PATCH_MARKER
 
     with open(filepath, 'w') as f:
         f.write(new_content)
 
-    print(f"  IPC origin guards patched: {count} call sites short-circuited")
+    print(f"  IPC origin guards patched: {count} call sites — file:// origin exempted, other origins still validated")
     return True
 
 

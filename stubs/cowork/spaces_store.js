@@ -12,7 +12,18 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 
 function createSpacesStore(options) {
-  const { localAgentRoot, trace = () => {} } = options || {};
+  const { localAgentRoot, isPathAllowed, trace = () => {} } = options || {};
+
+  // Path validation gate — reuses the caller's isPathWithinAllowedRoots().
+  // Every function that touches user-supplied paths MUST call this.
+  function requireAllowedPath(p) {
+    if (typeof p !== 'string' || !path.isAbsolute(p)) return false;
+    if (typeof isPathAllowed === 'function') return isPathAllowed(p);
+    // Fallback: restrict to homedir if no validator was injected
+    const home = require('os').homedir();
+    const resolved = path.normalize(p);
+    return resolved === home || resolved.startsWith(home + path.sep);
+  }
 
   // Discover the spaces.json path by walking localAgentRoot/<accountId>/<orgId>/
   let spacesJsonPath = null;
@@ -147,6 +158,10 @@ function createSpacesStore(options) {
   }
 
   function addFolderToSpace(_event, spaceId, folderPath) {
+    if (!requireAllowedPath(folderPath)) {
+      trace('[spaces] addFolderToSpace BLOCKED (outside allowed roots): ' + folderPath);
+      return null;
+    }
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space) return null;
@@ -226,6 +241,10 @@ function createSpacesStore(options) {
   }
 
   function listFolderContents(_event, folderPath) {
+    if (!requireAllowedPath(folderPath)) {
+      trace('[spaces] listFolderContents BLOCKED (outside allowed roots): ' + folderPath);
+      return [];
+    }
     try {
       const entries = fs.readdirSync(folderPath, { withFileTypes: true });
       return entries.map(e => ({
@@ -240,6 +259,10 @@ function createSpacesStore(options) {
   }
 
   function readFileContents(_event, filePath) {
+    if (!requireAllowedPath(filePath)) {
+      trace('[spaces] readFileContents BLOCKED (outside allowed roots): ' + filePath);
+      return null;
+    }
     try {
       return fs.readFileSync(filePath, 'utf8');
     } catch (_) {
@@ -248,7 +271,10 @@ function createSpacesStore(options) {
   }
 
   function openFile(_event, filePath) {
-    // Best-effort open with xdg-open
+    if (!requireAllowedPath(filePath)) {
+      trace('[spaces] openFile BLOCKED (outside allowed roots): ' + filePath);
+      return false;
+    }
     try {
       const { execFile } = require('child_process');
       execFile('xdg-open', [filePath], { timeout: 5000 });
@@ -263,9 +289,17 @@ function createSpacesStore(options) {
   }
 
   function createSpaceFolder(_event, spaceId, folderName) {
+    if (typeof folderName !== 'string' || /\.\.[\\/]/.test(folderName) || path.isAbsolute(folderName)) {
+      trace('[spaces] createSpaceFolder BLOCKED (path traversal): ' + folderName);
+      return null;
+    }
     const p = discoverSpacesPath();
     if (!p) return null;
     const spaceFolderPath = path.join(path.dirname(p), 'spaces', spaceId, folderName);
+    if (!requireAllowedPath(spaceFolderPath)) {
+      trace('[spaces] createSpaceFolder BLOCKED (outside allowed roots): ' + spaceFolderPath);
+      return null;
+    }
     try {
       fs.mkdirSync(spaceFolderPath, { recursive: true });
       return spaceFolderPath;

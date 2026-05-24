@@ -534,11 +534,20 @@ try {
 try {
   const _electron = require('electron');
   const { createSpacesStore } = require('./cowork/spaces_store.js');
+  const _homeDir = os.homedir();
+  const _earlyAllowedRoots = [_homeDir, '/tmp'];
+  function _earlyIsPathAllowed(filePath) {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return false;
+    let resolved;
+    try { resolved = fs.realpathSync(filePath); } catch (_) { resolved = path.normalize(filePath); }
+    return _earlyAllowedRoots.some(root => resolved === root || resolved.startsWith(root + path.sep));
+  }
   const _spacesStore = createSpacesStore({
     localAgentRoot: path.join(
-      process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+      process.env.XDG_CONFIG_HOME || path.join(_homeDir, '.config'),
       'Claude', 'local-agent-mode-sessions'
     ),
+    isPathAllowed: _earlyIsPathAllowed,
     trace: (msg) => console.log(msg),
   });
 
@@ -701,7 +710,7 @@ try {
     // and Linux distro conventions. These are user-controlled regardless, so
     // including them adds no privilege the caller doesn't already have.
     const ALLOWED_CMD_DIRS = [
-      '/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/', '/opt/',
+      '/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/',
       os.homedir() + '/.local/bin/',
       os.homedir() + '/.npm-global/bin/',
       os.homedir() + '/.cargo/bin/',
