@@ -32,21 +32,38 @@ const _homeDir = require('os').homedir();
 const _allowedFsRoots = [_homeDir, '/tmp'];
 
 function isPathWithinAllowedRoots(filePath) {
-  // Reject non-absolute up front: path.resolve would fall back to process.cwd()
-  // and make the policy depend on runtime working directory.
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
     return false;
   }
-  let resolved;
+  var normalized = path.normalize(filePath);
+  if (normalized.split(path.sep).includes('..')) return false;
+  var resolved;
   try {
-    resolved = fs.realpathSync(filePath);
+    resolved = fs.realpathSync(normalized);
   } catch (_) {
-    // File may not exist yet (for open/show); the input is already absolute
-    resolved = path.normalize(filePath);
+    // File may not exist yet (for open/show). Use normalized form but
+    // only if every ancestor that DOES exist resolves within roots.
+    // Walk up until we find an existing ancestor directory.
+    var ancestor = normalized;
+    while (ancestor !== path.dirname(ancestor)) {
+      ancestor = path.dirname(ancestor);
+      try {
+        var realAncestor = fs.realpathSync(ancestor);
+        if (!_allowedFsRoots.some(function(root) {
+          return realAncestor === root || realAncestor.startsWith(root + path.sep);
+        })) {
+          return false;
+        }
+        break;
+      } catch (_) {
+        continue;
+      }
+    }
+    resolved = normalized;
   }
-  return _allowedFsRoots.some(root =>
-    resolved === root || resolved.startsWith(root + path.sep)
-  );
+  return _allowedFsRoots.some(function(root) {
+    return resolved === root || resolved.startsWith(root + path.sep);
+  });
 }
 
 function getMimeType(filePath) {
@@ -279,7 +296,12 @@ function createOverrideRegistry(getProcessState) {
       }
       try {
         if (showInFolder) {
-          xdgOpen(path.dirname(decoded));
+          var parentDir = path.dirname(decoded);
+          if (!isPathWithinAllowedRoots(parentDir)) {
+            console.warn('[Cowork] openLocalFile BLOCKED (dirname outside allowed roots):', parentDir);
+            return;
+          }
+          xdgOpen(parentDir);
         } else {
           xdgOpen(decoded);
         }
@@ -305,10 +327,13 @@ function createOverrideRegistry(getProcessState) {
         console.warn('[Cowork] showInFolder BLOCKED (outside allowed roots):', decoded);
         return;
       }
+      var parentDir = path.dirname(decoded);
+      if (!isPathWithinAllowedRoots(parentDir)) {
+        console.warn('[Cowork] showInFolder BLOCKED (dirname outside allowed roots):', parentDir);
+        return;
+      }
       try {
-        // D-Bus FileManager1 isn't available on Hyprland/wlroots compositors.
-        // Open the parent directory with xdg-open instead.
-        xdgOpen(path.dirname(decoded));
+        xdgOpen(parentDir);
       } catch (_) {}
     },
 
