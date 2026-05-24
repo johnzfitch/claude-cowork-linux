@@ -449,8 +449,9 @@ Two recovery paths:
 ### Option 1: roll back to the last tested asar
 
 When the installer detects the latest CDN version is newer than the last
-tested, it offers three choices: `y` (download untested), `t` (download
-last tested), or `n` (cancel). Pick `t` to get the known-good version:
+tested, it offers three choices: `y` (download untested), `t` (show
+instructions for the tested version), or `n` (cancel). Pick `t` to see
+how to install the known-good version:
 
 ```bash
 cd ~/.local/share/claude-desktop
@@ -462,18 +463,12 @@ rm -rf ~/.config/Claude/Cache \
        ~/.config/Claude/GPUCache \
        ~/.config/Claude/DawnGraphiteCache
 
-# Reinstall -- when prompted, press 't' for the tested version:
+# Reinstall -- when prompted, press 't' for tested-version instructions:
 bash install.sh
 ```
 
-You can also request a specific version directly:
-
-```bash
-CLAUDE_ASAR_VERSION=1.6259.1 bash install.sh --force
-```
-
-If the CDN no longer serves that version, download the DMG manually and
-point the installer at it:
+If you already have the tested DMG (from a previous download or from
+Anthropic directly), point the installer at it:
 
 ```bash
 CLAUDE_ARCHIVE=/path/to/Claude.dmg bash install.sh --force

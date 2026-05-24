@@ -332,8 +332,7 @@ get_archive() {
 
     # 2. Prompt before downloading. The user picks whether to fetch
     #    the latest available version (which may be untested) or to
-    #    download the last tested version, or to supply a specific
-    #    version via CLAUDE_ARCHIVE or CLAUDE_ASAR_VERSION.
+    #    supply a tested version manually via CLAUDE_ARCHIVE.
     if command_exists node; then
         local last_tested
         last_tested=$(compat_read_last_tested "$script_dir/COMPAT.md")
@@ -352,25 +351,16 @@ get_archive() {
             fi
         fi
 
-        # CLAUDE_ASAR_VERSION env var: download a specific version instead
-        # of the latest. Useful for rollback when Anthropic ships a broken
-        # release and the CDN no longer serves the previous one via cask.
-        local target_version="${CLAUDE_ASAR_VERSION:-}"
-
         echo ""
         log_info "Last tested asar:  $last_tested  (see COMPAT.md)"
         if [[ -n "$latest_version" ]]; then
             log_info "Latest on CDN:     $latest_version"
         fi
-        if [[ -n "$target_version" ]]; then
-            log_info "Requested version: $target_version  (via CLAUDE_ASAR_VERSION)"
-        fi
 
         local is_untested=false
-        local download_version="${target_version:-$latest_version}"
-        if [[ -n "$download_version" ]] && compat_version_is_newer "$download_version" "$last_tested"; then
+        if [[ -n "$latest_version" ]] && compat_version_is_newer "$latest_version" "$last_tested"; then
             is_untested=true
-            log_warn "Version $download_version is newer than the last tested ($last_tested)."
+            log_warn "Latest is newer than the last tested version."
             log_warn "Untested versions may break features. Review COMPAT.md first."
         fi
 
@@ -382,13 +372,11 @@ get_archive() {
             log_error "Re-run as: bash install.sh --force"
             die "Aborting: no confirmation possible"
         else
-            if [[ -n "$target_version" ]]; then
-                echo -n "  Download Claude Desktop $target_version? [y/N] "
-            elif [[ "$is_untested" == true ]]; then
+            if [[ "$is_untested" == true ]]; then
                 echo ""
                 echo "  Options:"
                 echo "    y  - download $latest_version (untested, may break)"
-                echo "    t  - download $last_tested (last tested, recommended)"
+                echo "    t  - show instructions for installing the tested version ($last_tested)"
                 echo "    n  - cancel"
                 echo ""
                 echo -n "  Choice [y/t/N]: "
@@ -401,39 +389,27 @@ get_archive() {
             case "$reply" in
                 y|Y|yes|YES) proceed=1 ;;
                 t|T)
-                    # User chose the tested version -- use fetch-dmg.js --version
-                    target_version="$last_tested"
-                    proceed=1
+                    # Tell the user how to get the tested version. We do NOT
+                    # construct download URLs -- the user gets the archive
+                    # from Anthropic directly and passes it to us.
+                    echo ""
+                    echo "  To install the tested version ($last_tested):"
+                    echo ""
+                    echo "  1. Download the Claude Desktop $last_tested DMG from Anthropic."
+                    echo "     The macOS installer is at: https://claude.ai/download"
+                    echo "     (You may need to find the specific version in your download history"
+                    echo "     or ask Anthropic support for a direct link.)"
+                    echo ""
+                    echo "  2. Re-run the installer with the downloaded file:"
+                    echo "     CLAUDE_ARCHIVE=/path/to/Claude-${last_tested}.dmg bash install.sh"
+                    echo ""
+                    die "Install paused. Re-run with CLAUDE_ARCHIVE set."
                     ;;
                 *) proceed=0 ;;
             esac
         fi
 
         if [[ "$proceed" -eq 1 ]]; then
-            if [[ -n "$target_version" && -n "$fetch_script" ]]; then
-                # Versioned download via fetch-dmg.js --version
-                log_info "Attempting to fetch version $target_version..."
-                local versioned_url
-                versioned_url=$(node "$fetch_script" --version "$target_version" --url 2>/dev/null) || true
-                if [[ -n "$versioned_url" ]]; then
-                    log_info "Downloading Claude Desktop $target_version..."
-                    if curl -fSL --progress-bar -o "$archive_path" "$versioned_url"; then
-                        local size
-                        size=$(stat -c%s "$archive_path" 2>/dev/null || echo 0)
-                        if [[ "$size" -ge "$MIN_ARCHIVE_SIZE" ]]; then
-                            log_success "Downloaded archive: $(format_size "$size")"
-                            return 0
-                        fi
-                        log_warn "Downloaded file too small ($(format_size "$size")), may be corrupt"
-                        rm -f "$archive_path"
-                    fi
-                    log_warn "Versioned download failed"
-                else
-                    log_warn "Could not resolve download URL for version $target_version."
-                    log_warn "The CDN may not serve this version. Try CLAUDE_ARCHIVE=/path/to/Claude.dmg"
-                fi
-            fi
-            # Fall back to latest via cask
             if fetch_archive_via_node "$archive_path"; then
                 return 0
             fi
