@@ -25,10 +25,15 @@ function log(msg) {
 
 log(`started, argv: ${process.argv.slice(2).join(' ')}`);
 
-// Validate the claude:// URL before forwarding — same checks as the old
-// single-instance handler in frame-fix-wrapper.js.
+// Validate the claude:// URL before forwarding.
+// Allowlist approach: protocol must be claude:, and URL must contain only
+// expected characters (alphanumeric, path/query-safe punctuation).
 function validateClaudeUrl(url) {
   if (typeof url !== 'string') return false;
+  if (url.length > 2048) {
+    log('rejected URL exceeding 2048 chars');
+    return false;
+  }
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'claude:') {
@@ -39,12 +44,10 @@ function validateClaudeUrl(url) {
     log('rejected malformed URL: ' + e.message);
     return false;
   }
-  if (/[<>"'`]/.test(url)) {
-    log('rejected URL with suspicious characters');
-    return false;
-  }
-  if (url.length > 2048) {
-    log('rejected URL exceeding 2048 chars');
+  // Allowlist: only characters valid in a claude:// OAuth callback URL.
+  // Letters, digits, and standard URI punctuation (RFC 3986 unreserved + sub-delims + :/@?#[]= for structure).
+  if (!/^claude:\/\/[a-zA-Z0-9\-._~:/?#\[\]@!$&()*+,;=%]+$/.test(url)) {
+    log('rejected URL with characters outside allowlist');
     return false;
   }
   return true;
