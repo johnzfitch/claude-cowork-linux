@@ -535,7 +535,7 @@ try {
   const _electron = require('electron');
   const { createSpacesStore } = require('./cowork/spaces_store.js');
   const _homeDir = os.homedir();
-  const _earlyAllowedRoots = [_homeDir, '/tmp'];
+  const _earlyAllowedRoots = [_homeDir];
   function _earlyIsPathAllowed(filePath) {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return false;
     const normalized = path.normalize(filePath);

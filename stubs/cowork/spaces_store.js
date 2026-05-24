@@ -14,14 +14,38 @@ const { randomUUID } = require('crypto');
 function createSpacesStore(options) {
   const { localAgentRoot, isPathAllowed, trace = () => {} } = options || {};
 
-  // Path validation gate for folder registration (addFolderToSpace).
-  // Uses the caller's isPathWithinAllowedRoots() which checks [homedir, /tmp].
+  // Rate limiter for write operations. A compromised renderer can't exhaust
+  // disk by spamming createSpace/updateSpace/etc.
+  const _writeTimestamps = [];
+  const WRITE_RATE_LIMIT = 30;       // max writes
+  const WRITE_RATE_WINDOW_MS = 60000; // per minute
+  function checkWriteRate() {
+    const now = Date.now();
+    while (_writeTimestamps.length > 0 && _writeTimestamps[0] < now - WRITE_RATE_WINDOW_MS) {
+      _writeTimestamps.shift();
+    }
+    if (_writeTimestamps.length >= WRITE_RATE_LIMIT) {
+      trace('[spaces] Write rate limit exceeded (' + WRITE_RATE_LIMIT + '/min)');
+      return false;
+    }
+    _writeTimestamps.push(now);
+    return true;
+  }
+
+  // Path validation for folder registration (addFolderToSpace).
+  // Stricter than the general FileSystem allowlist: homedir only, no /tmp.
+  // /tmp is world-writable — another user could swap contents between
+  // registration and read, violating the trust boundary.
   function requireAllowedPath(p) {
     if (typeof p !== 'string' || !path.isAbsolute(p)) return false;
-    if (typeof isPathAllowed === 'function') return isPathAllowed(p);
+    if (typeof isPathAllowed === 'function') {
+      if (!isPathAllowed(p)) return false;
+    }
+    // Always enforce: no /tmp for space folder registration
+    const normalized = path.normalize(p);
+    if (normalized === '/tmp' || normalized.startsWith('/tmp/')) return false;
     const home = require('os').homedir();
-    const resolved = path.normalize(p);
-    return resolved === home || resolved.startsWith(home + path.sep);
+    return normalized === home || normalized.startsWith(home + path.sep);
   }
 
   // Resolve a path through realpathSync, defeating symlinks.
@@ -69,18 +93,21 @@ function createSpacesStore(options) {
 
   // Read-path validation: the file MUST exist (so realpathSync can resolve it)
   // AND its resolved path must fall within a folder registered in spaces.json.
-  // The folder list is the allowlist — read from disk each time so the renderer
-  // can't influence it. Both sides are resolved via realpathSync to prevent
-  // symlink-based escapes.
+  //
+  // The registered folder paths are ALREADY resolved (addFolderToSpace stores
+  // the realpathSync'd result). We do NOT re-resolve them here — re-resolving
+  // would follow any symlinks placed at that path AFTER registration, reopening
+  // the symlink-swap attack. The comparison is:
+  //   resolved(requested) vs stored-as-is(registered)
   function isWithinRegisteredFolder(filePath) {
     const resolved = resolvePath(filePath);
     if (!resolved) return false;
     const spaces = readSpaces();
     for (const space of spaces) {
       for (const folder of (space.folders || [])) {
-        const folderResolved = resolvePath(folder.path);
-        if (!folderResolved) continue;
-        if (resolved === folderResolved || resolved.startsWith(folderResolved + path.sep)) {
+        const registeredPath = folder.path;
+        if (typeof registeredPath !== 'string') continue;
+        if (resolved === registeredPath || resolved.startsWith(registeredPath + path.sep)) {
           return true;
         }
       }
@@ -138,6 +165,7 @@ function createSpacesStore(options) {
   }
 
   function writeSpaces(spaces) {
+    if (!checkWriteRate()) return false;
     const p = discoverSpacesPath();
     if (!p) {
       trace('[spaces] Cannot write — no path discovered');
@@ -414,16 +442,31 @@ function createSpacesStore(options) {
   }
 
   function classifySessions(_event, sessions) {
-    // Classify which sessions belong to which spaces based on userSelectedFolders
+    if (!Array.isArray(sessions)) return {};
     const spaces = readSpaces();
     const result = {};
-    for (const session of (sessions || [])) {
-      const folders = session.userSelectedFolders || [];
+    for (const session of sessions) {
+      if (!session || typeof session !== 'object') continue;
+      const rawFolders = session.userSelectedFolders;
+      if (!Array.isArray(rawFolders)) continue;
+      // Resolve session folder paths so renderer can't fake containment
+      // with unresolved symlink paths. Skip non-existent paths.
+      const resolvedFolders = [];
+      for (const f of rawFolders) {
+        if (typeof f !== 'string') continue;
+        const r = resolvePath(f);
+        if (r) resolvedFolders.push(r);
+      }
+      if (resolvedFolders.length === 0) continue;
       for (const space of spaces) {
         for (const sf of (space.folders || [])) {
-          if (folders.some(f => f === sf.path || f.startsWith(sf.path + '/'))) {
+          // sf.path is already resolved (stored at registration time)
+          const registeredPath = sf.path;
+          if (typeof registeredPath !== 'string') continue;
+          if (resolvedFolders.some(f => f === registeredPath || f.startsWith(registeredPath + path.sep))) {
             if (!result[space.id]) result[space.id] = [];
-            result[space.id].push(session.sessionId || session.id);
+            const sid = sanitizeString(session.sessionId || session.id, 256);
+            if (sid) result[space.id].push(sid);
             break;
           }
         }
