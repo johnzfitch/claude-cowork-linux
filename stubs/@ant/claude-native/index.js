@@ -314,6 +314,8 @@ module.exports = {
   get_app_info_for_file,
   getAppInfoForFile: get_app_info_for_file,
 
+  // WebAuthn (no-op on Linux)
+  configureWebAuthn: () => {},
   // Native stub functions
   ...nativeStub,
 };
