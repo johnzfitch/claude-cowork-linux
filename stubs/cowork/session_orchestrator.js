@@ -533,21 +533,8 @@ class SessionOrchestrator {
       return mountResult;
     }
 
-    // Step 2: Define allowed binary paths for security
-    const home = os.homedir();
-    const allowedVmPrefixes = Array.isArray(claudeVmRoots) && claudeVmRoots.length > 0
-      ? claudeVmRoots.map((vmRoot) => path.resolve(vmRoot) + path.sep)
-      : [path.join(appSupportRoot, 'claude-code-vm') + path.sep];
-    const allowedPrefixes = [
-      ...allowedVmPrefixes,
-      path.join(home, '.local/bin/'),
-      path.join(home, '.local/share/claude/'),
-      path.join(home, '.npm-global/bin/'),
-      '/usr/local/bin/',
-      '/usr/bin/',
-    ];
-
-    // Step 3: Resolve command to host binary path
+    // Step 2: Resolve command via capability registry
+    const execRegistry = this._deps.execRegistry || global.__coworkExecRegistry;
     const normalizedCommand = (typeof command === 'string' || command instanceof String)
       ? String(command).trim()
       : '';
@@ -559,14 +546,23 @@ class SessionOrchestrator {
       normalizedCommand === 'claude' ||
       commandBasename === 'claude'
     ) {
-      hostCommand = resolveClaudeBinaryPath();
+      const cap = execRegistry
+        ? execRegistry.resolveCapability('claude-cli')
+        : null;
+      hostCommand = cap ? cap.exec : resolveClaudeBinaryPath();
       trace('Translated command: ' + normalizedCommand + ' -> ' + hostCommand);
-      } else if (
+    } else if (
       normalizedCommand === 'bash' ||
       commandBasename === 'bash'
     ) {
-      const bashCandidates = ['/usr/bin/bash', '/bin/bash'];
-      hostCommand = bashCandidates.find((c) => fs.existsSync(c));
+      const cap = execRegistry
+        ? execRegistry.resolveCapability('system-bash')
+        : null;
+      if (cap) {
+        hostCommand = cap.exec;
+      } else {
+        hostCommand = ['/usr/bin/bash', '/bin/bash'].find((c) => fs.existsSync(c));
+      }
       if (!hostCommand) {
         trace('bash requested but not found on host');
         if (typeof onError === 'function') {
@@ -575,31 +571,34 @@ class SessionOrchestrator {
         return { success: false, error: 'bash not found' };
       }
       trace('Translated bash command: ' + normalizedCommand + ' -> ' + hostCommand);
-    } else if (allowedPrefixes.some((prefix) => normalizedCommand.startsWith(prefix))) {
-      if (fs.existsSync(normalizedCommand)) {
-        hostCommand = normalizedCommand;
-        trace('Command is an allowed absolute path: ' + normalizedCommand);
+    } else if (execRegistry) {
+      const resolved = execRegistry.resolve(normalizedCommand, args);
+      if (resolved) {
+        hostCommand = resolved.cmd;
+        trace('Command resolved via capability "' + resolved.capabilityId + '": ' + normalizedCommand);
       } else {
-        hostCommand = resolveClaudeBinaryPath();
-        trace('Allowed absolute path missing, resolved: ' + normalizedCommand + ' -> ' + hostCommand);
+        trace('Unexpected command blocked: "' + String(command) + '" (type=' + typeof command + ')');
+        if (typeof onError === 'function') {
+          onError(processId, 'Unexpected command: ' + String(command), '');
+        }
+        return { success: false, error: 'Unexpected command' };
       }
     } else {
-      trace('Unexpected command blocked: "' + String(command) + '" (type=' + typeof command + ')');
-      if (typeof onError === 'function') {
-        onError(processId, 'Unexpected command: ' + String(command), '');
+      const home = os.homedir();
+      const fallbackPrefixes = [
+        path.join(home, '.local/bin/'),
+        path.join(home, '.local/share/claude/'),
+        path.join(home, '.npm-global/bin/'),
+        '/usr/local/bin/',
+        '/usr/bin/',
+      ];
+      if (normalizedCommand && fallbackPrefixes.some((p) => normalizedCommand.startsWith(p)) && fs.existsSync(normalizedCommand)) {
+        hostCommand = normalizedCommand;
+        trace('No exec registry, allowed absolute path: ' + normalizedCommand);
+      } else {
+        hostCommand = resolveClaudeBinaryPath();
+        trace('No exec registry, falling back to claude binary: ' + hostCommand);
       }
-      return { success: false, error: 'Unexpected command' };
-    }
-
-    // Security check: Ensure resolved command is in allowed directories
-    const commandIsAllowed = hostCommand === 'claude' ||
-      allowedPrefixes.some((prefix) => hostCommand.startsWith(prefix));
-    if (!commandIsAllowed) {
-      trace('Command outside allowed directories: ' + hostCommand);
-      if (typeof onError === 'function') {
-        onError(processId, 'Invalid binary path', '');
-      }
-      return { success: false, error: 'Invalid binary path' };
     }
 
     // Step 4: Translate VM paths in arguments to host paths

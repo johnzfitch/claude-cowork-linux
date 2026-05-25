@@ -27,6 +27,7 @@ function runStartupCheck({
   ipcOverridesRegistry = null,
   autoPermissionsCap = null,
   mountRootBound = null,
+  execCapabilityRegistry = null,
   log = console.log,
   warn = console.warn,
   writeFn = fs.appendFileSync,
@@ -65,6 +66,13 @@ function runStartupCheck({
   results.push({
     check: 'mount_bound_armed',
     ok: !!(mountRootBound && typeof mountRootBound.isMountRootTooBroad === 'function'),
+  });
+
+  // Check 4: exec capability registry is armed (frozen map replaces
+  // directory-based allowlists for command execution).
+  results.push({
+    check: 'exec_capability_registry_armed',
+    ok: !!(execCapabilityRegistry && typeof execCapabilityRegistry.resolve === 'function'),
   });
 
   const ok = results.every((r) => r.ok);

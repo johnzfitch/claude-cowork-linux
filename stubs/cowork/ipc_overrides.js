@@ -188,20 +188,27 @@ function getExecFromDesktop(desktopFile) {
 
 // Terminal emulator resolution — cached after first successful lookup.
 // Checks: $TERMINAL env, xdg-terminal-exec, then common emulators.
+// Validated through the exec capability registry (system cmd prefixes).
 let _resolvedTerminal = undefined;
 function resolveTerminal() {
   if (_resolvedTerminal !== undefined) return _resolvedTerminal;
+  var registry = global.__coworkExecRegistry || null;
   // 1. Respect $TERMINAL env var (user's explicit preference)
-  const SAFE_BIN_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
   const envTerm = process.env.TERMINAL;
   if (envTerm) {
     try {
       const resolvedPath = execFileSync('which', [envTerm], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-      if (resolvedPath && SAFE_BIN_DIRS.some(d => resolvedPath.startsWith(d))) {
+      if (resolvedPath && registry) {
+        var cap = registry.resolve(resolvedPath, []);
+        if (cap) {
+          _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
+          return _resolvedTerminal;
+        }
+      } else if (resolvedPath && resolvedPath.startsWith('/usr/')) {
         _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
         return _resolvedTerminal;
       }
-      console.warn('[Cowork] $TERMINAL resolved outside system dirs, ignoring:', resolvedPath);
+      console.warn('[Cowork] $TERMINAL not in capability registry, ignoring:', resolvedPath);
     } catch (_) {}
   }
   // 2. xdg-terminal-exec (proposed XDG Default Terminal Spec)
@@ -216,7 +223,6 @@ function resolveTerminal() {
     'gnome-terminal', 'konsole', 'xfce4-terminal', 'mate-terminal',
     'tilix', 'lxterminal', 'terminology', 'sakura', 'xterm',
   ];
-  // gnome-terminal/konsole use '--' instead of '-e' for command separation
   const dashDashTerminals = new Set(['gnome-terminal', 'konsole']);
   for (const t of terminals) {
     try {

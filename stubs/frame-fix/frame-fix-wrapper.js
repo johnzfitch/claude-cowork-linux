@@ -717,52 +717,15 @@ try {
     const _cp = require('child_process');
     const _origExecFile = _cp.execFile;
     const _origSpawn = _cp.spawn;
-    const CLAUDE_SEARCH_PATHS = [
-      path.join(os.homedir(), '.local', 'bin', 'claude'),
-      path.join(os.homedir(), '.local', 'share', 'mise', 'shims', 'claude'),
-      path.join(os.homedir(), '.asdf', 'shims', 'claude'),
-      '/usr/local/bin/claude',
-      '/usr/bin/claude',
-    ];
-    // Disclaimer-unwrap allowlist. On macOS the asar wraps every spawn with
-    // Helpers/disclaimer; the spoofed-darwin Linux path activates the same
-    // wrap, so we unwrap it back to the original command. Restrict the unwrap
-    // to known-good directories so a compromised caller can't trivially
-    // smuggle in arbitrary binaries via the disclaimer args.
-    //
-    // System paths are always trusted. User-local paths cover MCP servers and
-    // CLI tools the user installs via cargo, npm-global, mise, asdf, volta,
-    // and Linux distro conventions. These are user-controlled regardless, so
-    // including them adds no privilege the caller doesn't already have.
-    const ALLOWED_CMD_DIRS = [
-      '/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/',
-      os.homedir() + '/.local/bin/',
-      os.homedir() + '/.npm-global/bin/',
-      os.homedir() + '/.cargo/bin/',
-      os.homedir() + '/go/bin/',
-      os.homedir() + '/.bun/bin/',
-      os.homedir() + '/.deno/bin/',
-      os.homedir() + '/.local/share/mise/shims/',
-      os.homedir() + '/.asdf/shims/',
-      os.homedir() + '/.volta/bin/',
-      os.homedir() + '/bin/',
-    ];
+    const { createExecCapabilityRegistry } = require('../cowork/exec_capability_registry');
+    const _execRegistry = createExecCapabilityRegistry({
+      homedir: PASSWD_HOMEDIR,
+    });
+    global.__coworkExecRegistry = _execRegistry;
 
     function _resolveDisclaimerArgs(file, args) {
       if (file !== disclaimerBin) return null;
-      if (!Array.isArray(args) || args.length === 0) return null;
-      let cmd = args[0];
-      const rest = args.slice(1);
-      if (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd)) {
-        cmd = null;
-        for (const candidate of CLAUDE_SEARCH_PATHS) {
-          try { fs.accessSync(candidate, fs.constants.X_OK); cmd = candidate; break; } catch (_) {}
-        }
-        if (!cmd) return null;
-      } else if (!ALLOWED_CMD_DIRS.some(d => cmd.startsWith(d))) {
-        return null;
-      }
-      return { cmd, rest };
+      return _execRegistry.resolveDisclaimerCommand(args);
     }
 
     _cp.execFile = function(file, args, ...rest) {

@@ -4,6 +4,43 @@ const { classifyEnvEntry } = require('./credential_classifier.js');
 
 const DEFAULT_STDIO = ['pipe', 'pipe', 'pipe'];
 
+const _bwrapAvailable = (() => {
+  try {
+    require('child_process').execFileSync('which', ['bwrap'], { stdio: 'ignore' });
+    return true;
+  } catch (_) {
+    return false;
+  }
+})();
+
+function wrapWithBwrap(command, args, cwd) {
+  if (process.env.CLAUDE_COWORK_NO_SANDBOX === '1') return null;
+  if (!_bwrapAvailable) return null;
+  var bwrapArgs = [
+    '--unshare-pid',
+    '--unshare-ipc',
+    '--die-with-parent',
+    '--ro-bind', '/usr', '/usr',
+    '--ro-bind', '/etc', '/etc',
+    '--tmpfs', '/tmp',
+    '--proc', '/proc',
+    '--dev', '/dev',
+  ];
+  try { fs.statSync('/lib'); bwrapArgs.push('--ro-bind', '/lib', '/lib'); } catch (_) {}
+  try { fs.statSync('/lib64'); bwrapArgs.push('--ro-bind', '/lib64', '/lib64'); } catch (_) {}
+  try { fs.statSync('/bin'); bwrapArgs.push('--symlink', 'usr/bin', '/bin'); } catch (_) {}
+  try { fs.statSync('/sbin'); bwrapArgs.push('--symlink', 'usr/sbin', '/sbin'); } catch (_) {}
+  if (cwd) {
+    bwrapArgs.push('--bind', cwd, cwd);
+  }
+  var home = require('os').userInfo().homedir;
+  bwrapArgs.push('--bind', home, home);
+  bwrapArgs.push('--pass-fd', '3');
+  bwrapArgs.push('--', command);
+  bwrapArgs.push.apply(bwrapArgs, args);
+  return { command: 'bwrap', args: bwrapArgs };
+}
+
 // ============================================================================
 // SESSION PATH DERIVATION
 // ============================================================================
@@ -372,6 +409,7 @@ function createProcessManager(deps) {
 module.exports = {
   DEFAULT_STDIO,
   ProcessManager,
+  wrapWithBwrap,
   createProcessManager,
   deriveSessionDirectory,
   deriveSessionMetadataPath,
