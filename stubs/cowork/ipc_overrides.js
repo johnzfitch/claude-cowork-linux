@@ -373,7 +373,9 @@ function createOverrideRegistry(getProcessState) {
         }
         fs.writeFileSync(dest, buffer);
         vlog('[Cowork] Downloaded to: ' + dest);
-        xdgOpen(dest);
+        if (verifyPath(dest)) {
+          xdgOpen(dest);
+        }
       } catch (e) {
         console.error('[Cowork] writeFileDownloadAndOpen failed:', e.message);
       }
