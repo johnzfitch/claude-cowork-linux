@@ -624,7 +624,21 @@ try {
       '/usr/local/bin/claude',
       '/usr/bin/claude',
     ];
-    const ALLOWED_CMD_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+    // Specific system binaries the asar invokes through the disclaimer
+    // wrapper. Exact paths only. No directory wildcards on root-owned dirs.
+    var ALLOWED_DISCLAIMER_BINS = [
+      '/usr/bin/git', '/usr/local/bin/git',
+      '/usr/bin/ssh', '/usr/local/bin/ssh',
+      '/usr/bin/node', '/usr/local/bin/node',
+      '/usr/bin/python3', '/usr/local/bin/python3',
+    ];
+    // User home prefix for MCP servers and user-installed tools.
+    // Home is user-owned, not root-owned. This is the only directory
+    // prefix in the allowlist.
+    var _realHomeDirForDisclaimer;
+    try { _realHomeDirForDisclaimer = fs.realpathSync(os.homedir()); }
+    catch (_) { _realHomeDirForDisclaimer = os.homedir(); }
+    var ALLOWED_DISCLAIMER_HOME = _realHomeDirForDisclaimer + '/';
 
     // Validate a raw path is a clean absolute path with no tricks.
     // Returns null on any violation. No normalization, no transformation.
@@ -663,9 +677,9 @@ try {
         } catch (_) {
           return null;
         }
-        if (!ALLOWED_CMD_DIRS.some(function(d) { return cmd.startsWith(d); })) {
-          return null;
-        }
+        var allowed = ALLOWED_DISCLAIMER_BINS.indexOf(cmd) >= 0
+          || cmd.startsWith(ALLOWED_DISCLAIMER_HOME);
+        if (!allowed) return null;
       }
       return { cmd: cmd, rest: rest };
     }
