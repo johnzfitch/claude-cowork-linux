@@ -480,7 +480,9 @@ function createSpacesStore(options) {
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space) return null;
-    space.autoDescription = description;
+    var sanitized = sanitizeString(description, 65536);
+    if (sanitized === null) return null;
+    space.autoDescription = sanitized;
     space.updatedAt = Date.now();
     writeSpaces(spaces);
     return space;

@@ -138,38 +138,24 @@ function createExecCapabilityRegistry({
     return null;
   }
 
+  var CAPABILITY_LABELS = Object.freeze({
+    bash: 'Bash shell', git: 'Git',
+    'xdg-open': 'XDG open', 'xdg-mime': 'XDG MIME query',
+    which: 'which', curl: 'curl',
+    'notify-send': 'notify-send', gdbus: 'D-Bus client',
+  });
+
   function resolveCapability(id) {
     if (id === 'claude-cli') {
       var p = resolveClaudeCli();
       return p ? { exec: p, label: 'Claude Code CLI' } : null;
     }
-    if (id === 'system-bash') {
-      var paths = SYSTEM_PATHS.bash;
+    var name = typeof id === 'string' && id.startsWith('system-') ? id.slice(7) : null;
+    if (name && SYSTEM_PATHS[name]) {
+      var paths = SYSTEM_PATHS[name];
       for (var i = 0; i < paths.length; i++) {
-        if (existsExecutable(paths[i])) return { exec: paths[i], label: 'Bash shell' };
+        if (existsExecutable(paths[i])) return { exec: paths[i], label: CAPABILITY_LABELS[name] || name };
       }
-      return null;
-    }
-    if (id === 'system-git') {
-      var gp = SYSTEM_PATHS.git;
-      for (var gi = 0; gi < gp.length; gi++) {
-        if (existsExecutable(gp[gi])) return { exec: gp[gi], label: 'Git' };
-      }
-      return null;
-    }
-    if (id === 'system-xdg-open') {
-      var xp = SYSTEM_PATHS['xdg-open'];
-      for (var xi = 0; xi < xp.length; xi++) {
-        if (existsExecutable(xp[xi])) return { exec: xp[xi], label: 'XDG open' };
-      }
-      return null;
-    }
-    if (id === 'system-xdg-mime') {
-      var mp = SYSTEM_PATHS['xdg-mime'];
-      for (var mi = 0; mi < mp.length; mi++) {
-        if (existsExecutable(mp[mi])) return { exec: mp[mi], label: 'XDG MIME query' };
-      }
-      return null;
     }
     return null;
   }

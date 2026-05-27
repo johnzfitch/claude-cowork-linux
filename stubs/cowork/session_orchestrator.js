@@ -584,11 +584,16 @@ class SessionOrchestrator {
         return { success: false, error: 'Unexpected command' };
       }
     } else {
-      const home = os.homedir();
+      var passwdHome = global.__coworkPasswdHomedir || os.userInfo().homedir;
+      const vmPrefixes = Array.isArray(claudeVmRoots) && claudeVmRoots.length > 0
+        ? claudeVmRoots.map((r) => path.resolve(r) + path.sep)
+        : [path.join(appSupportRoot || '', 'claude-code-vm') + path.sep];
       const fallbackPrefixes = [
-        path.join(home, '.local/bin/'),
-        path.join(home, '.local/share/claude/'),
-        path.join(home, '.npm-global/bin/'),
+        ...vmPrefixes,
+        path.join(passwdHome, '.local/bin/'),
+        path.join(passwdHome, '.local/share/claude/'),
+        path.join(passwdHome, '.npm-global/bin/'),
+        path.join(os.homedir(), '.local/bin/'),
         '/usr/local/bin/',
         '/usr/bin/',
       ];
@@ -596,8 +601,11 @@ class SessionOrchestrator {
         hostCommand = normalizedCommand;
         trace('No exec registry, allowed absolute path: ' + normalizedCommand);
       } else {
-        hostCommand = resolveClaudeBinaryPath();
-        trace('No exec registry, falling back to claude binary: ' + hostCommand);
+        trace('Unexpected command blocked (no registry): "' + String(command) + '"');
+        if (typeof onError === 'function') {
+          onError(processId, 'Unexpected command: ' + String(command), '');
+        }
+        return { success: false, error: 'Unexpected command' };
       }
     }
 

@@ -34,10 +34,13 @@ function vlog(msg) { if (_verbose) console.log(msg); }
 // isn't set yet (e.g. during tests).
 const _homeDir = global.__coworkPasswdHomedir || require('os').userInfo().homedir;
 // User-scoped tmpdir: os.tmpdir() is patched by frame-fix-wrapper.js to return
-// a private dir under ~/.config/Claude (mode 0700). We use that instead of
-// the world-writable /tmp to keep the trust boundary within user-owned paths.
-const _userTmpDir = require('os').tmpdir();
-const _allowedFsRoots = [_homeDir, _userTmpDir];
+// a private dir under ~/.config/Claude (mode 0700). We read it lazily because
+// this module loads before the patch runs.
+let _allowedFsRoots = null;
+function getAllowedFsRoots() {
+  if (!_allowedFsRoots) _allowedFsRoots = [_homeDir, require('os').tmpdir()];
+  return _allowedFsRoots;
+}
 
 // Lazy-initialized spaces store — uses global.__coworkDirs set by frame-fix-wrapper.js
 let _spacesStore = null;
@@ -106,7 +109,7 @@ function isPathWithinAllowedRoots(filePath) {
     }
     if (!resolved) resolved = normalized;
   }
-  return _allowedFsRoots.some(root =>
+  return getAllowedFsRoots().some(root =>
     resolved === root || resolved.startsWith(root + path.sep)
   );
 }
@@ -204,7 +207,7 @@ function resolveTerminal() {
           _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
           return _resolvedTerminal;
         }
-      } else if (resolvedPath && resolvedPath.startsWith('/usr/')) {
+      } else if (resolvedPath && ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'].some(d => resolvedPath.startsWith(d))) {
         _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
         return _resolvedTerminal;
       }

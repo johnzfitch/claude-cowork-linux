@@ -4,18 +4,22 @@ const { classifyEnvEntry } = require('./credential_classifier.js');
 
 const DEFAULT_STDIO = ['pipe', 'pipe', 'pipe'];
 
-const _bwrapAvailable = (() => {
-  try {
-    require('child_process').execFileSync('which', ['bwrap'], { stdio: 'ignore' });
-    return true;
-  } catch (_) {
-    return false;
+var _bwrapAvailable;
+function isBwrapAvailable() {
+  if (_bwrapAvailable === undefined) {
+    try {
+      require('child_process').execFileSync('which', ['bwrap'], { stdio: 'ignore' });
+      _bwrapAvailable = true;
+    } catch (_) {
+      _bwrapAvailable = false;
+    }
   }
-})();
+  return _bwrapAvailable;
+}
 
 function wrapWithBwrap(command, args, cwd) {
   if (process.env.CLAUDE_COWORK_NO_SANDBOX === '1') return null;
-  if (!_bwrapAvailable) return null;
+  if (!isBwrapAvailable()) return null;
   var bwrapArgs = [
     '--unshare-pid',
     '--unshare-ipc',

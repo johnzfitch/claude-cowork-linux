@@ -569,7 +569,7 @@ try {
   }
   const _spacesStore = createSpacesStore({
     localAgentRoot: path.join(
-      process.env.XDG_CONFIG_HOME || path.join(_homeDir, '.config'),
+      process.env.XDG_CONFIG_HOME || path.join(PASSWD_HOMEDIR, '.config'),
       'Claude', 'local-agent-mode-sessions'
     ),
     isPathAllowed: _earlyIsPathAllowed,
@@ -1073,6 +1073,7 @@ const ipcOverrides = createOverrideRegistry(function getProcessState(args) {
           ipcOverridesRegistry: ipcOverrides,
           autoPermissionsCap: _autoPermissionsCap,
           mountRootBound,
+          execCapabilityRegistry: global.__coworkExecRegistry || null,
           notify: (msg) => {
             try {
               if (_ReadyNotification && typeof _ReadyNotification.isSupported === 'function' && _ReadyNotification.isSupported()) {

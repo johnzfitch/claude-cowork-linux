@@ -54,14 +54,14 @@ function validateClaudeUrl(url) {
 }
 
 const rawUrl = process.argv.find(a => a.startsWith('claude://')) || '';
+let urlValid = true;
 if (rawUrl && !validateClaudeUrl(rawUrl)) {
   log('aborting — URL failed validation');
+  urlValid = false;
   app.quit();
-  // Early exit; the code below won't run because app.quit() is async,
-  // but we guard with a flag anyway.
   process.exitCode = 1;
 }
-const url = rawUrl;
+const url = urlValid ? rawUrl : '';
 
 // Must match the app name set in frame-fix-wrapper.js before requestSingleInstanceLock(),
 // so both processes use the same userData path (~/.config/Claude/SingletonLock).
