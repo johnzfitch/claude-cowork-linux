@@ -101,14 +101,16 @@ function isBinaryMime(mime) {
   return BINARY_MIME_PREFIXES.some(p => mime.startsWith(p));
 }
 
-function readLocalFileContent(filePath) {
-  const buf = fs.readFileSync(filePath);
-  const mime = getMimeType(filePath);
-  const fileName = path.basename(filePath);
+function readLocalFileContent(rawPath) {
+  var real = verifyPath(rawPath);
+  if (!real) return null;
+  var buf = fs.readFileSync(real);
+  var mime = getMimeType(real);
+  var fileName = path.basename(real);
   if (isBinaryMime(mime)) {
-    return { content: buf.toString('base64'), mimeType: mime, fileName, encoding: 'base64' };
+    return { content: buf.toString('base64'), mimeType: mime, fileName: fileName, encoding: 'base64' };
   }
-  return { content: buf.toString('utf-8'), mimeType: mime, fileName, encoding: 'utf-8' };
+  return { content: buf.toString('utf-8'), mimeType: mime, fileName: fileName, encoding: 'utf-8' };
 }
 
 const XDG_APP_DIRS = [
@@ -194,32 +196,31 @@ function resolveTerminal() {
   return null;
 }
 
-function xdgOpen(filePath) {
-  // Directories should always open in the file manager via xdg-open
-  try { if (fs.statSync(filePath).isDirectory()) {
-    const child = execFile('xdg-open', [filePath], { stdio: 'ignore' });
+function xdgOpen(rawPath) {
+  var real = verifyPath(rawPath);
+  if (!real) return;
+  try { if (fs.statSync(real).isDirectory()) {
+    var child = execFile('xdg-open', [real], { stdio: 'ignore' });
     child.unref();
     return;
   }} catch (_) {}
-  const mime = getMimeType(filePath);
-  const desktop = getDesktopFileForMime(mime);
+  var mime = getMimeType(real);
+  var desktop = getDesktopFileForMime(mime);
   if (isTerminalApp(desktop)) {
-    const cmd = getExecFromDesktop(desktop);
+    var cmd = getExecFromDesktop(desktop);
     if (cmd) {
-      // Resolve which terminal emulator to use (cached after first lookup)
-      const term = resolveTerminal();
+      var term = resolveTerminal();
       if (term) {
-        const child = term.spawn
-          ? execFile(term.bin, [...term.spawn, cmd, filePath], { stdio: 'ignore' })
-          : execFile(term.bin, [cmd, filePath], { stdio: 'ignore' });
-        child.unref();
+        var child2 = term.spawn
+          ? execFile(term.bin, [].concat(term.spawn, [cmd, real]), { stdio: 'ignore' })
+          : execFile(term.bin, [cmd, real], { stdio: 'ignore' });
+        child2.unref();
         return;
       }
     }
   }
-  // Non-terminal app or no terminal found: use xdg-open
-  const child = execFile('xdg-open', [filePath], { stdio: 'ignore' });
-  child.unref();
+  var child3 = execFile('xdg-open', [real], { stdio: 'ignore' });
+  child3.unref();
 }
 
 function whichApplicationForFile(filename) {
@@ -275,15 +276,10 @@ function createOverrideRegistry(getProcessState) {
     'FileSystem_$_readLocalFile': async (_event, sessionId, filePath) => {
       var decoded;
       try { decoded = decodeURIComponent(filePath); } catch (_) { return null; }
-      var real = verifyPath(decoded);
-      if (!real) {
-        console.warn('[Cowork] readLocalFile BLOCKED:', decoded);
-        return null;
-      }
       try {
-        return readLocalFileContent(real);
+        return readLocalFileContent(decoded);
       } catch (e) {
-        console.error('[Cowork] readLocalFile failed:', real, e.code || e.message);
+        console.error('[Cowork] readLocalFile failed:', e.code || e.message);
         return null;
       }
     },
@@ -291,25 +287,11 @@ function createOverrideRegistry(getProcessState) {
     'FileSystem_$_openLocalFile': async (_event, sessionId, filePath, showInFolder) => {
       var decoded;
       try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
-      var real = verifyPath(decoded);
-      if (!real) {
-        console.warn('[Cowork] openLocalFile BLOCKED:', decoded);
-        return;
-      }
-      try {
-        if (showInFolder) {
-          var parentDir = path.dirname(real);
-          var realParent = verifyPath(parentDir);
-          if (!realParent) {
-            console.warn('[Cowork] openLocalFile BLOCKED (dirname):', parentDir);
-            return;
-          }
-          xdgOpen(realParent);
-        } else {
-          xdgOpen(real);
-        }
-      } catch (e) {
-        console.error('[Cowork] openLocalFile failed:', real, e.code || e.message);
+      if (showInFolder) {
+        var real = verifyPath(decoded);
+        if (real) xdgOpen(path.dirname(real));
+      } else {
+        xdgOpen(decoded);
       }
     },
 
@@ -321,19 +303,7 @@ function createOverrideRegistry(getProcessState) {
       var decoded;
       try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
       var real = verifyPath(decoded);
-      if (!real) {
-        console.warn('[Cowork] showInFolder BLOCKED:', decoded);
-        return;
-      }
-      var parentDir = path.dirname(real);
-      var realParent = verifyPath(parentDir);
-      if (!realParent) {
-        console.warn('[Cowork] showInFolder BLOCKED (dirname):', parentDir);
-        return;
-      }
-      try {
-        xdgOpen(realParent);
-      } catch (_) {}
+      if (real) xdgOpen(path.dirname(real));
     },
 
     'FileSystem_$_getSystemPath': async (_event, name) => {
@@ -373,9 +343,7 @@ function createOverrideRegistry(getProcessState) {
         }
         fs.writeFileSync(dest, buffer);
         vlog('[Cowork] Downloaded to: ' + dest);
-        if (verifyPath(dest)) {
-          xdgOpen(dest);
-        }
+        xdgOpen(dest);
       } catch (e) {
         console.error('[Cowork] writeFileDownloadAndOpen failed:', e.message);
       }
