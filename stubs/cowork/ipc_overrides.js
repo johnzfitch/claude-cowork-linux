@@ -31,11 +31,11 @@ function vlog(msg) { if (_verbose) console.log(msg); }
 const _homeDir = require('os').homedir();
 // Resolve allowed roots to their canonical form at load time so all
 // comparisons are against real paths, not potentially-symlinked ones.
+// Only the user's home directory is an allowed root. No /tmp, no
+// system dirs, no world-writable paths.
 var _realHomeDir;
 try { _realHomeDir = fs.realpathSync(_homeDir); } catch (_) { _realHomeDir = _homeDir; }
-var _realTmpDir;
-try { _realTmpDir = fs.realpathSync('/tmp'); } catch (_) { _realTmpDir = '/tmp'; }
-const _allowedFsRoots = [_realHomeDir, _realTmpDir];
+const _allowedFsRoots = [_realHomeDir];
 
 // Validate and resolve a path in one pass. No normalization, no
 // transformation. The input must be a clean absolute path as-given.

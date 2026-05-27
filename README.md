@@ -458,10 +458,10 @@ cd ~/.local/share/claude-desktop
 git pull
 
 # Wipe cached chromium artifacts (preserves your sessions and credentials):
-rm -rf ~/.config/Claude/Cache \
-       ~/.config/Claude/Code\ Cache \
-       ~/.config/Claude/GPUCache \
-       ~/.config/Claude/DawnGraphiteCache
+rm -rf "$HOME/.config/Claude/Cache" \
+       "$HOME/.config/Claude/Code Cache" \
+       "$HOME/.config/Claude/GPUCache" \
+       "$HOME/.config/Claude/DawnGraphiteCache"
 
 # Reinstall -- when prompted, press 't' for tested-version instructions:
 bash install.sh
