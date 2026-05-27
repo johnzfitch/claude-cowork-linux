@@ -98,14 +98,29 @@ describe('TCC stubs deny by default', () => {
 // ============================================================
 
 describe('FileSystem allowlist-only access', () => {
-  it('allows paths within home directory', () => {
-    const homeFile = path.join(os.homedir(), 'test-file.txt');
+  it('allows existing paths within home directory', () => {
+    const homeFile = path.join(os.homedir(), '.bashrc');
+    if (!fs.existsSync(homeFile)) {
+      const tmp = path.join(os.homedir(), '.cowork-test-' + process.pid);
+      fs.writeFileSync(tmp, '', { mode: 0o600 });
+      try {
+        assert.ok(isPathWithinAllowedRoots(tmp));
+      } finally {
+        try { fs.unlinkSync(tmp); } catch (_) {}
+      }
+      return;
+    }
     assert.ok(isPathWithinAllowedRoots(homeFile));
   });
 
-  it('allows paths within os.tmpdir() (user-scoped in production)', () => {
-    const tmpFile = path.join(os.tmpdir(), 'some-file.txt');
-    assert.ok(isPathWithinAllowedRoots(tmpFile));
+  it('rejects paths within /tmp (world-writable, not an allowed root)', () => {
+    const tmp = '/tmp/.cowork-test-' + process.pid;
+    fs.writeFileSync(tmp, '', { mode: 0o600 });
+    try {
+      assert.ok(!isPathWithinAllowedRoots(tmp));
+    } finally {
+      try { fs.unlinkSync(tmp); } catch (_) {}
+    }
   });
 
   it('rejects paths outside allowed roots', () => {
@@ -128,9 +143,11 @@ describe('FileSystem allowlist-only access', () => {
   });
 
   it('readLocalFile succeeds for paths within allowed roots', async (t) => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-test-'));
-    t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
-    const testFile = path.join(tmpDir, 'allowed.txt');
+    var base = path.join(os.homedir(), '.cache', 'cowork-test');
+    fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+    var tmpDir = fs.mkdtempSync(path.join(base, 'sec-test-'));
+    t.after(function() { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+    var testFile = path.join(tmpDir, 'allowed.txt');
     fs.writeFileSync(testFile, 'allowed content', 'utf8');
 
     const registry = createOverrideRegistry(() => ({ running: false, exitCode: 0 }));

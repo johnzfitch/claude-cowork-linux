@@ -29,25 +29,52 @@ const { createSpacesStore } = require('./spaces_store.js');
 const _verbose = process.env.CLAUDE_COWORK_VERBOSE === '1';
 function vlog(msg) { if (_verbose) console.log(msg); }
 
-// Security boundary: homedir from /etc/passwd (set by frame-fix-wrapper.js),
-// NOT from $HOME env var. Falls back to os.userInfo().homedir if the global
-// isn't set yet (e.g. during tests).
-const _homeDir = global.__coworkPasswdHomedir || require('os').userInfo().homedir;
-// User-scoped tmpdir: os.tmpdir() is patched by frame-fix-wrapper.js to return
-// a private dir under ~/.config/Claude (mode 0700). We read it lazily because
-// this module loads before the patch runs.
-let _allowedFsRoots = null;
-function getAllowedFsRoots() {
-  if (!_allowedFsRoots) _allowedFsRoots = [_homeDir, require('os').tmpdir()];
-  return _allowedFsRoots;
+// Security boundary: homedir resolved to canonical form at load time.
+// Uses passwd-based homedir (not $HOME), then realpathSync to defeat
+// symlinked home directories.
+var _rawHomeDir = global.__coworkPasswdHomedir || require('os').userInfo().homedir;
+var _realHomeDir;
+try { _realHomeDir = fs.realpathSync(_rawHomeDir); } catch (_) { _realHomeDir = _rawHomeDir; }
+
+// Only the user's home directory is an allowed root. No /tmp, no
+// system dirs, no world-writable paths.
+var _allowedFsRoots = [_realHomeDir];
+
+// Validate and resolve a path in one pass. No normalization, no
+// transformation. The input must be a clean absolute path as-given.
+// Returns the canonical real path if valid, null if anything is wrong.
+function verifyPath(rawPath) {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) return null;
+  if (rawPath.charCodeAt(0) !== 47) return null;
+  if (rawPath.length > 1 && rawPath.charCodeAt(rawPath.length - 1) === 47) return null;
+  if (rawPath.indexOf('\0') >= 0) return null;
+  var segments = rawPath.split('/');
+  for (var i = 1; i < segments.length; i++) {
+    if (segments[i] === '' || segments[i] === '.' || segments[i] === '..') return null;
+  }
+  var real;
+  try {
+    real = fs.realpathSync(rawPath);
+  } catch (_) {
+    return null;
+  }
+  if (!_allowedFsRoots.some(function(root) {
+    return real === root || real.startsWith(root + '/');
+  })) {
+    return null;
+  }
+  return real;
 }
 
-// Lazy-initialized spaces store — uses global.__coworkDirs set by frame-fix-wrapper.js
+function isPathWithinAllowedRoots(filePath) {
+  return verifyPath(filePath) !== null;
+}
+
 let _spacesStore = null;
 function getSpacesStore() {
   if (!_spacesStore) {
     const dirs = global.__coworkDirs;
-    const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_homeDir, '.config', 'Claude', 'local-agent-mode-sessions');
+    const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_realHomeDir, '.config', 'Claude', 'local-agent-mode-sessions');
     _spacesStore = createSpacesStore({ localAgentRoot, isPathAllowed: isPathWithinAllowedRoots, trace: vlog });
   }
   return _spacesStore;
@@ -78,40 +105,6 @@ function createSpacesOverrides() {
     'CoworkSpaces_$_summarizeSpace': async (event, spaceId) => store.summarizeSpace(event, spaceId),
     'CoworkSpaces_$_onSpaceEvent': async (event, callback) => store.onSpaceEvent(event, callback),
   };
-}
-
-function isPathWithinAllowedRoots(filePath) {
-  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
-    return false;
-  }
-  const normalized = path.normalize(filePath);
-  let resolved;
-  try {
-    resolved = fs.realpathSync(normalized);
-  } catch (_) {
-    // File doesn't exist yet. Walk up to the nearest existing ancestor and
-    // resolve symlinks THERE, then reattach the non-existent suffix.
-    // Without this, a symlink at an intermediate component (e.g.
-    // ~/spaces/SPACEID/escape -> /) would pass the prefix check via
-    // path.normalize (which ignores symlinks) and escape on the actual
-    // filesystem operation.
-    let current = path.dirname(normalized);
-    let tail = path.basename(normalized);
-    resolved = null;
-    while (current !== path.dirname(current)) {
-      try {
-        resolved = path.join(fs.realpathSync(current), tail);
-        break;
-      } catch (_) {
-        tail = path.join(path.basename(current), tail);
-        current = path.dirname(current);
-      }
-    }
-    if (!resolved) resolved = normalized;
-  }
-  return getAllowedFsRoots().some(root =>
-    resolved === root || resolved.startsWith(root + path.sep)
-  );
 }
 
 function getMimeType(filePath) {
@@ -151,7 +144,7 @@ function readLocalFileContent(filePath) {
 const XDG_APP_DIRS = [
   '/usr/share/applications',
   '/usr/local/share/applications',
-  path.join(require('os').homedir(), '.local', 'share', 'applications'),
+  path.join(_realHomeDir, '.local', 'share', 'applications'),
 ];
 
 function readDesktopFile(desktopFile) {
@@ -315,48 +308,47 @@ function createOverrideRegistry(getProcessState) {
     'ClaudeVM_$_download': async () => ({ success: true }),
     'ClaudeVM_$_deleteAndReinstall': async () => ({ success: true }),
 
-    // FileSystem — proper Linux implementations
+    // FileSystem — proper Linux implementations.
+    // All handlers use verifyPath() which returns the canonical real path.
+    // We operate on the canonical path, not the raw input — no TOCTOU.
     'FileSystem_$_readLocalFile': async (_event, sessionId, filePath) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
-        return null;
-      }
-      if (!path.isAbsolute(decoded)) return null;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] readLocalFile BLOCKED (outside allowed roots):', decoded);
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return null; }
+      var real = verifyPath(decoded);
+      if (!real) {
+        console.warn('[Cowork] readLocalFile BLOCKED:', decoded);
         return null;
       }
       try {
-        return readLocalFileContent(decoded);
+        return readLocalFileContent(real);
       } catch (e) {
-        console.error('[Cowork] readLocalFile failed:', decoded, e.code || e.message);
+        console.error('[Cowork] readLocalFile failed:', real, e.code || e.message);
         return null;
       }
     },
 
     'FileSystem_$_openLocalFile': async (_event, sessionId, filePath, showInFolder) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
-        return;
-      }
-      vlog('[Cowork] openLocalFile: ' + decoded + ' showInFolder: ' + showInFolder);
-      if (!path.isAbsolute(decoded)) return;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] openLocalFile BLOCKED (outside allowed roots):', decoded);
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
+      var real = verifyPath(decoded);
+      if (!real) {
+        console.warn('[Cowork] openLocalFile BLOCKED:', decoded);
         return;
       }
       try {
         if (showInFolder) {
-          xdgOpen(path.dirname(decoded));
+          var parentDir = path.dirname(real);
+          var realParent = verifyPath(parentDir);
+          if (!realParent) {
+            console.warn('[Cowork] openLocalFile BLOCKED (dirname):', parentDir);
+            return;
+          }
+          xdgOpen(realParent);
         } else {
-          xdgOpen(decoded);
+          xdgOpen(real);
         }
       } catch (e) {
-        console.error('[Cowork] openLocalFile failed:', decoded, e.code || e.message);
+        console.error('[Cowork] openLocalFile failed:', real, e.code || e.message);
       }
     },
 
@@ -365,22 +357,21 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'FileSystem_$_showInFolder': async (_event, filePath) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
+      var real = verifyPath(decoded);
+      if (!real) {
+        console.warn('[Cowork] showInFolder BLOCKED:', decoded);
         return;
       }
-      vlog('[Cowork] showInFolder: ' + decoded);
-      if (!path.isAbsolute(decoded)) return;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] showInFolder BLOCKED (outside allowed roots):', decoded);
+      var parentDir = path.dirname(real);
+      var realParent = verifyPath(parentDir);
+      if (!realParent) {
+        console.warn('[Cowork] showInFolder BLOCKED (dirname):', parentDir);
         return;
       }
       try {
-        // D-Bus FileManager1 isn't available on Hyprland/wlroots compositors.
-        // Open the parent directory with xdg-open instead.
-        xdgOpen(path.dirname(decoded));
+        xdgOpen(realParent);
       } catch (_) {}
     },
 

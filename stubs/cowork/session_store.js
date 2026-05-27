@@ -76,7 +76,7 @@ function isDesktopRuntimePath(targetPath) {
     return false;
   }
 
-  const homeDir = os.homedir();
+  const homeDir = global.__coworkPasswdHomedir || os.userInfo().homedir;
   const xdgDataHome = typeof process.env.XDG_DATA_HOME === 'string' && process.env.XDG_DATA_HOME.trim()
     ? path.resolve(process.env.XDG_DATA_HOME)
     : path.join(homeDir, '.local', 'share');

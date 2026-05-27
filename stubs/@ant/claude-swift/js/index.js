@@ -203,7 +203,7 @@ function resolveClaudeBinaryPath() {
     }
   }
 
-  const home = os.homedir();
+  const home = (global.__coworkPasswdHomedir || os.userInfo().homedir);
   const linuxCandidates = [
     path.join(home, '.local/bin/claude'),
     path.join(home, '.npm-global/bin/claude'),
@@ -321,7 +321,7 @@ function createMountSymlinks(sessionName, additionalMounts) {
         failedMounts.push(mountName);
         continue;
       }
-      const hostUploadsPath = path.join(os.homedir(), uploadsRelPath);
+      const hostUploadsPath = path.join((global.__coworkPasswdHomedir || os.userInfo().homedir), uploadsRelPath);
       try {
         fs.mkdirSync(hostUploadsPath, { recursive: true, mode: 0o700 });
         if (fs.existsSync(mountPoint)) {
@@ -399,7 +399,7 @@ function createMountSymlinks(sessionName, additionalMounts) {
     // Since Claude Desktop v1.569.0+, getVMStorageSubpath returns root-relative
     // subpaths (e.g. "home/user/.config/...") instead of homedir-relative paths.
     // Detect this format to avoid doubled paths like /home/user/home/user/...
-    const _homedir = os.homedir();
+    const _homedir = (global.__coworkPasswdHomedir || os.userInfo().homedir);
     const _asAbsolute = '/' + relativePath;
     const hostPath = relativePath === ''
       ? _homedir

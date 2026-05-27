@@ -378,7 +378,7 @@ function readRemoteSessionIdFromBridgeState(deps) {
   } = deps || {};
 
   const defaultBridgePath = path.join(
-    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+    process.env.XDG_CONFIG_HOME || path.join(global.__coworkPasswdHomedir || os.userInfo().homedir, '.config'),
     'Claude', 'bridge-state.json'
   );
   const filePath = typeof bridgeStatePath === 'string' && bridgeStatePath.trim()
@@ -593,7 +593,7 @@ class SessionOrchestrator {
         path.join(passwdHome, '.local/bin/'),
         path.join(passwdHome, '.local/share/claude/'),
         path.join(passwdHome, '.npm-global/bin/'),
-        path.join(os.homedir(), '.local/bin/'),
+        path.join(os.userInfo().homedir, '.local/bin/'),
         '/usr/local/bin/',
         '/usr/bin/',
       ];
@@ -1825,7 +1825,7 @@ function transformSdkMessages(messages, sessionIdOverride) {
 }
 
 // Global Claude Code config directory (skills, commands, settings, etc.)
-const GLOBAL_CLAUDE_DIR = path.join(os.homedir(), '.claude');
+const GLOBAL_CLAUDE_DIR = path.join(global.__coworkPasswdHomedir || os.userInfo().homedir, '.claude');
 
 /**
  * Symlink global Claude Code config into a session's CLAUDE_CONFIG_DIR.

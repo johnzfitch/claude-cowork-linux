@@ -13,8 +13,10 @@ const {
 } = require('../../../stubs/cowork/ipc_overrides.js');
 
 function createTempDir(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowork-ipc-overrides-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  var base = path.join(os.homedir(), '.cache', 'cowork-test');
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+  var dir = fs.mkdtempSync(path.join(base, 'ipc-overrides-'));
+  t.after(function() { fs.rmSync(dir, { recursive: true, force: true }); });
   return dir;
 }
 

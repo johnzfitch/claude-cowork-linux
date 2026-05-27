@@ -243,6 +243,7 @@ test('prepareVmSpawn injects local skills plugin-dir for bridge cowork spawns', 
 
   const script = `
     const path = require('path');
+    global.__coworkPasswdHomedir = ${JSON.stringify(tempHome)};
     const { createSessionOrchestrator } = require(${JSON.stringify(SESSION_ORCHESTRATOR_MODULE_PATH)});
     const orchestrator = createSessionOrchestrator({
       appSupportRoot: '/app/support',

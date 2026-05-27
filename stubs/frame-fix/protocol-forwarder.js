@@ -13,8 +13,10 @@ const path = require('path');
 const { execFile } = require('child_process');
 const os = require('os');
 
+var _pfHome;
+try { _pfHome = os.userInfo().homedir; } catch (_) { _pfHome = os.homedir(); }
 const logDir = process.env.CLAUDE_LOG_DIR ||
-  path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'claude-cowork', 'logs');
+  path.join(process.env.XDG_STATE_HOME || path.join(_pfHome, '.local', 'state'), 'claude-cowork', 'logs');
 const logFile = path.join(logDir, 'startup.log');
 
 function log(msg) {
@@ -82,7 +84,7 @@ if (!gotLock) {
   app.releaseSingleInstanceLock();
 
   const coworkDir = process.env.COWORK_DIR ||
-    path.join(os.homedir(), '.local', 'share', 'claude-desktop');
+    path.join(_pfHome, '.local', 'share', 'claude-desktop');
   const launchSh = path.join(coworkDir, 'launch.sh');
 
   log(`launching: bash ${launchSh} ${url}`);

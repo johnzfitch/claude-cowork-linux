@@ -35,7 +35,7 @@ function defaultLogDir() {
   const os = require('os');
   const path = require('path');
   const xdgStateHome = process.env.XDG_STATE_HOME ||
-    path.join(os.homedir(), '.local', 'state');
+    path.join(global.__coworkPasswdHomedir || os.userInfo().homedir, '.local', 'state');
   return path.join(xdgStateHome, 'claude-cowork', 'logs');
 }
 

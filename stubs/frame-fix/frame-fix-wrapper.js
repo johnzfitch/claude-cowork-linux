@@ -8,7 +8,7 @@
     _haveSystemDisclaimer = _stat.uid === 0;
   } catch (_) {}
   if (!_haveSystemDisclaimer) {
-    const _xdgConfigHome = process.env.XDG_CONFIG_HOME || _path.join(require('os').homedir(), '.config');
+    const _xdgConfigHome = process.env.XDG_CONFIG_HOME || _path.join(require('os').userInfo().homedir, '.config');
     Object.defineProperty(process, 'resourcesPath', {
       value: _path.join(_xdgConfigHome, 'Claude', 'cowork-resources'),
       writable: true,
@@ -121,7 +121,7 @@ process.on('uncaughtException', (err, origin) => {
   if (err && err.code === 'EPIPE') {
     // Log once, don't crash
     try { fs.appendFileSync(
-      path.join(process.env.CLAUDE_LOG_DIR || '/tmp', 'epipe-suppressed.log'),
+      path.join(process.env.CLAUDE_LOG_DIR || path.join(PASSWD_HOMEDIR, '.local', 'state', 'claude-cowork', 'logs'), 'epipe-suppressed.log'),
       `[${new Date().toISOString()}] EPIPE suppressed: ${err.stack || err.message}\n`,
       { mode: 0o600 }
     ); } catch (_) {}
@@ -222,7 +222,7 @@ if (process.env.CLAUDE_DEVTOOLS === '1') console.log('[Frame Fix] DevTools mode 
 //   ~/.local/state/claude-cowork/logs/webapp-assets/
 // Previous dump is rotated to webapp-assets.bak/ on each launch.
 function setupAssetDumper(win) {
-  const logDir = process.env.CLAUDE_LOG_DIR || path.join(os.homedir(), '.local', 'state', 'claude-cowork', 'logs');
+  const logDir = process.env.CLAUDE_LOG_DIR || path.join(PASSWD_HOMEDIR, '.local', 'state', 'claude-cowork', 'logs');
   const dumpDir = path.join(logDir, 'webapp-assets');
   const bakDir = dumpDir + '.bak';
 
