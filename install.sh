@@ -642,42 +642,42 @@ case "\${1:-}" in
     --devtools) shift; export CLAUDE_DEVTOOLS=1; _warn_if_untested_asar; exec ./launch.sh "\$@" ;;
     --debug)    shift; export CLAUDE_TRACE=1; _warn_if_untested_asar; exec ./launch.sh "\$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
-    --update)   shift; exec ./install.sh --update "$@" ;;
+    --update)   shift; exec ./install.sh --update "\$@" ;;
     claude://*)
         # Protocol handler callback (e.g. OAuth redirect from browser).
         # Skip the full launch.sh setup — just forward the URL to the already-running
         # instance via Electron's single-instance mechanism. The running instance has
         # a second-instance listener that picks up the claude:// URL from argv and
         # emits open-url. This second Electron process quits immediately after forwarding.
-        FORWARDER="$COWORK_DIR/protocol-forwarder.js"
-        if [ ! -f "$FORWARDER" ]; then
+        FORWARDER="\$COWORK_DIR/protocol-forwarder.js"
+        if [ ! -f "\$FORWARDER" ]; then
             # Forwarder not installed yet — fall through to full launch
-            nohup bash -c 'cd "$1" && shift && exec ./launch.sh "$@"' \
-                -- "$COWORK_DIR" "$@" >> "$LOG_DIR/startup.log" 2>&1 &
+            nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
+                -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
             disown
         else
             ELECTRON_BIN=""
             # Prefer the raw ELF binary over the node wrapper script — the node
             # wrapper requires 'node' in PATH which is absent in xdg-open's env.
-            if [[ -x "$HOME/.local/lib/node_modules/electron/dist/electron" ]]; then
-                ELECTRON_BIN="$HOME/.local/lib/node_modules/electron/dist/electron"
-            elif [[ -x "$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron" ]]; then
-                ELECTRON_BIN="$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron"
+            if [[ -x "\$HOME/.local/lib/node_modules/electron/dist/electron" ]]; then
+                ELECTRON_BIN="\$HOME/.local/lib/node_modules/electron/dist/electron"
+            elif [[ -x "\$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron" ]]; then
+                ELECTRON_BIN="\$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron"
             elif command -v electron >/dev/null 2>&1; then
-                ELECTRON_BIN="$(command -v electron)"
+                ELECTRON_BIN="\$(command -v electron)"
             fi
-            if [ -n "$ELECTRON_BIN" ]; then
+            if [ -n "\$ELECTRON_BIN" ]; then
                 # Use the minimal protocol-forwarder.js — NOT the full asar.
                 # The full asar tries to spawn 'node' early in startup and crashes
                 # in restricted PATH environments (xdg-open, systemd activation).
                 # protocol-forwarder.js handles both cases: running instance (forwards
                 # via second-instance) and no instance (launches full app via launch.sh).
-                nohup "$ELECTRON_BIN" "$FORWARDER" "$@" >> "$LOG_DIR/startup.log" 2>&1 &
+                nohup "\$ELECTRON_BIN" "\$FORWARDER" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
                 disown
             else
                 # No electron binary found — fall through to full launch
-                nohup bash -c 'cd "$1" && shift && exec ./launch.sh "$@"' \
-                    -- "$COWORK_DIR" "$@" >> "$LOG_DIR/startup.log" 2>&1 &
+                nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
+                    -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
                 disown
             fi
         fi
