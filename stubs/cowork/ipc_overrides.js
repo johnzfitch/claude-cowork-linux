@@ -76,14 +76,15 @@ function isPathWithinAllowedRoots(filePath) {
   return verifyPath(filePath) !== null;
 }
 
-let _spacesStore = null;
 function getSpacesStore() {
-  if (!_spacesStore) {
-    const dirs = global.__coworkDirs;
-    const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_realHomeDir, '.config', 'Claude', 'local-agent-mode-sessions');
-    _spacesStore = createSpacesStore({ localAgentRoot, isPathAllowed: isPathWithinAllowedRoots, trace: vlog });
-  }
-  return _spacesStore;
+  // Reuse the early-registered store from frame-fix-wrapper if it exists.
+  // Two separate instances would have separate rate-limit state and could
+  // race on the spaces.json atomic rename — single global instance avoids both.
+  if (global.__coworkSpacesStore) return global.__coworkSpacesStore;
+  const dirs = global.__coworkDirs;
+  const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_realHomeDir, '.config', 'Claude', 'local-agent-mode-sessions');
+  global.__coworkSpacesStore = createSpacesStore({ localAgentRoot, isPathAllowed: isPathWithinAllowedRoots, trace: vlog });
+  return global.__coworkSpacesStore;
 }
 
 function createSpacesOverrides() {
@@ -201,37 +202,57 @@ function getExecFromDesktop(desktopFile) {
 
 
 // Terminal emulator resolution — cached after first successful lookup.
-// Checks: $TERMINAL env, xdg-terminal-exec, then common emulators.
-// Validated through the exec capability registry (system cmd prefixes).
+// EVERY path goes through validateBinary() so PATH-hijacking attacks
+// (malicious 'kitty' on $PATH) are blocked the same way $TERMINAL is.
 let _resolvedTerminal = undefined;
+
+const _TERMINAL_SAFE_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+
+function validateTerminalBinary(binName) {
+  // Resolve the binary via `which` and confirm it lives in a system dir
+  // (or is accepted by the exec capability registry). Returns the
+  // resolved path or null.
+  var resolvedPath;
+  try {
+    resolvedPath = execFileSync('which', [binName], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+  } catch (_) {
+    return null;
+  }
+  if (!resolvedPath) return null;
+  var registry = global.__coworkExecRegistry || null;
+  if (registry) {
+    var cap = registry.resolve(resolvedPath, []);
+    if (cap && (cap.capabilityId === 'system-cmd' || (typeof cap.capabilityId === 'string' && cap.capabilityId.indexOf('system-') === 0))) {
+      return resolvedPath;
+    }
+    return null;
+  }
+  // Registry not available — fall back to system dir check.
+  if (_TERMINAL_SAFE_DIRS.some(function(d) { return resolvedPath.startsWith(d); })) {
+    return resolvedPath;
+  }
+  return null;
+}
+
 function resolveTerminal() {
   if (_resolvedTerminal !== undefined) return _resolvedTerminal;
-  var registry = global.__coworkExecRegistry || null;
-  // 1. Respect $TERMINAL env var (user's explicit preference)
+  // 1. $TERMINAL env var
   const envTerm = process.env.TERMINAL;
   if (envTerm) {
-    try {
-      const resolvedPath = execFileSync('which', [envTerm], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-      if (resolvedPath && registry) {
-        var cap = registry.resolve(resolvedPath, []);
-        if (cap) {
-          _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
-          return _resolvedTerminal;
-        }
-      } else if (resolvedPath && ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'].some(d => resolvedPath.startsWith(d))) {
-        _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
-        return _resolvedTerminal;
-      }
-      console.warn('[Cowork] $TERMINAL not in capability registry, ignoring:', resolvedPath);
-    } catch (_) {}
+    var envResolved = validateTerminalBinary(envTerm);
+    if (envResolved) {
+      _resolvedTerminal = { bin: envResolved, spawn: ['-e'] };
+      return _resolvedTerminal;
+    }
+    console.warn('[Cowork] $TERMINAL not in safe dirs / registry, ignoring:', envTerm);
   }
-  // 2. xdg-terminal-exec (proposed XDG Default Terminal Spec)
-  try {
-    execFileSync('which', ['xdg-terminal-exec'], { stdio: 'ignore' });
-    _resolvedTerminal = { bin: 'xdg-terminal-exec', spawn: null };
+  // 2. xdg-terminal-exec
+  var xdgResolved = validateTerminalBinary('xdg-terminal-exec');
+  if (xdgResolved) {
+    _resolvedTerminal = { bin: xdgResolved, spawn: null };
     return _resolvedTerminal;
-  } catch (_) {}
-  // 3. Common terminal emulators (GPU-accelerated first, then traditional)
+  }
+  // 3. Common terminal emulators
   const terminals = [
     'kitty', 'ghostty', 'alacritty', 'foot', 'wezterm',
     'gnome-terminal', 'konsole', 'xfce4-terminal', 'mate-terminal',
@@ -239,11 +260,11 @@ function resolveTerminal() {
   ];
   const dashDashTerminals = new Set(['gnome-terminal', 'konsole']);
   for (const t of terminals) {
-    try {
-      execFileSync('which', [t], { stdio: 'ignore' });
-      _resolvedTerminal = { bin: t, spawn: dashDashTerminals.has(t) ? ['--'] : ['-e'] };
+    var resolved = validateTerminalBinary(t);
+    if (resolved) {
+      _resolvedTerminal = { bin: resolved, spawn: dashDashTerminals.has(t) ? ['--'] : ['-e'] };
       return _resolvedTerminal;
-    } catch (_) {}
+    }
   }
   _resolvedTerminal = null;
   return null;

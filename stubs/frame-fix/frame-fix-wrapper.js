@@ -567,6 +567,9 @@ try {
     }
     return _earlyAllowedRoots.some(root => resolved === root || resolved.startsWith(root + path.sep));
   }
+  // Publish the early-created store to a global so ipc_overrides.js
+  // (loaded later) reuses the same instance instead of creating a second
+  // one with divergent validators and separate rate-limit state.
   const _spacesStore = createSpacesStore({
     localAgentRoot: path.join(
       process.env.XDG_CONFIG_HOME || path.join(PASSWD_HOMEDIR, '.config'),
@@ -575,6 +578,7 @@ try {
     isPathAllowed: _earlyIsPathAllowed,
     trace: (msg) => console.log(msg),
   });
+  global.__coworkSpacesStore = _spacesStore;
 
   const EIPC_UUID = 'c42bb833-f6f9-4563-9861-03480449cfb1';
   const EIPC_NS = 'claude.web';

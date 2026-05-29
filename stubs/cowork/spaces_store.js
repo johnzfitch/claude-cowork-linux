@@ -11,6 +11,14 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
+// Hard caps to prevent unbounded growth of spaces.json. Even with rate
+// limits a malicious renderer could grow the file to GB scale over time.
+const MAX_SPACES_FILE_BYTES = 5 * 1024 * 1024;    // 5 MB total
+const MAX_SPACES_COUNT = 200;
+const MAX_FOLDERS_PER_SPACE = 100;
+const MAX_PROJECTS_PER_SPACE = 500;
+const MAX_LINKS_PER_SPACE = 500;
+
 function createSpacesStore(options) {
   const { localAgentRoot, isPathAllowed, trace = () => {} } = options || {};
 
@@ -195,10 +203,36 @@ function createSpacesStore(options) {
       trace('[spaces] Write BLOCKED: previous read failed to parse — refusing to clobber existing file');
       return false;
     }
+    if (!Array.isArray(spaces)) return false;
+    // Cap total space count and per-space array sizes before serializing.
+    if (spaces.length > MAX_SPACES_COUNT) {
+      trace('[spaces] Write BLOCKED: too many spaces (' + spaces.length + ' > ' + MAX_SPACES_COUNT + ')');
+      return false;
+    }
+    for (var si = 0; si < spaces.length; si++) {
+      var s = spaces[si];
+      if (s && Array.isArray(s.folders) && s.folders.length > MAX_FOLDERS_PER_SPACE) {
+        trace('[spaces] Write BLOCKED: too many folders in space ' + s.id);
+        return false;
+      }
+      if (s && Array.isArray(s.projects) && s.projects.length > MAX_PROJECTS_PER_SPACE) {
+        trace('[spaces] Write BLOCKED: too many projects in space ' + s.id);
+        return false;
+      }
+      if (s && Array.isArray(s.links) && s.links.length > MAX_LINKS_PER_SPACE) {
+        trace('[spaces] Write BLOCKED: too many links in space ' + s.id);
+        return false;
+      }
+    }
     if (!checkWriteRate()) return false;
     const p = discoverSpacesPath();
     if (!p) {
       trace('[spaces] Cannot write — no path discovered');
+      return false;
+    }
+    const payload = JSON.stringify({ spaces }, null, 4) + '\n';
+    if (Buffer.byteLength(payload, 'utf8') > MAX_SPACES_FILE_BYTES) {
+      trace('[spaces] Write BLOCKED: payload exceeds ' + MAX_SPACES_FILE_BYTES + ' bytes');
       return false;
     }
     try {
@@ -206,10 +240,11 @@ function createSpacesStore(options) {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      // Atomic write: write to temp file then rename. Prevents partial
-      // writes from corrupting spaces.json on crash or concurrent access.
-      const tmp = p + '.tmp.' + process.pid;
-      fs.writeFileSync(tmp, JSON.stringify({ spaces }, null, 4) + '\n', 'utf8');
+      // Atomic write: write to temp file then rename. Use random suffix
+      // (not just pid) so two SpacesStore instances in the same process
+      // can't collide on the temp filename.
+      const tmp = p + '.tmp.' + process.pid + '.' + Math.random().toString(36).slice(2);
+      fs.writeFileSync(tmp, payload, 'utf8');
       fs.renameSync(tmp, p);
       return true;
     } catch (e) {
@@ -278,7 +313,7 @@ function createSpacesStore(options) {
     updated.id = spaces[index].id;
     updated.createdAt = spaces[index].createdAt;
     spaces[index] = updated;
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     trace('[spaces] Updated space: ' + spaceId);
     return updated;
   }
@@ -289,7 +324,7 @@ function createSpacesStore(options) {
     if (filtered.length === spaces.length) {
       return false;
     }
-    writeSpaces(filtered);
+    if (!writeSpaces(filtered)) return false;
     trace('[spaces] Deleted space: ' + spaceId);
     return true;
   }
@@ -318,7 +353,7 @@ function createSpacesStore(options) {
       space.folders.push({ path: resolved });
     }
     space.updatedAt = Date.now();
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     return space;
   }
 
@@ -326,13 +361,10 @@ function createSpacesStore(options) {
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space || !Array.isArray(space.folders)) return null;
-    // addFolderToSpace stores the realpath, but the renderer may pass the
-    // original (display) path. Match against both the raw input and the
-    // resolved real path so removal works either way.
     const resolved = resolvePath(folderPath);
     space.folders = space.folders.filter(f => f.path !== folderPath && f.path !== resolved);
     space.updatedAt = Date.now();
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     return space;
   }
 
@@ -345,7 +377,7 @@ function createSpacesStore(options) {
     if (!Array.isArray(space.projects)) space.projects = [];
     space.projects.push(sanitized);
     space.updatedAt = Date.now();
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     return space;
   }
 
@@ -353,9 +385,10 @@ function createSpacesStore(options) {
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space || !Array.isArray(space.projects)) return null;
-    space.projects = space.projects.filter(p => (p.id || p) !== projectId);
+    // Use 'id' in p check + ?? to handle id=0, id='', etc. correctly.
+    space.projects = space.projects.filter(p => (p && 'id' in p ? p.id : p) !== projectId);
     space.updatedAt = Date.now();
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     return space;
   }
 
@@ -368,7 +401,7 @@ function createSpacesStore(options) {
     if (!Array.isArray(space.links)) space.links = [];
     space.links.push(sanitized);
     space.updatedAt = Date.now();
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     return space;
   }
 
@@ -376,9 +409,9 @@ function createSpacesStore(options) {
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space || !Array.isArray(space.links)) return null;
-    space.links = space.links.filter(l => (l.id || l) !== linkId);
+    space.links = space.links.filter(l => (l && 'id' in l ? l.id : l) !== linkId);
     space.updatedAt = Date.now();
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     return space;
   }
 
@@ -520,7 +553,7 @@ function createSpacesStore(options) {
     if (sanitized === null) return null;
     space.autoDescription = sanitized;
     space.updatedAt = Date.now();
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) return null;
     return space;
   }
 
