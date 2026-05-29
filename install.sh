@@ -332,14 +332,18 @@ get_archive() {
 
     # 2. Prompt before downloading. The user picks whether to fetch
     #    the latest available version (which may be untested) or to
-    #    abort and supply a specific version via CLAUDE_ARCHIVE.
+    #    supply a tested version manually via CLAUDE_ARCHIVE.
     if command_exists node; then
         local last_tested
         last_tested=$(compat_read_last_tested "$script_dir/COMPAT.md")
         local latest_version=""
-        if [[ -f "$script_dir/fetch-dmg.js" ]]; then
+        local fetch_script=""
+        [[ -f "$script_dir/fetch-dmg.js" ]] && fetch_script="$script_dir/fetch-dmg.js"
+        [[ -z "$fetch_script" && -f "$INSTALL_DIR/fetch-dmg.js" ]] && fetch_script="$INSTALL_DIR/fetch-dmg.js"
+
+        if [[ -n "$fetch_script" ]]; then
             local json
-            json=$(node "$script_dir/fetch-dmg.js" --json 2>/dev/null) || true
+            json=$(node "$fetch_script" --json 2>/dev/null) || true
             if [[ -n "$json" ]]; then
                 latest_version=$(printf '%s' "$json" \
                     | node -e "process.stdin.on('data',d=>{try{process.stdout.write(JSON.parse(d).version||'')}catch{}})" \
@@ -351,29 +355,57 @@ get_archive() {
         log_info "Last tested asar:  $last_tested  (see COMPAT.md)"
         if [[ -n "$latest_version" ]]; then
             log_info "Latest on CDN:     $latest_version"
-            if compat_version_is_newer "$latest_version" "$last_tested"; then
-                log_warn "Latest is newer than the last tested version."
-                log_warn "Untested versions may break features. Review COMPAT.md first."
-            fi
+        fi
+
+        local is_untested=false
+        if [[ -n "$latest_version" ]] && compat_version_is_newer "$latest_version" "$last_tested"; then
+            is_untested=true
+            log_warn "Latest is newer than the last tested version."
+            log_warn "Untested versions may break features. Review COMPAT.md first."
         fi
 
         local proceed=0
         if [[ "${INSTALL_FORCE:-0}" -eq 1 ]]; then
             proceed=1
         elif [[ ! -t 0 ]]; then
-            # Non-interactive (piped) install: refuse without --force to
-            # avoid silently downloading an untested upstream.
             log_warn "Repository updated. Stub-only fixes are live — run launch.sh to apply them without a re-download."
             log_error "Non-interactive install requires --force (or --yes) to confirm download."
             log_error "Re-run as: bash install.sh --force"
             die "Aborting: no confirmation possible"
         else
-            local prompt_target="${latest_version:-the latest available version}"
-            echo -n "  Download Claude Desktop ${prompt_target}? [y/N] "
+            if [[ "$is_untested" == true ]]; then
+                echo ""
+                echo "  Options:"
+                echo "    y  - download $latest_version (untested, may break)"
+                echo "    t  - show instructions for installing the tested version ($last_tested)"
+                echo "    n  - cancel"
+                echo ""
+                echo -n "  Choice [y/t/N]: "
+            else
+                local prompt_target="${latest_version:-the latest available version}"
+                echo -n "  Download Claude Desktop ${prompt_target}? [y/N] "
+            fi
             local reply
             read -r reply
             case "$reply" in
                 y|Y|yes|YES) proceed=1 ;;
+                t|T)
+                    # Tell the user how to get the tested version. We do NOT
+                    # construct download URLs -- the user gets the archive
+                    # from Anthropic directly and passes it to us.
+                    echo ""
+                    echo "  To install the tested version ($last_tested):"
+                    echo ""
+                    echo "  1. Download the Claude Desktop $last_tested DMG from Anthropic."
+                    echo "     The macOS installer is at: https://claude.ai/download"
+                    echo "     (You may need to find the specific version in your download history"
+                    echo "     or ask Anthropic support for a direct link.)"
+                    echo ""
+                    echo "  2. Re-run the installer with the downloaded file:"
+                    echo "     CLAUDE_ARCHIVE=/path/to/Claude-${last_tested}.dmg bash install.sh"
+                    echo ""
+                    die "Install paused. Re-run with CLAUDE_ARCHIVE set."
+                    ;;
                 *) proceed=0 ;;
             esac
         fi

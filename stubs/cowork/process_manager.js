@@ -5,6 +5,98 @@ const { classifyEnvEntry } = require('./credential_classifier.js');
 const DEFAULT_STDIO = ['pipe', 'pipe', 'pipe'];
 
 // ============================================================================
+// BUBBLEWRAP SANDBOX (opt-in)
+// ============================================================================
+// Off by default. Enable with CLAUDE_COWORK_SANDBOX=1.
+// Disable explicitly with CLAUDE_COWORK_NO_SANDBOX=1 (takes precedence).
+//
+// Sandbox profile (intentionally conservative):
+//   - Read-only system: /usr, /lib, /lib64, /bin, /sbin, /etc
+//   - Private /tmp (tmpfs)
+//   - Private /proc, /dev
+//   - Network: SHARED (CLI needs API + MCP HTTP/HTTPS access)
+//   - Workspace: rw-bound at the cwd (the project the user opened)
+//   - User config dir: ro-bound at ~/.claude AND ~/.config/Claude
+//     so the CLI can read auth tokens and write session state
+//   - $HOME is NOT bound — that's the security boundary the dead-code
+//     version got wrong. ~/.ssh, ~/.aws, ~/.gnupg, browser cookies
+//     stay outside the sandbox.
+//   - --die-with-parent: sandbox dies if the parent (Electron) exits
+//   - --unshare-pid + --unshare-ipc: can't see or signal host processes
+
+var _bwrapAvailable;
+function isBwrapAvailable() {
+  if (_bwrapAvailable === undefined) {
+    try {
+      require('child_process').execFileSync('which', ['bwrap'], { stdio: 'ignore' });
+      _bwrapAvailable = true;
+    } catch (_) {
+      _bwrapAvailable = false;
+    }
+  }
+  return _bwrapAvailable;
+}
+
+function shouldUseSandbox() {
+  if (process.env.CLAUDE_COWORK_NO_SANDBOX === '1') return false;
+  if (process.env.CLAUDE_COWORK_SANDBOX !== '1') return false;
+  return isBwrapAvailable();
+}
+
+function wrapWithBwrap(command, args, cwd) {
+  if (!shouldUseSandbox()) return null;
+  if (typeof command !== 'string' || command.length === 0) return null;
+  if (!Array.isArray(args)) args = [];
+
+  var bwrapArgs = [
+    '--unshare-pid',
+    '--unshare-ipc',
+    '--die-with-parent',
+    '--clearenv',
+    '--proc', '/proc',
+    '--dev', '/dev',
+    '--tmpfs', '/tmp',
+  ];
+  // Read-only system dirs (only bind if they exist on the host).
+  ['/usr', '/etc', '/lib', '/lib64'].forEach(function(p) {
+    try { fs.statSync(p); bwrapArgs.push('--ro-bind', p, p); } catch (_) {}
+  });
+  // /bin and /sbin are symlinks to /usr/bin and /usr/sbin on modern distros.
+  try { fs.statSync('/bin'); bwrapArgs.push('--symlink', 'usr/bin', '/bin'); } catch (_) {}
+  try { fs.statSync('/sbin'); bwrapArgs.push('--symlink', 'usr/sbin', '/sbin'); } catch (_) {}
+
+  // Workspace: rw-bind only the project cwd, not $HOME.
+  if (typeof cwd === 'string' && path.isAbsolute(cwd)) {
+    bwrapArgs.push('--bind', cwd, cwd);
+  }
+
+  // ~/.claude (CLI config + auth) and ~/.config/Claude (Cowork state)
+  // are ro-bound so the CLI can read tokens but not modify them through
+  // a compromise. Reads only; writes happen through specific paths the
+  // CLI manages on the host side outside the sandbox.
+  var home;
+  try { home = require('os').userInfo().homedir; } catch (_) { home = null; }
+  if (home && path.isAbsolute(home)) {
+    var claudeConfig = path.join(home, '.claude');
+    try {
+      fs.statSync(claudeConfig);
+      bwrapArgs.push('--ro-bind', claudeConfig, claudeConfig);
+    } catch (_) {}
+    var configDir = path.join(home, '.config', 'Claude');
+    try {
+      fs.statSync(configDir);
+      bwrapArgs.push('--ro-bind', configDir, configDir);
+    } catch (_) {}
+  }
+
+  bwrapArgs.push('--');
+  bwrapArgs.push(command);
+  for (var i = 0; i < args.length; i++) bwrapArgs.push(args[i]);
+
+  return { command: 'bwrap', args: bwrapArgs };
+}
+
+// ============================================================================
 // SESSION PATH DERIVATION
 // ============================================================================
 // These functions derive session-related paths from the CLAUDE_CONFIG_DIR
@@ -376,4 +468,7 @@ module.exports = {
   deriveSessionDirectory,
   deriveSessionMetadataPath,
   resolveHostCwdPath,
+  wrapWithBwrap,
+  isBwrapAvailable,
+  shouldUseSandbox,
 };

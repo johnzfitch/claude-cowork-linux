@@ -1630,7 +1630,21 @@ class SwiftAddonStub extends EventEmitter {
     processState.deferredResultLine = null;
     processState.stdoutSeq = 0;
 
-    const proc = nodeSpawn(processState.command, processState.args || [], spawnContext.spawnOptions);
+    // Optional bwrap sandbox (CLAUDE_COWORK_SANDBOX=1). Off by default;
+    // when enabled and bwrap is installed, wraps the spawn with a
+    // conservative sandbox profile defined in process_manager.wrapWithBwrap.
+    var spawnCmd = processState.command;
+    var spawnArgs = processState.args || [];
+    try {
+      var { wrapWithBwrap: _wrapBwrap } = require('../../../cowork/process_manager.js');
+      var wrapped = _wrapBwrap ? _wrapBwrap(spawnCmd, spawnArgs, spawnContext.spawnOptions && spawnContext.spawnOptions.cwd) : null;
+      if (wrapped) {
+        trace('[sandbox] wrapping spawn with bwrap: ' + wrapped.command);
+        spawnCmd = wrapped.command;
+        spawnArgs = wrapped.args;
+      }
+    } catch (_) {}
+    const proc = nodeSpawn(spawnCmd, spawnArgs, spawnContext.spawnOptions);
     this._processes.set(processState.id, proc);
     this._attachProcessListeners(processState, proc);
 
