@@ -1124,19 +1124,50 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
 }
 
 // ============================================================
-// APP NAME — set before index.js runs so requestSingleInstanceLock() uses the
-// correct userData path (~/.config/Claude). The package.json name is @ant/desktop
-// which would produce ~/.config/@ant/desktop — wrong path, breaks single-instance.
-// The asar's index.js also calls app.setName('Claude') but only inside whenReady(),
-// which is too late for the lock. We set it here at require-time.
-// Protocol URL forwarding is handled by protocol-forwarder.js (invoked from
-// the claude-desktop launcher script for claude:// callbacks).
+// APP NAME + SINGLE-INSTANCE LOCK — must run before index.js so:
+//  1. setName('Claude') sets userData to ~/.config/Claude (otherwise it
+//     would be ~/.config/@ant/desktop from package.json name).
+//  2. requestSingleInstanceLock() is held by THIS process so the
+//     protocol-forwarder (launched via `claude-desktop %u`) can detect
+//     "main app running" and forward the URL via the second-instance event.
+//
+// The asar's index.js takes app.on('open-url', ...) under darwin spoof
+// and never calls requestSingleInstanceLock() itself — so if we don't
+// hold the lock here, the forwarder always spawns a duplicate instance.
 try {
   const { app } = require('electron');
   if (typeof app.setName === 'function') app.setName('Claude');
-  console.log('[SingleInstance] App name set to Claude — lock will use ~/.config/Claude');
+  console.log('[SingleInstance] App name set to Claude');
+
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    console.log('[SingleInstance] Another instance is running, quitting');
+    app.quit();
+  } else {
+    console.log('[SingleInstance] Lock acquired');
+    app.on('second-instance', function(_event, argv) {
+      // protocol-forwarder.js forwards a claude:// URL via its argv.
+      // Find it, validate basic shape, then re-emit as open-url so the
+      // asar's URL handler (registered under darwin spoof) processes it.
+      try {
+        var url = null;
+        for (var i = 0; i < argv.length; i++) {
+          if (typeof argv[i] === 'string' && argv[i].indexOf('claude://') === 0) {
+            url = argv[i];
+            break;
+          }
+        }
+        if (url && url.length < 2048 && /^claude:\/\/[a-zA-Z0-9\-._~:/?#\[\]@!$&()*+,;=%]+$/.test(url)) {
+          console.log('[SingleInstance] forwarding URL via open-url: ' + url);
+          app.emit('open-url', { preventDefault: function() {} }, url);
+        }
+      } catch (e) {
+        console.error('[SingleInstance] second-instance handler error:', e.message);
+      }
+    });
+  }
 } catch (e) {
-  console.error('[SingleInstance] Failed to set app name:', e.message);
+  console.error('[SingleInstance] setup failed:', e.message);
 }
 
 Module.prototype.require = function(id) {

@@ -92,28 +92,35 @@ function createSpacesStore(options) {
     return clean;
   }
 
-  // Read-path validation: the file MUST exist (so realpathSync can resolve it)
-  // AND its resolved path must fall within a folder registered in spaces.json.
+  // Read-path validation: resolve the path ONCE through realpathSync and
+  // return the resolved path if it falls within a registered folder. The
+  // caller MUST use the returned path for the actual operation — not the
+  // raw input. Resolving twice creates a TOCTOU window where a symlink
+  // swap between resolve and use can redirect the read.
   //
-  // The registered folder paths are ALREADY resolved (addFolderToSpace stores
-  // the realpathSync'd result). We do NOT re-resolve them here — re-resolving
-  // would follow any symlinks placed at that path AFTER registration, reopening
-  // the symlink-swap attack. The comparison is:
-  //   resolved(requested) vs stored-as-is(registered)
-  function isWithinRegisteredFolder(filePath) {
+  // The registered folder paths are ALREADY resolved (addFolderToSpace
+  // stored the realpathSync'd result). We do NOT re-resolve them here —
+  // re-resolving would follow any symlinks placed at that path AFTER
+  // registration, reopening the symlink-swap attack.
+  function resolveWithinRegisteredFolder(filePath) {
     const resolved = resolvePath(filePath);
-    if (!resolved) return false;
+    if (!resolved) return null;
     const spaces = readSpaces();
     for (const space of spaces) {
       for (const folder of (space.folders || [])) {
         const registeredPath = folder.path;
         if (typeof registeredPath !== 'string') continue;
         if (resolved === registeredPath || resolved.startsWith(registeredPath + path.sep)) {
-          return true;
+          return resolved;
         }
       }
     }
-    return false;
+    return null;
+  }
+
+  // Legacy boolean variant kept for callers that only need the predicate.
+  function isWithinRegisteredFolder(filePath) {
+    return resolveWithinRegisteredFolder(filePath) !== null;
   }
 
   // Discover the spaces.json path by walking localAgentRoot/<accountId>/<orgId>/
@@ -154,18 +161,40 @@ function createSpacesStore(options) {
     return null;
   }
 
+  // _readState tracks whether the last readSpaces() returned [] because
+  // the file genuinely was missing/empty (safe to write) vs because parsing
+  // failed (NOT safe to write — would clobber user's real data).
+  let _lastReadOk = true;
+
   function readSpaces() {
     const p = discoverSpacesPath();
-    if (!p) return [];
+    if (!p) { _lastReadOk = true; return []; }
+    let raw;
     try {
-      const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+      raw = fs.readFileSync(p, 'utf8');
+    } catch (e) {
+      // ENOENT is fine — file just doesn't exist yet.
+      _lastReadOk = (e && e.code === 'ENOENT');
+      return [];
+    }
+    try {
+      const data = JSON.parse(raw);
+      _lastReadOk = true;
       return Array.isArray(data.spaces) ? data.spaces : [];
-    } catch (_) {
+    } catch (e) {
+      // Parse failure: file exists but is corrupt. Refuse subsequent
+      // writes so we don't silently overwrite the user's broken-but-real data.
+      _lastReadOk = false;
+      trace('[spaces] PARSE FAILED, refusing writes until resolved: ' + e.message);
       return [];
     }
   }
 
   function writeSpaces(spaces) {
+    if (!_lastReadOk) {
+      trace('[spaces] Write BLOCKED: previous read failed to parse — refusing to clobber existing file');
+      return false;
+    }
     if (!checkWriteRate()) return false;
     const p = discoverSpacesPath();
     if (!p) {
@@ -222,7 +251,10 @@ function createSpacesStore(options) {
       newSpace.instructions = instr;
     }
     spaces.push(newSpace);
-    writeSpaces(spaces);
+    if (!writeSpaces(spaces)) {
+      trace('[spaces] createSpace: write failed, returning null');
+      return null;
+    }
     trace('[spaces] Created space: ' + newSpace.id + ' (' + newSpace.name + ')');
     return newSpace;
   }
@@ -294,7 +326,11 @@ function createSpacesStore(options) {
     const spaces = readSpaces();
     const space = spaces.find(s => s.id === spaceId);
     if (!space || !Array.isArray(space.folders)) return null;
-    space.folders = space.folders.filter(f => f.path !== folderPath);
+    // addFolderToSpace stores the realpath, but the renderer may pass the
+    // original (display) path. Match against both the raw input and the
+    // resolved real path so removal works either way.
+    const resolved = resolvePath(folderPath);
+    space.folders = space.folders.filter(f => f.path !== folderPath && f.path !== resolved);
     space.updatedAt = Date.now();
     writeSpaces(spaces);
     return space;
@@ -362,11 +398,11 @@ function createSpacesStore(options) {
   }
 
   function listFolderContents(_event, folderPath) {
-    if (!isWithinRegisteredFolder(folderPath)) {
-      trace('[spaces] listFolderContents BLOCKED (not in any registered folder): ' + folderPath);
+    const resolved = resolveWithinRegisteredFolder(folderPath);
+    if (!resolved) {
+      trace('[spaces] listFolderContents BLOCKED: ' + folderPath);
       return [];
     }
-    const resolved = resolvePath(folderPath);
     try {
       const entries = fs.readdirSync(resolved, { withFileTypes: true });
       return entries.map(e => ({
@@ -381,11 +417,11 @@ function createSpacesStore(options) {
   }
 
   function readFileContents(_event, filePath) {
-    if (!isWithinRegisteredFolder(filePath)) {
-      trace('[spaces] readFileContents BLOCKED (not in any registered folder): ' + filePath);
+    const resolved = resolveWithinRegisteredFolder(filePath);
+    if (!resolved) {
+      trace('[spaces] readFileContents BLOCKED: ' + filePath);
       return null;
     }
-    const resolved = resolvePath(filePath);
     try {
       return fs.readFileSync(resolved, 'utf8');
     } catch (_) {
@@ -394,11 +430,11 @@ function createSpacesStore(options) {
   }
 
   function openFile(_event, filePath) {
-    if (!isWithinRegisteredFolder(filePath)) {
-      trace('[spaces] openFile BLOCKED (not in any registered folder): ' + filePath);
+    const resolved = resolveWithinRegisteredFolder(filePath);
+    if (!resolved) {
+      trace('[spaces] openFile BLOCKED: ' + filePath);
       return false;
     }
-    const resolved = resolvePath(filePath);
     try {
       const { execFile } = require('child_process');
       execFile('xdg-open', [resolved], { timeout: 5000 });

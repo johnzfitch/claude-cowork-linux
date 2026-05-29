@@ -46,15 +46,21 @@ var _allowedFsRoots = [_realHomeDir];
 function verifyPath(rawPath) {
   if (typeof rawPath !== 'string' || rawPath.length === 0) return null;
   if (rawPath.charCodeAt(0) !== 47) return null;
-  if (rawPath.length > 1 && rawPath.charCodeAt(rawPath.length - 1) === 47) return null;
   if (rawPath.indexOf('\0') >= 0) return null;
-  var segments = rawPath.split('/');
+  // Strip trailing slash for normalization (legitimate directory paths
+  // often arrive with one). Empty result means input was just "/" — reject.
+  var clean = rawPath;
+  while (clean.length > 1 && clean.charCodeAt(clean.length - 1) === 47) {
+    clean = clean.slice(0, -1);
+  }
+  if (clean.length <= 1) return null;
+  var segments = clean.split('/');
   for (var i = 1; i < segments.length; i++) {
     if (segments[i] === '' || segments[i] === '.' || segments[i] === '..') return null;
   }
   var real;
   try {
-    real = fs.realpathSync(rawPath);
+    real = fs.realpathSync(clean);
   } catch (_) {
     return null;
   }
@@ -345,8 +351,20 @@ function createOverrideRegistry(getProcessState) {
     'FileSystem_$_openLocalFile': async (_event, _sessionId, filePath, showInFolder) => {
       var decoded;
       try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
-      var target = showInFolder ? path.dirname(decoded) : decoded;
-      xdgOpen(target, showInFolder ? 'openLocalFile.parent' : 'openLocalFile');
+      if (showInFolder) {
+        // Try the parent directory; if that's outside allowed roots
+        // (e.g. file IS the home dir), fall back to opening the file itself
+        // so users can reveal-in-finder their home.
+        var parent = path.dirname(decoded);
+        var parentReal = verifyPath(parent);
+        if (parentReal) {
+          xdgOpen(parent, 'openLocalFile.parent');
+        } else {
+          xdgOpen(decoded, 'openLocalFile.fallback');
+        }
+      } else {
+        xdgOpen(decoded, 'openLocalFile');
+      }
     },
 
     'FileSystem_$_whichApplication': async (_event, filename) => {

@@ -33,7 +33,10 @@ function createExecCapabilityRegistry({
   resolveClaudeBinaryPath = null,
 } = {}) {
   var home;
-  try { home = fs.realpathSync(homedir); } catch (_) { home = homedir; }
+  try { home = fs.realpathSync(homedir); } catch (e) {
+    console.warn('[exec-capability] homedir realpath failed, using raw path: ' + (e && e.message));
+    home = homedir;
+  }
 
   var SYSTEM_PATHS = Object.freeze({
     git:          Object.freeze(['/usr/bin/git', '/usr/local/bin/git']),
@@ -160,6 +163,12 @@ function createExecCapabilityRegistry({
     return null;
   }
 
+  // Disclaimer unwrap only accepts system-owned binaries or the resolved
+  // claude CLI. User-writable paths (USER_MCP_PREFIXES) are EXCLUDED here
+  // because the asar shouldn't invoke user-installed binaries through the
+  // macOS disclaimer wrapper — only system tools like git. Accepting
+  // user-mcp here would let any IPC-influenced args[0] execute arbitrary
+  // user-installed binaries.
   function resolveDisclaimerCommand(args) {
     if (!Array.isArray(args) || args.length === 0) return null;
     var cmd = args[0];
@@ -169,7 +178,12 @@ function createExecCapabilityRegistry({
       return claudePath ? { cmd: claudePath, rest: rest } : null;
     }
     var resolved = resolve(cmd, rest);
-    return resolved ? { cmd: resolved.cmd, rest: rest } : null;
+    if (!resolved) return null;
+    if (resolved.capabilityId === 'user-mcp') {
+      console.warn('[exec-capability] disclaimer unwrap REJECTED user-mcp path: ' + cmd);
+      return null;
+    }
+    return { cmd: resolved.cmd, rest: rest };
   }
 
   function invalidateClaudeCache() {

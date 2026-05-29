@@ -585,9 +585,15 @@ class SessionOrchestrator {
       }
     } else {
       var passwdHome = global.__coworkPasswdHomedir || os.userInfo().homedir;
+      // Only build VM prefixes if appSupportRoot or claudeVmRoots is provided.
+      // Without an absolute base, path.join('', 'claude-code-vm') would yield
+      // a relative prefix that any relative command starting with that string
+      // could match (passing fs.existsSync via process.cwd() resolution).
       const vmPrefixes = Array.isArray(claudeVmRoots) && claudeVmRoots.length > 0
         ? claudeVmRoots.map((r) => path.resolve(r) + path.sep)
-        : [path.join(appSupportRoot || '', 'claude-code-vm') + path.sep];
+        : (appSupportRoot && path.isAbsolute(appSupportRoot)
+            ? [path.join(appSupportRoot, 'claude-code-vm') + path.sep]
+            : []);
       const fallbackPrefixes = [
         ...vmPrefixes,
         path.join(passwdHome, '.local/bin/'),
