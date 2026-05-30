@@ -5,13 +5,14 @@ to work with claude-cowork-linux. `install.sh` and the launcher grep the
 machine-readable lines below; the table further down is for humans.
 
 <!-- machine-readable; do not remove the next two lines -->
-<!-- LAST_TESTED_ASAR_VERSION=1.6259.1 -->
-<!-- LAST_TESTED_DATE=2026-05-14 -->
+<!-- LAST_TESTED_ASAR_VERSION=1.9659.2 -->
+<!-- LAST_TESTED_DATE=2026-05-30 -->
 
 ## Tested versions
 
 | Asar     | Status     | Date       | Notes                                                |
 |:---------|:-----------|:-----------|:-----------------------------------------------------|
+| 1.9659.2 | [PARTIAL]  | 2026-05-30 | Requires `app.configureWebAuthn` stub (PR #130); app launches, growthbook OK, cowork rails engaged. Full feature exercise (login, sessions, MCP) pending. |
 | 1.6259.1 | [OK]       | 2026-05-14 | v5.1.0 baseline. Activity stubs and bridge rails verified via test suite. |
 | 1.6608.2 | [PARTIAL]  | 2026-05-07 | `/setup-cowork` reports "Unsupported platform: linux-x64" -- see issue #114. |
 | 1.6700.0 | [UNTESTED] | -          | Not yet exercised by any contributor.                |
