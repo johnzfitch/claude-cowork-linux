@@ -49,6 +49,7 @@ if (_earlyApp) {
     'updateCurrentActivity',
     'resignCurrentActivity',
     'getCurrentActivityType',
+    'configureWebAuthn',
   ];
   for (const _m of _macOnlyAppMethods) {
     if (typeof _earlyApp[_m] !== 'function') {
