@@ -28,6 +28,7 @@ function validDeps() {
     ipcOverridesRegistry: { 'FileSystem_$_readLocalFile': () => {} },
     autoPermissionsCap: { wrapHandler: () => {}, hasTimer: () => false, CAP_MS: 0 },
     mountRootBound: { isMountRootTooBroad: () => false },
+    execCapabilityRegistry: { resolve: () => null, resolveCapability: () => null },
   };
 }
 
@@ -36,7 +37,7 @@ describe('startup check', () => {
     const s = makeStubs();
     const entry = runStartupCheck({ ...validDeps(), ...s });
     assert.equal(entry.ok, true);
-    assert.equal(entry.results.length, 3);
+    assert.equal(entry.results.length, 4);
     for (const r of entry.results) assert.equal(r.ok, true, r.check);
     assert.equal(s.warns.length, 0);
     assert.equal(s.notifies.length, 0);

@@ -47,7 +47,7 @@ function isEnabledByEnv() {
 }
 
 function defaultLogPath() {
-  const xdgState = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+  const xdgState = process.env.XDG_STATE_HOME || path.join(global.__coworkPasswdHomedir || os.userInfo().homedir, '.local', 'state');
   return path.join(xdgState, 'claude-cowork', 'logs', 'bridge-canary.jsonl');
 }
 

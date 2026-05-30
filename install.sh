@@ -332,14 +332,18 @@ get_archive() {
 
     # 2. Prompt before downloading. The user picks whether to fetch
     #    the latest available version (which may be untested) or to
-    #    abort and supply a specific version via CLAUDE_ARCHIVE.
+    #    supply a tested version manually via CLAUDE_ARCHIVE.
     if command_exists node; then
         local last_tested
         last_tested=$(compat_read_last_tested "$script_dir/COMPAT.md")
         local latest_version=""
-        if [[ -f "$script_dir/fetch-dmg.js" ]]; then
+        local fetch_script=""
+        [[ -f "$script_dir/fetch-dmg.js" ]] && fetch_script="$script_dir/fetch-dmg.js"
+        [[ -z "$fetch_script" && -f "$INSTALL_DIR/fetch-dmg.js" ]] && fetch_script="$INSTALL_DIR/fetch-dmg.js"
+
+        if [[ -n "$fetch_script" ]]; then
             local json
-            json=$(node "$script_dir/fetch-dmg.js" --json 2>/dev/null) || true
+            json=$(node "$fetch_script" --json 2>/dev/null) || true
             if [[ -n "$json" ]]; then
                 latest_version=$(printf '%s' "$json" \
                     | node -e "process.stdin.on('data',d=>{try{process.stdout.write(JSON.parse(d).version||'')}catch{}})" \
@@ -351,28 +355,57 @@ get_archive() {
         log_info "Last tested asar:  $last_tested  (see COMPAT.md)"
         if [[ -n "$latest_version" ]]; then
             log_info "Latest on CDN:     $latest_version"
-            if compat_version_is_newer "$latest_version" "$last_tested"; then
-                log_warn "Latest is newer than the last tested version."
-                log_warn "Untested versions may break features. Review COMPAT.md first."
-            fi
+        fi
+
+        local is_untested=false
+        if [[ -n "$latest_version" ]] && compat_version_is_newer "$latest_version" "$last_tested"; then
+            is_untested=true
+            log_warn "Latest is newer than the last tested version."
+            log_warn "Untested versions may break features. Review COMPAT.md first."
         fi
 
         local proceed=0
         if [[ "${INSTALL_FORCE:-0}" -eq 1 ]]; then
             proceed=1
         elif [[ ! -t 0 ]]; then
-            # Non-interactive (piped) install: refuse without --force to
-            # avoid silently downloading an untested upstream.
+            log_warn "Repository updated. Stub-only fixes are live — run launch.sh to apply them without a re-download."
             log_error "Non-interactive install requires --force (or --yes) to confirm download."
             log_error "Re-run as: bash install.sh --force"
             die "Aborting: no confirmation possible"
         else
-            local prompt_target="${latest_version:-the latest available version}"
-            echo -n "  Download Claude Desktop ${prompt_target}? [y/N] "
+            if [[ "$is_untested" == true ]]; then
+                echo ""
+                echo "  Options:"
+                echo "    y  - download $latest_version (untested, may break)"
+                echo "    t  - show instructions for installing the tested version ($last_tested)"
+                echo "    n  - cancel"
+                echo ""
+                echo -n "  Choice [y/t/N]: "
+            else
+                local prompt_target="${latest_version:-the latest available version}"
+                echo -n "  Download Claude Desktop ${prompt_target}? [y/N] "
+            fi
             local reply
             read -r reply
             case "$reply" in
                 y|Y|yes|YES) proceed=1 ;;
+                t|T)
+                    # Tell the user how to get the tested version. We do NOT
+                    # construct download URLs -- the user gets the archive
+                    # from Anthropic directly and passes it to us.
+                    echo ""
+                    echo "  To install the tested version ($last_tested):"
+                    echo ""
+                    echo "  1. Download the Claude Desktop $last_tested DMG from Anthropic."
+                    echo "     The macOS installer is at: https://claude.ai/download"
+                    echo "     (You may need to find the specific version in your download history"
+                    echo "     or ask Anthropic support for a direct link.)"
+                    echo ""
+                    echo "  2. Re-run the installer with the downloaded file:"
+                    echo "     CLAUDE_ARCHIVE=/path/to/Claude-${last_tested}.dmg bash install.sh"
+                    echo ""
+                    die "Install paused. Re-run with CLAUDE_ARCHIVE set."
+                    ;;
                 *) proceed=0 ;;
             esac
         fi
@@ -515,7 +548,7 @@ install_stubs() {
     cp "$native_src" "$target_dir/node_modules/@ant/claude-native/index.js"
 
     # Copy frame-fix files
-    for f in frame-fix-wrapper.js frame-fix-entry.js; do
+    for f in frame-fix-wrapper.js frame-fix-entry.js protocol-forwarder.js; do
         if [[ -f "$stub_src/stubs/frame-fix/$f" ]]; then
             cp "$stub_src/stubs/frame-fix/$f" "$target_dir/$f"
         fi
@@ -616,6 +649,7 @@ STATE_HOME="\${XDG_STATE_HOME:-\$HOME/.local/state}"
 LOG_DIR="\${CLAUDE_LOG_DIR:-\$STATE_HOME/claude-cowork/logs}"
 export CLAUDE_LOG_DIR="\$LOG_DIR"
 mkdir -p "\$LOG_DIR"
+chmod 700 "\$LOG_DIR"
 
 cd "\$COWORK_DIR"
 
@@ -643,6 +677,34 @@ case "\${1:-}" in
     --debug)    shift; export CLAUDE_TRACE=1; _warn_if_untested_asar; exec ./launch.sh "\$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
     --update)   shift; exec ./install.sh --update "\$@" ;;
+    claude://*)
+        # Protocol handler callback (e.g. OAuth redirect from browser).
+        # Skip the full launch.sh setup — just forward the URL to the already-running
+        # instance via Electron's single-instance mechanism.
+        FORWARDER="\$COWORK_DIR/protocol-forwarder.js"
+        if [ ! -f "\$FORWARDER" ]; then
+            nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
+                -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
+            disown
+        else
+            ELECTRON_BIN=""
+            if [[ -x "\$HOME/.local/lib/node_modules/electron/dist/electron" ]]; then
+                ELECTRON_BIN="\$HOME/.local/lib/node_modules/electron/dist/electron"
+            elif [[ -x "\$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron" ]]; then
+                ELECTRON_BIN="\$COWORK_DIR/squashfs-root/usr/lib/node_modules/electron/dist/electron"
+            elif command -v electron >/dev/null 2>&1; then
+                ELECTRON_BIN="\$(command -v electron)"
+            fi
+            if [ -n "\$ELECTRON_BIN" ]; then
+                nohup "\$ELECTRON_BIN" "\$FORWARDER" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
+                disown
+            else
+                nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
+                    -- "\$COWORK_DIR" "\$@" >> "\$LOG_DIR/startup.log" 2>&1 &
+                disown
+            fi
+        fi
+        ;;
     *)
         _warn_if_untested_asar
         nohup bash -c 'cd "\$1" && shift && exec ./launch.sh "\$@"' \\
@@ -679,14 +741,18 @@ setup_environment() {
     mkdir -p "$cache_dir"
     mkdir -p "$sessions_dir"
     chmod 700 "$data_dir"
+    chmod 700 "$log_dir"
+    chmod 700 "$cache_dir"
+    chmod 700 "$sessions_dir"
 
-    # /sessions symlink — the asar passes VM-internal /sessions/... paths that
-    # our stub translates to host paths under this sessions directory.
+    # /sessions symlink — optional. The frame-fix-wrapper fs patch rewrites
+    # /sessions/ paths to SESSIONS_BASE at the Node.js fs layer, so the
+    # symlink is not required. Create it when possible for compatibility.
     if [[ ! -e /sessions ]]; then
-        log_info "Creating /sessions symlink (requires sudo)..."
+        log_info "Attempting /sessions symlink (optional, requires sudo)..."
         sudo ln -s "$sessions_dir" /sessions \
             && log_success "/sessions -> $sessions_dir" \
-            || log_warn "Failed to create /sessions symlink. Run manually: sudo ln -s \"$sessions_dir\" /sessions"
+            || log_info "/sessions symlink not created (optional — fs patch handles rewriting)"
     elif [[ -L /sessions ]]; then
         local current_target
         current_target=$(readlink /sessions)
@@ -901,6 +967,9 @@ doctor() {
     fi
 
     # --- /sessions symlink ---
+    # Note: the fs path redirect patch in frame-fix-wrapper.js rewrites
+    # /sessions/ paths to SESSIONS_BASE at runtime, so the symlink is
+    # optional. It's still created when possible for compatibility.
     if [[ -L /sessions ]]; then
         local target
         target=$(readlink /sessions)
@@ -910,8 +979,8 @@ doctor() {
         log_warn "/sessions exists but is a directory (should be a symlink)"
         warn=$((warn + 1))
     else
-        log_error "/sessions: NOT FOUND -- run: sudo ln -s \"\${XDG_CONFIG_HOME:-\$HOME/.config}/Claude/local-agent-mode-sessions/sessions\" /sessions"
-        fail=$((fail + 1))
+        log_warn "/sessions symlink not present (optional — fs patch handles path rewriting)"
+        warn=$((warn + 1))
     fi
 
     # --- Secret service (D-Bus) ---

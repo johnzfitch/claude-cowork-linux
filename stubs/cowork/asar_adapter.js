@@ -6,7 +6,7 @@ const { filterTranscriptMessages } = require('./session_normalization.js');
 // Compute the macOS-style legacy path that the asar's minified code constructs
 // and the XDG path that Electron actually uses on Linux.
 const os = require('os');
-const _homeDir = os.homedir();
+const _homeDir = global.__coworkPasswdHomedir || os.userInfo().homedir;
 const _xdgConfigHome = (typeof process.env.XDG_CONFIG_HOME === 'string' && process.env.XDG_CONFIG_HOME.trim())
   ? path.resolve(process.env.XDG_CONFIG_HOME)
   : path.join(_homeDir, '.config');

@@ -203,7 +203,7 @@ function resolveClaudeBinaryPath() {
     }
   }
 
-  const home = os.homedir();
+  const home = (global.__coworkPasswdHomedir || os.userInfo().homedir);
   const linuxCandidates = [
     path.join(home, '.local/bin/claude'),
     path.join(home, '.npm-global/bin/claude'),
@@ -321,7 +321,7 @@ function createMountSymlinks(sessionName, additionalMounts) {
         failedMounts.push(mountName);
         continue;
       }
-      const hostUploadsPath = path.join(os.homedir(), uploadsRelPath);
+      const hostUploadsPath = path.join((global.__coworkPasswdHomedir || os.userInfo().homedir), uploadsRelPath);
       try {
         fs.mkdirSync(hostUploadsPath, { recursive: true, mode: 0o700 });
         if (fs.existsSync(mountPoint)) {
@@ -399,7 +399,7 @@ function createMountSymlinks(sessionName, additionalMounts) {
     // Since Claude Desktop v1.569.0+, getVMStorageSubpath returns root-relative
     // subpaths (e.g. "home/user/.config/...") instead of homedir-relative paths.
     // Detect this format to avoid doubled paths like /home/user/home/user/...
-    const _homedir = os.homedir();
+    const _homedir = (global.__coworkPasswdHomedir || os.userInfo().homedir);
     const _asAbsolute = '/' + relativePath;
     const hostPath = relativePath === ''
       ? _homedir
@@ -1122,10 +1122,17 @@ class SwiftAddonStub extends EventEmitter {
         trace('vm.isSupported() called');
         return true;
       },
-      isGuestConnected: () => {
-        console.log('[claude-swift] vm.isGuestConnected() called - returning', self._guestConnected);
-        return Promise.resolve(self._guestConnected);
-      },
+      isGuestConnected: (() => {
+        let _lastLog = 0;
+        return () => {
+          const now = Date.now();
+          if (now - _lastLog > 60000) {
+            console.log('[claude-swift] vm.isGuestConnected() ->', self._guestConnected);
+            _lastLog = now;
+          }
+          return Promise.resolve(self._guestConnected);
+        };
+      })(),
       getRunningStatus: () => {
         const status = {
           running: true,
@@ -1178,7 +1185,9 @@ class SwiftAddonStub extends EventEmitter {
           return { success: true };
         } catch {}
 
-        const arch = os.arch() === 'arm64' ? 'linux-arm64' : 'linux-x64';
+        // Use real arch, not spoofed (process.arch is spoofed to arm64 for macOS compat)
+        const realArch = require('child_process').execFileSync('uname', ['-m'], { encoding: 'utf8' }).trim();
+        const arch = realArch === 'aarch64' ? 'linux-arm64' : 'linux-x64';
         const url = 'https://downloads.claude.ai/claude-code-releases/' + encodeURIComponent(version) + '/' + arch + '/claude.zst';
         console.log('[claude-swift] Downloading SDK binary from ' + url);
         trace('vm.installSdk() downloading ' + url + ' -> ' + targetBin);
@@ -1621,7 +1630,21 @@ class SwiftAddonStub extends EventEmitter {
     processState.deferredResultLine = null;
     processState.stdoutSeq = 0;
 
-    const proc = nodeSpawn(processState.command, processState.args || [], spawnContext.spawnOptions);
+    // Optional bwrap sandbox (CLAUDE_COWORK_SANDBOX=1). Off by default;
+    // when enabled and bwrap is installed, wraps the spawn with a
+    // conservative sandbox profile defined in process_manager.wrapWithBwrap.
+    var spawnCmd = processState.command;
+    var spawnArgs = processState.args || [];
+    try {
+      var { wrapWithBwrap: _wrapBwrap } = require('../../../cowork/process_manager.js');
+      var wrapped = _wrapBwrap ? _wrapBwrap(spawnCmd, spawnArgs, spawnContext.spawnOptions && spawnContext.spawnOptions.cwd) : null;
+      if (wrapped) {
+        trace('[sandbox] wrapping spawn with bwrap: ' + wrapped.command);
+        spawnCmd = wrapped.command;
+        spawnArgs = wrapped.args;
+      }
+    } catch (_) {}
+    const proc = nodeSpawn(spawnCmd, spawnArgs, spawnContext.spawnOptions);
     this._processes.set(processState.id, proc);
     this._attachProcessListeners(processState, proc);
 

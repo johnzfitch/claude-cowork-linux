@@ -378,7 +378,7 @@ function readRemoteSessionIdFromBridgeState(deps) {
   } = deps || {};
 
   const defaultBridgePath = path.join(
-    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+    process.env.XDG_CONFIG_HOME || path.join(global.__coworkPasswdHomedir || os.userInfo().homedir, '.config'),
     'Claude', 'bridge-state.json'
   );
   const filePath = typeof bridgeStatePath === 'string' && bridgeStatePath.trim()
@@ -484,9 +484,31 @@ class SessionOrchestrator {
       args,
       envVars,
       additionalMounts,
-      sharedCwdPath,
+      sharedCwdPath: rawSharedCwdPath,
       onError,
     } = context || {};
+
+    // Fix: asar passes sharedCwdPath=false (boolean) instead of a path string.
+    // When falsy, recover from session metadata's userSelectedFolders so the CLI
+    // gets the correct cwd and project key persists across restarts.
+    const trace = this._deps.trace || (() => {});
+    let sharedCwdPath = rawSharedCwdPath;
+    if (!sharedCwdPath || typeof sharedCwdPath !== 'string') {
+      const sessionStore = this._deps.sessionStore;
+      if (sessionStore) {
+        const activeInfo = sessionStore.getActiveSessionInfo();
+        if (activeInfo && activeInfo.preferredRoot) {
+          sharedCwdPath = activeInfo.preferredRoot;
+          trace('[cwd-fix] Recovered sharedCwdPath from active session: ' + sharedCwdPath);
+        } else if (typeof processId === 'string' && processId.startsWith('local_')) {
+          const sessionInfo = sessionStore.getSessionInfo(processId);
+          if (sessionInfo && sessionInfo.preferredRoot) {
+            sharedCwdPath = sessionInfo.preferredRoot;
+            trace('[cwd-fix] Recovered sharedCwdPath from session metadata: ' + sharedCwdPath);
+          }
+        }
+      }
+    }
     const {
       appSupportRoot,
       canonicalizePathForHostAccess,
@@ -494,7 +516,6 @@ class SessionOrchestrator {
       claudeVmRoots,
       resolveClaudeBinaryPath,
       sessionsBase,
-      trace = () => {},
       translateVmPathStrict,
     } = this._deps;
 
@@ -512,21 +533,8 @@ class SessionOrchestrator {
       return mountResult;
     }
 
-    // Step 2: Define allowed binary paths for security
-    const home = os.homedir();
-    const allowedVmPrefixes = Array.isArray(claudeVmRoots) && claudeVmRoots.length > 0
-      ? claudeVmRoots.map((vmRoot) => path.resolve(vmRoot) + path.sep)
-      : [path.join(appSupportRoot, 'claude-code-vm') + path.sep];
-    const allowedPrefixes = [
-      ...allowedVmPrefixes,
-      path.join(home, '.local/bin/'),
-      path.join(home, '.local/share/claude/'),
-      path.join(home, '.npm-global/bin/'),
-      '/usr/local/bin/',
-      '/usr/bin/',
-    ];
-
-    // Step 3: Resolve command to host binary path
+    // Step 2: Resolve command via capability registry
+    const execRegistry = this._deps.execRegistry || global.__coworkExecRegistry;
     const normalizedCommand = (typeof command === 'string' || command instanceof String)
       ? String(command).trim()
       : '';
@@ -538,14 +546,23 @@ class SessionOrchestrator {
       normalizedCommand === 'claude' ||
       commandBasename === 'claude'
     ) {
-      hostCommand = resolveClaudeBinaryPath();
+      const cap = execRegistry
+        ? execRegistry.resolveCapability('claude-cli')
+        : null;
+      hostCommand = cap ? cap.exec : resolveClaudeBinaryPath();
       trace('Translated command: ' + normalizedCommand + ' -> ' + hostCommand);
-      } else if (
+    } else if (
       normalizedCommand === 'bash' ||
       commandBasename === 'bash'
     ) {
-      const bashCandidates = ['/usr/bin/bash', '/bin/bash'];
-      hostCommand = bashCandidates.find((c) => fs.existsSync(c));
+      const cap = execRegistry
+        ? execRegistry.resolveCapability('system-bash')
+        : null;
+      if (cap) {
+        hostCommand = cap.exec;
+      } else {
+        hostCommand = ['/usr/bin/bash', '/bin/bash'].find((c) => fs.existsSync(c));
+      }
       if (!hostCommand) {
         trace('bash requested but not found on host');
         if (typeof onError === 'function') {
@@ -554,31 +571,48 @@ class SessionOrchestrator {
         return { success: false, error: 'bash not found' };
       }
       trace('Translated bash command: ' + normalizedCommand + ' -> ' + hostCommand);
-    } else if (allowedPrefixes.some((prefix) => normalizedCommand.startsWith(prefix))) {
-      if (fs.existsSync(normalizedCommand)) {
-        hostCommand = normalizedCommand;
-        trace('Command is an allowed absolute path: ' + normalizedCommand);
+    } else if (execRegistry) {
+      const resolved = execRegistry.resolve(normalizedCommand, args);
+      if (resolved) {
+        hostCommand = resolved.cmd;
+        trace('Command resolved via capability "' + resolved.capabilityId + '": ' + normalizedCommand);
       } else {
-        hostCommand = resolveClaudeBinaryPath();
-        trace('Allowed absolute path missing, resolved: ' + normalizedCommand + ' -> ' + hostCommand);
+        trace('Unexpected command blocked: "' + String(command) + '" (type=' + typeof command + ')');
+        if (typeof onError === 'function') {
+          onError(processId, 'Unexpected command: ' + String(command), '');
+        }
+        return { success: false, error: 'Unexpected command' };
       }
     } else {
-      trace('Unexpected command blocked: "' + String(command) + '" (type=' + typeof command + ')');
-      if (typeof onError === 'function') {
-        onError(processId, 'Unexpected command: ' + String(command), '');
+      var passwdHome = global.__coworkPasswdHomedir || os.userInfo().homedir;
+      // Only build VM prefixes if appSupportRoot or claudeVmRoots is provided.
+      // Without an absolute base, path.join('', 'claude-code-vm') would yield
+      // a relative prefix that any relative command starting with that string
+      // could match (passing fs.existsSync via process.cwd() resolution).
+      const vmPrefixes = Array.isArray(claudeVmRoots) && claudeVmRoots.length > 0
+        ? claudeVmRoots.map((r) => path.resolve(r) + path.sep)
+        : (appSupportRoot && path.isAbsolute(appSupportRoot)
+            ? [path.join(appSupportRoot, 'claude-code-vm') + path.sep]
+            : []);
+      const fallbackPrefixes = [
+        ...vmPrefixes,
+        path.join(passwdHome, '.local/bin/'),
+        path.join(passwdHome, '.local/share/claude/'),
+        path.join(passwdHome, '.npm-global/bin/'),
+        path.join(os.userInfo().homedir, '.local/bin/'),
+        '/usr/local/bin/',
+        '/usr/bin/',
+      ];
+      if (normalizedCommand && fallbackPrefixes.some((p) => normalizedCommand.startsWith(p)) && fs.existsSync(normalizedCommand)) {
+        hostCommand = normalizedCommand;
+        trace('No exec registry, allowed absolute path: ' + normalizedCommand);
+      } else {
+        trace('Unexpected command blocked (no registry): "' + String(command) + '"');
+        if (typeof onError === 'function') {
+          onError(processId, 'Unexpected command: ' + String(command), '');
+        }
+        return { success: false, error: 'Unexpected command' };
       }
-      return { success: false, error: 'Unexpected command' };
-    }
-
-    // Security check: Ensure resolved command is in allowed directories
-    const commandIsAllowed = hostCommand === 'claude' ||
-      allowedPrefixes.some((prefix) => hostCommand.startsWith(prefix));
-    if (!commandIsAllowed) {
-      trace('Command outside allowed directories: ' + hostCommand);
-      if (typeof onError === 'function') {
-        onError(processId, 'Invalid binary path', '');
-      }
-      return { success: false, error: 'Invalid binary path' };
     }
 
     // Step 4: Translate VM paths in arguments to host paths
@@ -607,6 +641,16 @@ class SessionOrchestrator {
       filteredArgs.push(hostArgs[index]);
     }
     hostArgs = filteredArgs;
+
+    // Step 5b: Remap unsupported CLI flags
+    // Claude Desktop may pass --effort xhigh, but the SDK binary only supports
+    // low/medium/high/max. Remap xhigh -> max to prevent exit code 1.
+    for (let i = 0; i < hostArgs.length; i += 1) {
+      if (hostArgs[i] === '--effort' && i + 1 < hostArgs.length && hostArgs[i + 1] === 'xhigh') {
+        trace('Remapped --effort xhigh -> max');
+        hostArgs[i + 1] = 'max';
+      }
+    }
 
     // Step 6: Ensure sessions base directory exists
     try {
@@ -1787,7 +1831,7 @@ function transformSdkMessages(messages, sessionIdOverride) {
 }
 
 // Global Claude Code config directory (skills, commands, settings, etc.)
-const GLOBAL_CLAUDE_DIR = path.join(os.homedir(), '.claude');
+const GLOBAL_CLAUDE_DIR = path.join(global.__coworkPasswdHomedir || os.userInfo().homedir, '.claude');
 
 /**
  * Symlink global Claude Code config into a session's CLAUDE_CONFIG_DIR.

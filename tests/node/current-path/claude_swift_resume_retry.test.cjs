@@ -49,6 +49,7 @@ function runSwiftRetryHarness(options) {
 
   const script = `
     const fs = require('fs');
+    global.__coworkPasswdHomedir = ${JSON.stringify(tempHome)};
     const addon = require(${JSON.stringify(modulePath)});
     const resultFile = ${JSON.stringify(resultFile)};
     const outputs = [];
@@ -124,8 +125,7 @@ function runSwiftBridgeHarness(options) {
 
   const script = `
     const fs = require('fs');
-    // No API mock needed — bridge resolution reads bridge-state.json only,
-    // CLI self-bootstraps its own /bridge call via CLAUDE_CODE_USE_CCR_V2
+    global.__coworkPasswdHomedir = ${JSON.stringify(tempHome)};
     global.__coworkSessionsApiRequestSync = () => {
       throw new Error('Unexpected sessions API request — orchestrator should not call API');
     };

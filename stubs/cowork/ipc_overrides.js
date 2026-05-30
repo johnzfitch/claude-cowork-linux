@@ -20,6 +20,7 @@ const {
   COMPUTER_USE_TCC_GRANTED,
   COMPUTER_USE_TCC_REQUEST_GRANTED,
 } = require('./linux_ipc_stubs.js');
+const { createSpacesStore } = require('./spaces_store.js');
 
 // -- Helpers --
 
@@ -28,25 +29,89 @@ const {
 const _verbose = process.env.CLAUDE_COWORK_VERBOSE === '1';
 function vlog(msg) { if (_verbose) console.log(msg); }
 
-const _homeDir = require('os').homedir();
-const _allowedFsRoots = [_homeDir, '/tmp'];
+// Security boundary: homedir resolved to canonical form at load time.
+// Uses passwd-based homedir (not $HOME), then realpathSync to defeat
+// symlinked home directories.
+var _rawHomeDir = global.__coworkPasswdHomedir || require('os').userInfo().homedir;
+var _realHomeDir;
+try { _realHomeDir = fs.realpathSync(_rawHomeDir); } catch (_) { _realHomeDir = _rawHomeDir; }
+
+// Only the user's home directory is an allowed root. No /tmp, no
+// system dirs, no world-writable paths.
+var _allowedFsRoots = [_realHomeDir];
+
+// Validate and resolve a path in one pass. No normalization, no
+// transformation. The input must be a clean absolute path as-given.
+// Returns the canonical real path if valid, null if anything is wrong.
+function verifyPath(rawPath) {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) return null;
+  if (rawPath.charCodeAt(0) !== 47) return null;
+  if (rawPath.indexOf('\0') >= 0) return null;
+  // Strip trailing slash for normalization (legitimate directory paths
+  // often arrive with one). Empty result means input was just "/" — reject.
+  var clean = rawPath;
+  while (clean.length > 1 && clean.charCodeAt(clean.length - 1) === 47) {
+    clean = clean.slice(0, -1);
+  }
+  if (clean.length <= 1) return null;
+  var segments = clean.split('/');
+  for (var i = 1; i < segments.length; i++) {
+    if (segments[i] === '' || segments[i] === '.' || segments[i] === '..') return null;
+  }
+  var real;
+  try {
+    real = fs.realpathSync(clean);
+  } catch (_) {
+    return null;
+  }
+  if (!_allowedFsRoots.some(function(root) {
+    return real === root || real.startsWith(root + '/');
+  })) {
+    return null;
+  }
+  return real;
+}
 
 function isPathWithinAllowedRoots(filePath) {
-  // Reject non-absolute up front: path.resolve would fall back to process.cwd()
-  // and make the policy depend on runtime working directory.
-  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
-    return false;
-  }
-  let resolved;
-  try {
-    resolved = fs.realpathSync(filePath);
-  } catch (_) {
-    // File may not exist yet (for open/show); the input is already absolute
-    resolved = path.normalize(filePath);
-  }
-  return _allowedFsRoots.some(root =>
-    resolved === root || resolved.startsWith(root + path.sep)
-  );
+  return verifyPath(filePath) !== null;
+}
+
+function getSpacesStore() {
+  // Reuse the early-registered store from frame-fix-wrapper if it exists.
+  // Two separate instances would have separate rate-limit state and could
+  // race on the spaces.json atomic rename — single global instance avoids both.
+  if (global.__coworkSpacesStore) return global.__coworkSpacesStore;
+  const dirs = global.__coworkDirs;
+  const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_realHomeDir, '.config', 'Claude', 'local-agent-mode-sessions');
+  global.__coworkSpacesStore = createSpacesStore({ localAgentRoot, isPathAllowed: isPathWithinAllowedRoots, trace: vlog });
+  return global.__coworkSpacesStore;
+}
+
+function createSpacesOverrides() {
+  const store = getSpacesStore();
+  return {
+    'CoworkSpaces_$_getAllSpaces': async (event) => store.getAllSpaces(),
+    'CoworkSpaces_$_getSpace': async (event, spaceId) => store.getSpace(event, spaceId),
+    'CoworkSpaces_$_createSpace': async (event, spaceData) => store.createSpace(event, spaceData),
+    'CoworkSpaces_$_updateSpace': async (event, spaceId, updates) => store.updateSpace(event, spaceId, updates),
+    'CoworkSpaces_$_deleteSpace': async (event, spaceId) => store.deleteSpace(event, spaceId),
+    'CoworkSpaces_$_addFolderToSpace': async (event, spaceId, folderPath) => store.addFolderToSpace(event, spaceId, folderPath),
+    'CoworkSpaces_$_removeFolderFromSpace': async (event, spaceId, folderPath) => store.removeFolderFromSpace(event, spaceId, folderPath),
+    'CoworkSpaces_$_addProjectToSpace': async (event, spaceId, project) => store.addProjectToSpace(event, spaceId, project),
+    'CoworkSpaces_$_removeProjectFromSpace': async (event, spaceId, projectId) => store.removeProjectFromSpace(event, spaceId, projectId),
+    'CoworkSpaces_$_addLinkToSpace': async (event, spaceId, link) => store.addLinkToSpace(event, spaceId, link),
+    'CoworkSpaces_$_removeLinkFromSpace': async (event, spaceId, linkId) => store.removeLinkFromSpace(event, spaceId, linkId),
+    'CoworkSpaces_$_getAutoMemoryDir': async (event, spaceId) => store.getAutoMemoryDir(event, spaceId),
+    'CoworkSpaces_$_listFolderContents': async (event, folderPath) => store.listFolderContents(event, folderPath),
+    'CoworkSpaces_$_readFileContents': async (event, filePath) => store.readFileContents(event, filePath),
+    'CoworkSpaces_$_openFile': async (event, filePath) => store.openFile(event, filePath),
+    'CoworkSpaces_$_copyFilesToSpaceFolder': async (event, spaceId, files) => store.copyFilesToSpaceFolder(event, spaceId, files),
+    'CoworkSpaces_$_createSpaceFolder': async (event, spaceId, folderName) => store.createSpaceFolder(event, spaceId, folderName),
+    'CoworkSpaces_$_classifySessions': async (event, sessions) => store.classifySessions(event, sessions),
+    'CoworkSpaces_$_setAutoDescription': async (event, spaceId, description) => store.setAutoDescription(event, spaceId, description),
+    'CoworkSpaces_$_summarizeSpace': async (event, spaceId) => store.summarizeSpace(event, spaceId),
+    'CoworkSpaces_$_onSpaceEvent': async (event, callback) => store.onSpaceEvent(event, callback),
+  };
 }
 
 function getMimeType(filePath) {
@@ -73,24 +138,37 @@ function isBinaryMime(mime) {
   return BINARY_MIME_PREFIXES.some(p => mime.startsWith(p));
 }
 
-function readLocalFileContent(filePath) {
-  const buf = fs.readFileSync(filePath);
-  const mime = getMimeType(filePath);
-  const fileName = path.basename(filePath);
-  if (isBinaryMime(mime)) {
-    return { content: buf.toString('base64'), mimeType: mime, fileName, encoding: 'base64' };
+// Public API: front-door validator. Logs every block with the original
+// input. Returns the file content or null. Internal _readVerifiedContent
+// trusts its input — it can only be reached after verifyPath succeeds.
+function readLocalFileContent(rawPath, context) {
+  var real = verifyPath(rawPath);
+  if (!real) {
+    console.warn('[Cowork] ' + (context || 'readLocalFileContent') + ' BLOCKED:', rawPath);
+    return null;
   }
-  return { content: buf.toString('utf-8'), mimeType: mime, fileName, encoding: 'utf-8' };
+  return _readVerifiedContent(real);
+}
+
+function _readVerifiedContent(real) {
+  var buf = fs.readFileSync(real);
+  var mime = getMimeType(real);
+  var fileName = path.basename(real);
+  if (isBinaryMime(mime)) {
+    return { content: buf.toString('base64'), mimeType: mime, fileName: fileName, encoding: 'base64' };
+  }
+  return { content: buf.toString('utf-8'), mimeType: mime, fileName: fileName, encoding: 'utf-8' };
 }
 
 const XDG_APP_DIRS = [
   '/usr/share/applications',
   '/usr/local/share/applications',
-  path.join(require('os').homedir(), '.local', 'share', 'applications'),
+  path.join(_realHomeDir, '.local', 'share', 'applications'),
 ];
 
 function readDesktopFile(desktopFile) {
   if (!desktopFile) return null;
+  if (path.basename(desktopFile) !== desktopFile) return null;
   for (const dir of XDG_APP_DIRS) {
     try {
       return fs.readFileSync(path.join(dir, desktopFile), 'utf-8');
@@ -124,74 +202,108 @@ function getExecFromDesktop(desktopFile) {
 
 
 // Terminal emulator resolution — cached after first successful lookup.
-// Checks: $TERMINAL env, xdg-terminal-exec, then common emulators.
+// EVERY path goes through validateBinary() so PATH-hijacking attacks
+// (malicious 'kitty' on $PATH) are blocked the same way $TERMINAL is.
 let _resolvedTerminal = undefined;
+
+const _TERMINAL_SAFE_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+
+function validateTerminalBinary(binName) {
+  // Resolve the binary via `which` and confirm it lives in a system dir
+  // (or is accepted by the exec capability registry). Returns the
+  // resolved path or null.
+  var resolvedPath;
+  try {
+    resolvedPath = execFileSync('which', [binName], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+  } catch (_) {
+    return null;
+  }
+  if (!resolvedPath) return null;
+  var registry = global.__coworkExecRegistry || null;
+  if (registry) {
+    var cap = registry.resolve(resolvedPath, []);
+    if (cap && (cap.capabilityId === 'system-cmd' || (typeof cap.capabilityId === 'string' && cap.capabilityId.indexOf('system-') === 0))) {
+      return resolvedPath;
+    }
+    return null;
+  }
+  // Registry not available — fall back to system dir check.
+  if (_TERMINAL_SAFE_DIRS.some(function(d) { return resolvedPath.startsWith(d); })) {
+    return resolvedPath;
+  }
+  return null;
+}
+
 function resolveTerminal() {
   if (_resolvedTerminal !== undefined) return _resolvedTerminal;
-  // 1. Respect $TERMINAL env var (user's explicit preference)
-  const SAFE_BIN_DIRS = ['/usr/bin/', '/usr/local/bin/', '/usr/lib/', '/snap/bin/'];
+  // 1. $TERMINAL env var
   const envTerm = process.env.TERMINAL;
   if (envTerm) {
-    try {
-      const resolvedPath = execFileSync('which', [envTerm], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-      if (resolvedPath && SAFE_BIN_DIRS.some(d => resolvedPath.startsWith(d))) {
-        _resolvedTerminal = { bin: resolvedPath, spawn: ['-e'] };
-        return _resolvedTerminal;
-      }
-      console.warn('[Cowork] $TERMINAL resolved outside system dirs, ignoring:', resolvedPath);
-    } catch (_) {}
+    var envResolved = validateTerminalBinary(envTerm);
+    if (envResolved) {
+      _resolvedTerminal = { bin: envResolved, spawn: ['-e'] };
+      return _resolvedTerminal;
+    }
+    console.warn('[Cowork] $TERMINAL not in safe dirs / registry, ignoring:', envTerm);
   }
-  // 2. xdg-terminal-exec (proposed XDG Default Terminal Spec)
-  try {
-    execFileSync('which', ['xdg-terminal-exec'], { stdio: 'ignore' });
-    _resolvedTerminal = { bin: 'xdg-terminal-exec', spawn: null };
+  // 2. xdg-terminal-exec
+  var xdgResolved = validateTerminalBinary('xdg-terminal-exec');
+  if (xdgResolved) {
+    _resolvedTerminal = { bin: xdgResolved, spawn: null };
     return _resolvedTerminal;
-  } catch (_) {}
-  // 3. Common terminal emulators (GPU-accelerated first, then traditional)
+  }
+  // 3. Common terminal emulators
   const terminals = [
     'kitty', 'ghostty', 'alacritty', 'foot', 'wezterm',
     'gnome-terminal', 'konsole', 'xfce4-terminal', 'mate-terminal',
     'tilix', 'lxterminal', 'terminology', 'sakura', 'xterm',
   ];
-  // gnome-terminal/konsole use '--' instead of '-e' for command separation
   const dashDashTerminals = new Set(['gnome-terminal', 'konsole']);
   for (const t of terminals) {
-    try {
-      execFileSync('which', [t], { stdio: 'ignore' });
-      _resolvedTerminal = { bin: t, spawn: dashDashTerminals.has(t) ? ['--'] : ['-e'] };
+    var resolved = validateTerminalBinary(t);
+    if (resolved) {
+      _resolvedTerminal = { bin: resolved, spawn: dashDashTerminals.has(t) ? ['--'] : ['-e'] };
       return _resolvedTerminal;
-    } catch (_) {}
+    }
   }
   _resolvedTerminal = null;
   return null;
 }
 
-function xdgOpen(filePath) {
-  // Directories should always open in the file manager via xdg-open
-  try { if (fs.statSync(filePath).isDirectory()) {
-    const child = execFile('xdg-open', [filePath], { stdio: 'ignore' });
+// Public API: front-door validator. Logs blocks with the original input.
+// Internal _xdgOpenVerified trusts its input.
+function xdgOpen(rawPath, context) {
+  var real = verifyPath(rawPath);
+  if (!real) {
+    console.warn('[Cowork] ' + (context || 'xdgOpen') + ' BLOCKED:', rawPath);
+    return;
+  }
+  _xdgOpenVerified(real);
+}
+
+function _xdgOpenVerified(real) {
+  try { if (fs.statSync(real).isDirectory()) {
+    var child = execFile('xdg-open', [real], { stdio: 'ignore' });
     child.unref();
     return;
   }} catch (_) {}
-  const mime = getMimeType(filePath);
-  const desktop = getDesktopFileForMime(mime);
+  var mime = getMimeType(real);
+  var desktop = getDesktopFileForMime(mime);
   if (isTerminalApp(desktop)) {
-    const cmd = getExecFromDesktop(desktop);
+    var cmd = getExecFromDesktop(desktop);
     if (cmd) {
-      // Resolve which terminal emulator to use (cached after first lookup)
-      const term = resolveTerminal();
+      var term = resolveTerminal();
       if (term) {
-        const child = term.spawn
-          ? execFile(term.bin, [...term.spawn, cmd, filePath], { stdio: 'ignore' })
-          : execFile(term.bin, [cmd, filePath], { stdio: 'ignore' });
-        child.unref();
+        var tchild = term.spawn
+          ? execFile(term.bin, [].concat(term.spawn, [cmd, real]), { stdio: 'ignore' })
+          : execFile(term.bin, [cmd, real], { stdio: 'ignore' });
+        tchild.unref();
         return;
       }
     }
   }
-  // Non-terminal app or no terminal found: use xdg-open
-  const child = execFile('xdg-open', [filePath], { stdio: 'ignore' });
-  child.unref();
+  var ochild = execFile('xdg-open', [real], { stdio: 'ignore' });
+  ochild.unref();
 }
 
 function whichApplicationForFile(filename) {
@@ -243,48 +355,36 @@ function createOverrideRegistry(getProcessState) {
     'ClaudeVM_$_download': async () => ({ success: true }),
     'ClaudeVM_$_deleteAndReinstall': async () => ({ success: true }),
 
-    // FileSystem — proper Linux implementations
-    'FileSystem_$_readLocalFile': async (_event, sessionId, filePath) => {
-      let decoded;
+    // FileSystem — single front-door validation per call.
+    // readLocalFileContent and xdgOpen validate at their boundary and
+    // log every block. Handlers just decode and delegate.
+    'FileSystem_$_readLocalFile': async (_event, _sessionId, filePath) => {
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return null; }
       try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
-        return null;
-      }
-      if (!path.isAbsolute(decoded)) return null;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] readLocalFile BLOCKED (outside allowed roots):', decoded);
-        return null;
-      }
-      try {
-        return readLocalFileContent(decoded);
+        return readLocalFileContent(decoded, 'readLocalFile');
       } catch (e) {
-        console.error('[Cowork] readLocalFile failed:', decoded, e.code || e.message);
+        console.error('[Cowork] readLocalFile failed:', e.code || e.message);
         return null;
       }
     },
 
-    'FileSystem_$_openLocalFile': async (_event, sessionId, filePath, showInFolder) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
-        return;
-      }
-      vlog('[Cowork] openLocalFile: ' + decoded + ' showInFolder: ' + showInFolder);
-      if (!path.isAbsolute(decoded)) return;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] openLocalFile BLOCKED (outside allowed roots):', decoded);
-        return;
-      }
-      try {
-        if (showInFolder) {
-          xdgOpen(path.dirname(decoded));
+    'FileSystem_$_openLocalFile': async (_event, _sessionId, filePath, showInFolder) => {
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
+      if (showInFolder) {
+        // Try the parent directory; if that's outside allowed roots
+        // (e.g. file IS the home dir), fall back to opening the file itself
+        // so users can reveal-in-finder their home.
+        var parent = path.dirname(decoded);
+        var parentReal = verifyPath(parent);
+        if (parentReal) {
+          xdgOpen(parent, 'openLocalFile.parent');
         } else {
-          xdgOpen(decoded);
+          xdgOpen(decoded, 'openLocalFile.fallback');
         }
-      } catch (e) {
-        console.error('[Cowork] openLocalFile failed:', decoded, e.code || e.message);
+      } else {
+        xdgOpen(decoded, 'openLocalFile');
       }
     },
 
@@ -293,23 +393,9 @@ function createOverrideRegistry(getProcessState) {
     },
 
     'FileSystem_$_showInFolder': async (_event, filePath) => {
-      let decoded;
-      try {
-        decoded = decodeURIComponent(filePath);
-      } catch (_e) {
-        return;
-      }
-      vlog('[Cowork] showInFolder: ' + decoded);
-      if (!path.isAbsolute(decoded)) return;
-      if (!isPathWithinAllowedRoots(decoded)) {
-        console.warn('[Cowork] showInFolder BLOCKED (outside allowed roots):', decoded);
-        return;
-      }
-      try {
-        // D-Bus FileManager1 isn't available on Hyprland/wlroots compositors.
-        // Open the parent directory with xdg-open instead.
-        xdgOpen(path.dirname(decoded));
-      } catch (_) {}
+      var decoded;
+      try { decoded = decodeURIComponent(filePath); } catch (_) { return; }
+      xdgOpen(path.dirname(decoded), 'showInFolder');
     },
 
     'FileSystem_$_getSystemPath': async (_event, name) => {
@@ -371,8 +457,8 @@ function createOverrideRegistry(getProcessState) {
       try { menu.popup({ window: win || undefined }); } catch (_) {}
     },
 
-    // CoworkSpaces — not implemented on Linux
-    'CoworkSpaces_$_getAllSpaces': async () => ([]),
+    // CoworkSpaces — file-backed implementation for Linux
+    ...createSpacesOverrides(),
 
     // Startup — Linux has no macOS login items; report disabled
     'Startup_$_isStartupOnLoginEnabled': async () => false,
@@ -525,7 +611,30 @@ const PROACTIVE_ONLY_SUFFIXES = new Set([
   'ComputerUseTcc_$_openSystemSettings',
   'ComputerUseTcc_$_getCurrentSessionGrants',
   'ComputerUseTcc_$_revokeGrant',
+  // CoworkSpaces — proactive because the asar's native handler registration
+  // depends on account IPC from the renderer, which often never arrives on Linux.
+  // Without proactive registration, getAllSpaces has no handler and fails silently.
   'CoworkSpaces_$_getAllSpaces',
+  'CoworkSpaces_$_getSpace',
+  'CoworkSpaces_$_createSpace',
+  'CoworkSpaces_$_updateSpace',
+  'CoworkSpaces_$_deleteSpace',
+  'CoworkSpaces_$_addFolderToSpace',
+  'CoworkSpaces_$_removeFolderFromSpace',
+  'CoworkSpaces_$_addProjectToSpace',
+  'CoworkSpaces_$_removeProjectFromSpace',
+  'CoworkSpaces_$_addLinkToSpace',
+  'CoworkSpaces_$_removeLinkFromSpace',
+  'CoworkSpaces_$_getAutoMemoryDir',
+  'CoworkSpaces_$_listFolderContents',
+  'CoworkSpaces_$_readFileContents',
+  'CoworkSpaces_$_openFile',
+  'CoworkSpaces_$_copyFilesToSpaceFolder',
+  'CoworkSpaces_$_createSpaceFolder',
+  'CoworkSpaces_$_classifySessions',
+  'CoworkSpaces_$_setAutoDescription',
+  'CoworkSpaces_$_summarizeSpace',
+  'CoworkSpaces_$_onSpaceEvent',
   // Startup — Linux has no macOS login items. The asar's handler calls
   // app.getLoginItemSettings() which crashes on Linux. The asar registers
   // these on webContents.ipc.handle() which our patch intercepts, but
@@ -565,7 +674,7 @@ function proactivelyRegisterOverrides(ipcMainHandle, ipcMainRemoveHandler, regis
       }
     }
   }
-  vlog('[Cowork] Proactively registered ' + _proactiveChannels.size + ' fallback handlers on ipcMain for UUID ' + uuid);
+  console.log('[Cowork] Proactively registered ' + _proactiveChannels.size + ' fallback handlers on ipcMain for UUID ' + uuid);
   return _proactiveChannels;
 }
 

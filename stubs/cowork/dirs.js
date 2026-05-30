@@ -87,7 +87,7 @@ function createDirs(options) {
   const env = options && options.env && typeof options.env === 'object' ? options.env : process.env;
   const homeDir = options && typeof options.homeDir === 'string' && options.homeDir.trim()
     ? path.resolve(options.homeDir)
-    : os.homedir();
+    : (global.__coworkPasswdHomedir || os.userInfo().homedir);
 
   // Resolve XDG paths with fallbacks to Linux defaults
   const xdgConfigHome = resolveAbsoluteDirectory(env.XDG_CONFIG_HOME, path.join(homeDir, '.config'));
@@ -249,7 +249,7 @@ function validateMountName(mountName) {
 function validateRelativePathWithinHome(relativePath) {
   if (typeof relativePath !== 'string') return false;
   if (relativePath === '') return true;
-  return isPathSafe(os.homedir(), relativePath);
+  return isPathSafe(global.__coworkPasswdHomedir || os.userInfo().homedir, relativePath);
 }
 
 const VM_PATH_RE = /\/sessions\/[^\/\s'"`<>|&;()$\n]+\/mnt\/[^\/\s'"`<>|&;()$\n]+(?:\/[^\s'"`<>|&;()$\n]*)?/g;
