@@ -49,6 +49,9 @@ if (_earlyApp) {
     'updateCurrentActivity',
     'resignCurrentActivity',
     'getCurrentActivityType',
+    // WebAuthn (passkey/security-key) setup is macOS-only; absent on Linux
+    // Electron, so the darwin-gated callsite throws and crashes launch. See #128.
+    'configureWebAuthn',
   ];
   for (const _m of _macOnlyAppMethods) {
     if (typeof _earlyApp[_m] !== 'function') {
