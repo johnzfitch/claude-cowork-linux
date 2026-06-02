@@ -402,7 +402,8 @@ stage_6() {
                 echo "---VALIDATION---"
                 # Check outputs
                 test -x \$HOME/.local/bin/claude-desktop && echo "LAUNCHER_OK" || echo "LAUNCHER_MISSING"
-                test -L \$HOME/.local/bin/claude-cowork && echo "SYMLINK_OK" || echo "SYMLINK_MISSING"
+                # claude-cowork must be a real executable wrapper, not a symlink (symlinks are banned)
+                { test -x \$HOME/.local/bin/claude-cowork && test ! -L \$HOME/.local/bin/claude-cowork; } && echo "COWORK_WRAPPER_OK" || echo "COWORK_WRAPPER_MISSING"
                 test -f \$HOME/.local/share/applications/claude.desktop && echo "DESKTOP_ENTRY_OK" || echo "DESKTOP_ENTRY_MISSING"
                 test -f \$HOME/.local/share/claude-desktop/linux-app-extracted/node_modules/@ant/claude-swift/js/index.js && echo "STUB_OK" || echo "STUB_MISSING"
                 grep -q cowork-patched \$HOME/.local/share/claude-desktop/linux-app-extracted/.vite/build/index.js 2>/dev/null && echo "PATCH_OK" || echo "PATCH_MISSING"
@@ -416,7 +417,7 @@ stage_6() {
     local validation
     validation=$(echo "$output" | sed -n '/---VALIDATION---/,$p')
 
-    for check in LAUNCHER_OK SYMLINK_OK DESKTOP_ENTRY_OK STUB_OK PATCH_OK; do
+    for check in LAUNCHER_OK COWORK_WRAPPER_OK DESKTOP_ENTRY_OK STUB_OK PATCH_OK; do
         if echo "$validation" | grep -q "$check"; then
             pass "Docker install: $check"
         else
