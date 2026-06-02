@@ -35,7 +35,7 @@ what was exercised.
 
 | Asar     | CDN URL (Anthropic)                                                                                   | SHA-256 |
 |:---------|:------------------------------------------------------------------------------------------------------|:--------|
-| 1.6259.1 | `https://downloads.claude.ai/releases/darwin/universal/1.6259.1/Claude-5095e7dddcba4ca974d351ee397e17d204814f07.dmg` | `<pending: run sha256sum on the .dmg and submit a PR>` |
+| 1.6259.1 | `https://downloads.claude.ai/releases/darwin/universal/1.6259.1/Claude-5095e7dddcba4ca974d351ee397e17d204814f07.dmg` | `98c9de8dde01f083b73e7ef08cfaf7adfd2c1386e88d2995b4202dea1a31e898` |
 
 To pin and verify a tested version:
 
