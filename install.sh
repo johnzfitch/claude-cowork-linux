@@ -724,8 +724,14 @@ esac
 EOF
 
     chmod +x "$HOME/.local/bin/claude-desktop"
-    # Alias for familiarity
-    ln -sf "$HOME/.local/bin/claude-desktop" "$HOME/.local/bin/claude-cowork"
+
+    # Alias for familiarity. Symlinks are banned -- write a real wrapper script
+    # that execs the canonical launcher by its full path instead of a symlink.
+    cat > "$HOME/.local/bin/claude-cowork" << 'WRAP'
+#!/bin/bash
+exec "$HOME/.local/bin/claude-desktop" "$@"
+WRAP
+    chmod +x "$HOME/.local/bin/claude-cowork"
 
     log_success "Created launchers: ~/.local/bin/claude-desktop, ~/.local/bin/claude-cowork"
 }

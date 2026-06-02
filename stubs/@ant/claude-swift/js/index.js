@@ -173,18 +173,17 @@ function compareSemverDesc(a, b) {
 }
 
 function isRunnableLinuxBinary(p) {
-  // Guard the claude-code-vm roots against entries that exist but cannot run
-  // on Linux: stale macOS (Mach-O) binaries left by older installs, dangling
-  // symlinks (e.g. from the launch.sh Mach-O band-aid), and corrupt/partial
-  // downloads (a failed `zstd -d`). Spawning any of these surfaces as the
-  // child "exited with code 127" -- see issue #132. Accept only a real,
-  // executable Linux ELF or a shebang script.
+  // Real full paths only -- symlinks are banned. The launch.sh band-aid and
+  // stale installs can plant loose symlinks in a claude-code-vm root; following
+  // them is fragile and is a source of "exited with code 127" (issue #132).
+  // Reject the candidate outright if it is a symlink (lstat, no realpath
+  // following) and accept only a real, executable Linux ELF or shebang script.
   try {
-    const real = fs.realpathSync(p);          // throws on a dangling symlink
-    const st = fs.statSync(real);
-    if (!st.isFile()) return false;
-    fs.accessSync(real, fs.constants.X_OK);    // must be executable
-    const fd = fs.openSync(real, 'r');
+    const lst = fs.lstatSync(p);
+    if (lst.isSymbolicLink()) return false;    // symlinks are banned
+    if (!lst.isFile()) return false;
+    fs.accessSync(p, fs.constants.X_OK);        // must be executable
+    const fd = fs.openSync(p, 'r');
     try {
       const buf = Buffer.alloc(4);
       if (fs.readSync(fd, buf, 0, 4, 0) < 4) return false;

@@ -83,22 +83,21 @@ test('a Mach-O binary in claude-code-vm is skipped in favor of CLAUDE_CODE_PATH'
   assert.equal(resolved, nativeBin, 'should not select the Mach-O claude-code-vm binary');
 });
 
-test('a symlink resolving to a Mach-O binary is skipped', (t) => {
+test('a symlink in claude-code-vm is rejected (symlinks are banned)', (t) => {
   const ctx = stageStub(t);
   const vmDir = path.join(ctx.tempHome, '.config', 'Claude', 'claude-code-vm', '1.0.0');
   fs.mkdirSync(vmDir, { recursive: true });
-  // fs.existsSync() follows the link, so this passes the early existence
-  // check and must be rejected by the realpath + magic-byte guard itself
-  // (i.e. it exercises isRunnableLinuxBinary, not just the existsSync skip).
-  const machoTarget = path.join(vmDir, 'claude.real');
-  writeBinary(machoTarget, MACHO_MAGIC);
-  fs.symlinkSync(machoTarget, path.join(vmDir, 'claude'));
+  // The link resolves to a real, runnable ELF, so the only reason to reject it
+  // is the symlink ban itself (lstat) -- this guards "real full paths only".
+  const elfTarget = path.join(vmDir, 'claude.real');
+  writeBinary(elfTarget, ELF_MAGIC);
+  fs.symlinkSync(elfTarget, path.join(vmDir, 'claude'));
 
   const nativeBin = path.join(ctx.tempHome, '.local', 'bin', 'claude');
   writeBinary(nativeBin, ELF_MAGIC);
 
   const resolved = resolveInChild(ctx, { CLAUDE_CODE_PATH: nativeBin });
-  assert.equal(resolved, nativeBin, 'should not select a symlink to a Mach-O binary');
+  assert.equal(resolved, nativeBin, 'a symlinked claude-code-vm entry must be rejected');
 });
 
 test('a dangling symlink in claude-code-vm is skipped', (t) => {

@@ -220,10 +220,13 @@ if [[ -d "$CLAUDE_CODE_DIR" ]]; then
       if [[ -f "$_ccd_bin" && ! -L "$_ccd_bin" ]]; then
         # Check if it's a Mach-O binary (not a Linux ELF)
         if file "$_ccd_bin" 2>/dev/null | grep -q "Mach-O"; then
-          echo "Fixing Code tab binary: replacing macOS binary with Linux symlink"
-          echo "  $_ccd_bin -> $LINUX_CLAUDE_REAL"
+          # Symlinks are banned -- copy the real Linux binary into place so the
+          # resolver only ever sees a real full path (no loose symlinks).
+          echo "Fixing Code tab binary: replacing macOS binary with real Linux binary"
+          echo "  $_ccd_bin <- $LINUX_CLAUDE_REAL (copy)"
           mv "$_ccd_bin" "${_ccd_bin}.macho-backup"
-          ln -s "$LINUX_CLAUDE_REAL" "$_ccd_bin"
+          cp "$LINUX_CLAUDE_REAL" "$_ccd_bin"
+          chmod +x "$_ccd_bin"
         fi
       fi
     done
