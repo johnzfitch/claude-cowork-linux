@@ -23,6 +23,37 @@ Status legend:
 - `[FAIL]`     -- known to be broken; do not update to this version.
 - `[UNTESTED]` -- no contributor has reported results.
 
+## Pinning a tested version
+
+This project never hosts or redistributes the Claude Desktop archive --
+the binary is Anthropic's and the installer always fetches it from
+Anthropic's own CDN (the same place `claude-desktop --update` pulls the
+latest from). What we *can* record here is a pointer to a known-good
+build plus its checksum, so that if the latest CDN release regresses you
+can fetch the last tested version yourself and verify the bytes match
+what was exercised.
+
+| Asar     | CDN URL (Anthropic)                                                                                   | SHA-256 |
+|:---------|:------------------------------------------------------------------------------------------------------|:--------|
+| 1.6259.1 | `https://downloads.claude.ai/releases/darwin/universal/1.6259.1/Claude-5095e7dddcba4ca974d351ee397e17d204814f07.dmg` | `<pending: run sha256sum on the .dmg and submit a PR>` |
+
+To pin and verify a tested version:
+
+```sh
+# 1. Download the tested build directly from Anthropic's CDN.
+curl -fLO "<CDN URL from the table above>"
+
+# 2. Verify the checksum matches the SHA-256 recorded above.
+sha256sum Claude-*.dmg
+
+# 3. Install from the verified archive (the installer does not re-download).
+CLAUDE_ARCHIVE=/path/to/Claude-1.6259.1.dmg bash install.sh
+```
+
+These URLs and checksums are best-effort pointers contributed by users,
+not an endorsement to redistribute. If a recorded SHA-256 shows
+`<pending>`, compute it locally and open a PR to fill it in.
+
 ## Reporting a tested version
 
 Open a PR that bumps `LAST_TESTED_ASAR_VERSION` (the HTML comment line

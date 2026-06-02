@@ -135,7 +135,11 @@ install_dependencies() {
     pkg_manager=$(detect_pkg_manager)
     local missing=()
 
-    for cmd in git 7z node npm bwrap; do
+    # curl + zstd are required by the in-app SDK download (vm.installSdk in the
+    # claude-swift stub fetches claude.zst from the CDN and decompresses it into
+    # the claude-code-vm root). Without them the SDK binary never lands and
+    # cowork sessions fail to spawn -- see issue #132.
+    for cmd in git 7z node npm bwrap curl zstd; do
         if ! command_exists "$cmd"; then
             missing+=("$cmd")
         fi
@@ -144,12 +148,12 @@ install_dependencies() {
     if [[ ${#missing[@]} -gt 0 ]]; then
         log_info "Missing packages: ${missing[*]}"
         case "$pkg_manager" in
-            apt) sudo apt-get update -qq && sudo apt-get install -y git p7zip-full nodejs npm bubblewrap ;;
-            pacman) sudo pacman -S --noconfirm --needed git p7zip nodejs npm bubblewrap ;;
-            dnf) sudo dnf install -y git p7zip nodejs npm bubblewrap ;;
-            zypper) sudo zypper install -y git 7zip nodejs-default npm bubblewrap ;;
-            nix) nix-env -iA nixpkgs.git nixpkgs.p7zip nixpkgs.nodejs nixpkgs.bubblewrap ;;
-            *) die "Unknown package manager. Install manually: git p7zip nodejs npm bubblewrap" ;;
+            apt) sudo apt-get update -qq && sudo apt-get install -y git p7zip-full nodejs npm bubblewrap curl zstd ;;
+            pacman) sudo pacman -S --noconfirm --needed git p7zip nodejs npm bubblewrap curl zstd ;;
+            dnf) sudo dnf install -y git p7zip nodejs npm bubblewrap curl zstd ;;
+            zypper) sudo zypper install -y git 7zip nodejs-default npm bubblewrap curl zstd ;;
+            nix) nix-env -iA nixpkgs.git nixpkgs.p7zip nixpkgs.nodejs nixpkgs.bubblewrap nixpkgs.curl nixpkgs.zstd ;;
+            *) die "Unknown package manager. Install manually: git p7zip nodejs npm bubblewrap curl zstd" ;;
         esac
     fi
 
@@ -170,7 +174,7 @@ install_dependencies() {
     fi
 
     # Verify
-    for cmd in git 7z node npm asar electron bwrap; do
+    for cmd in git 7z node npm asar electron bwrap curl zstd; do
         if command_exists "$cmd"; then
             log_success "Found: $cmd"
         else
@@ -391,17 +395,21 @@ get_archive() {
                 y|Y|yes|YES) proceed=1 ;;
                 t|T)
                     # Tell the user how to get the tested version. We do NOT
-                    # construct download URLs -- the user gets the archive
-                    # from Anthropic directly and passes it to us.
+                    # download or redistribute the archive ourselves -- the
+                    # user fetches it from Anthropic's CDN and passes it to us.
+                    # COMPAT.md records the CDN URL + SHA-256 for tested builds.
                     echo ""
                     echo "  To install the tested version ($last_tested):"
                     echo ""
-                    echo "  1. Download the Claude Desktop $last_tested DMG from Anthropic."
-                    echo "     The macOS installer is at: https://claude.ai/download"
-                    echo "     (You may need to find the specific version in your download history"
-                    echo "     or ask Anthropic support for a direct link.)"
+                    echo "  1. COMPAT.md lists the Anthropic CDN URL and SHA-256 for"
+                    echo "     tested builds under \"Pinning a tested version\":"
+                    echo "     https://github.com/johnzfitch/claude-cowork-linux/blob/master/COMPAT.md"
                     echo ""
-                    echo "  2. Re-run the installer with the downloaded file:"
+                    echo "  2. Download it from that URL and verify the checksum:"
+                    echo "     curl -fLO <CDN URL from COMPAT.md>"
+                    echo "     sha256sum Claude-${last_tested}.dmg"
+                    echo ""
+                    echo "  3. Re-run the installer with the verified file:"
                     echo "     CLAUDE_ARCHIVE=/path/to/Claude-${last_tested}.dmg bash install.sh"
                     echo ""
                     die "Install paused. Re-run with CLAUDE_ARCHIVE set."
@@ -918,7 +926,7 @@ doctor() {
     }
 
     # --- Required binaries ---
-    for cmd in git 7z node npm electron asar bwrap; do
+    for cmd in git 7z node npm electron asar bwrap curl zstd; do
         if command_exists "$cmd"; then
             log_success "$cmd: $(command -v "$cmd")"
             ok=$((ok + 1))

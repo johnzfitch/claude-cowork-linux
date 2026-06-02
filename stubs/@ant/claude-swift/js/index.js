@@ -172,6 +172,36 @@ function compareSemverDesc(a, b) {
   return 0;
 }
 
+function isRunnableLinuxBinary(p) {
+  // Guard the claude-code-vm roots against entries that exist but cannot run
+  // on Linux: stale macOS (Mach-O) binaries left by older installs, dangling
+  // symlinks (e.g. from the launch.sh Mach-O band-aid), and corrupt/partial
+  // downloads (a failed `zstd -d`). Spawning any of these surfaces as the
+  // child "exited with code 127" -- see issue #132. Accept only a real,
+  // executable Linux ELF or a shebang script.
+  try {
+    const real = fs.realpathSync(p);          // throws on a dangling symlink
+    const st = fs.statSync(real);
+    if (!st.isFile()) return false;
+    fs.accessSync(real, fs.constants.X_OK);    // must be executable
+    const fd = fs.openSync(real, 'r');
+    try {
+      const buf = Buffer.alloc(4);
+      if (fs.readSync(fd, buf, 0, 4, 0) < 4) return false;
+      // ELF: 0x7F 'E' 'L' 'F'
+      if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) return true;
+      // Shebang script (#!) -- a node/sh wrapper is fine
+      if (buf[0] === 0x23 && buf[1] === 0x21) return true;
+      // Mach-O (0xCF/0xCE/0xFE/0xCA magic) and anything else: reject.
+      return false;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (_) {
+    return false;
+  }
+}
+
 function resolveClaudeBinaryPath() {
   // 1. Prefer Claude Desktop's downloaded claude-code-vm roots, resolved with XDG-aware paths.
   for (const vmRoot of DIRS.claudeVmRoots) {
@@ -184,10 +214,14 @@ function resolveClaudeBinaryPath() {
 
       for (const version of entries) {
         const candidate = path.join(vmRoot, version, 'claude');
-        if (fs.existsSync(candidate)) {
+        if (!fs.existsSync(candidate)) continue;
+        if (isRunnableLinuxBinary(candidate)) {
           trace('Resolved Claude binary (claude-code-vm): ' + candidate);
           return candidate;
         }
+        // Fall through to the native Linux binary instead of spawning a
+        // binary that would exit 127 on Linux.
+        trace('Skipping non-runnable claude-code-vm binary: ' + candidate);
       }
     } catch (e) {
       trace('claude-code-vm root not available: ' + vmRoot + ' (' + e.message + ')');
@@ -2009,6 +2043,10 @@ module.exports = instance;
 module.exports.default = instance;
 
 module.exports.filterEnv = filterEnv;
+
+// Exposed for tests: binary-resolution guards (see issue #132).
+module.exports.resolveClaudeBinaryPath = resolveClaudeBinaryPath;
+module.exports.isRunnableLinuxBinary = isRunnableLinuxBinary;
 
 // For ESM compatibility - mark as ES module
 Object.defineProperty(module.exports, '__esModule', { value: true });
