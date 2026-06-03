@@ -718,7 +718,21 @@ try {
   {
     try {
       fs.mkdirSync(disclaimerDir, { recursive: true, mode: 0o755 });
-      fs.writeFileSync(disclaimerBin, '#!/bin/sh\nexit 127\n', { mode: 0o444 });
+      // The stub must be EXECUTABLE: the asar pre-checks the wrapper with
+      // access(X_OK) before invoking it, so a non-exec stub made cowork
+      // sessions fail on a clean install (#132). It stays fail-closed -- the
+      // content is only `exit 127`, and the spawn interception below is the
+      // sole allowlist enforcement point (resolveDisclaimerCommand); we never
+      // make it `exec "$@"`, which would let a caller run an arbitrary binary.
+      //
+      // writeFileSync's `mode` only applies on creation, and an existing
+      // read-only (0o444) stub from older builds can't be overwritten at all
+      // (EACCES, silently swallowed). So: make it writable first, rewrite the
+      // content, then set 0o555 (r-xr-xr-x: executable, not writable, reset
+      // every startup).
+      try { fs.chmodSync(disclaimerBin, 0o755); } catch (_) {}
+      fs.writeFileSync(disclaimerBin, '#!/bin/sh\nexit 127\n');
+      fs.chmodSync(disclaimerBin, 0o555);
     } catch (_) {}
 
     const _cp = require('child_process');
