@@ -166,6 +166,23 @@ describe('exec_capability_registry', () => {
         }
       });
 
+      it('resolves a non-.app claude path (e.g. claude-code-vm) by basename to claude-cli', () => {
+        // Regression for #132: before this, only the macOS .app path was
+        // recognised; a claude-code-vm/<ver>/claude path fell through, the
+        // disclaimer unwrap returned null, and the exit-127 stub ran instead.
+        const reg = createExecCapabilityRegistry({
+          homedir: os.homedir(),
+          resolveClaudeBinaryPath: () => '/usr/local/bin/claude',
+        });
+        const result = reg.resolveDisclaimerCommand([
+          '/home/u/.config/Claude/claude-code-vm/2.0.0/claude',
+          '-p', 'hi',
+        ]);
+        assert.ok(result, 'a claude-basename path must unwrap, not fall through to the stub');
+        assert.strictEqual(result.cmd, '/usr/local/bin/claude');
+        assert.deepStrictEqual(result.rest, ['-p', 'hi']);
+      });
+
       it('resolves system binary commands', () => {
         const git = ['/usr/bin/git', '/usr/local/bin/git'].find(p => fs.existsSync(p));
         if (git) {

@@ -173,7 +173,17 @@ function createExecCapabilityRegistry({
     if (!Array.isArray(args) || args.length === 0) return null;
     var cmd = args[0];
     var rest = args.slice(1);
-    if (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd)) {
+    // The asar invokes the Claude CLI through the disclaimer wrapper using
+    // whatever path it chose -- a macOS-style claude.app/.../Claude path, or
+    // the SDK path it installed (claude-code-vm/<ver>/claude), or a native
+    // ~/.local/bin/claude. The OCap rewrite (f41417e) only matched the .app
+    // path and rejected everything else as user-mcp, so any other Claude path
+    // fell through and the disclaimer stub (exit 127) ran instead -- see #132.
+    // Recognise the Claude CLI by basename and map it to OUR resolved binary
+    // (never the caller's path), so this adds no privilege the caller lacks.
+    if (typeof cmd === 'string' &&
+        (/claude\.app\/Contents\/MacOS\/[Cc]laude$/.test(cmd) ||
+         path.basename(cmd) === 'claude')) {
       var claudePath = resolveClaudeCli();
       return claudePath ? { cmd: claudePath, rest: rest } : null;
     }
