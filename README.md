@@ -8,7 +8,7 @@
 <br>
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-blue?style=flat-square)
-![Version](https://img.shields.io/badge/version-v4.0.0-brightgreen?style=flat-square)
+![Version](https://img.shields.io/badge/version-v4.1.0-brightgreen?style=flat-square)
 ![Tested](https://img.shields.io/badge/tested-Arch%20Linux-1793D1?style=flat-square&logo=archlinux&logoColor=white)
 ![Status](https://img.shields.io/badge/status-Working-success?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
