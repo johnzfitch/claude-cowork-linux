@@ -24,7 +24,7 @@ set -euo pipefail
 # Configuration
 # ============================================================
 
-VERSION="4.1.0"
+VERSION="5.1.0"
 REPO_URL="https://github.com/johnzfitch/claude-cowork-linux.git"
 INSTALL_DIR="$HOME/.local/share/claude-desktop"
 INSTALL_FORCE=0

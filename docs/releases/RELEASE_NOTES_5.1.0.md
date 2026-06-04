@@ -1,11 +1,11 @@
 <div align="center">
 
-# Claude Cowork for Linux &mdash; v4.1.0
+# Claude Cowork for Linux &mdash; v5.1.0
 
 ### &ldquo;The 127 Release&rdquo; &middot; cowork sessions actually start now
 
-[![Version](https://img.shields.io/badge/version-v4.1.0-brightgreen?style=flat-square)](https://github.com/johnzfitch/claude-cowork-linux/releases/tag/v4.1.0)
-[![Tested asar](https://img.shields.io/badge/tested%20asar-1.6259.1-blue?style=flat-square)](https://github.com/johnzfitch/claude-cowork-linux/blob/v4.1.0/COMPAT.md)
+[![Version](https://img.shields.io/badge/version-v5.1.0-brightgreen?style=flat-square)](https://github.com/johnzfitch/claude-cowork-linux/releases/tag/v5.1.0)
+[![Tested asar](https://img.shields.io/badge/tested%20asar-1.6259.1-blue?style=flat-square)](https://github.com/johnzfitch/claude-cowork-linux/blob/v5.1.0/COMPAT.md)
 [![Platform](https://img.shields.io/badge/platform-Linux-555?style=flat-square&logo=linux&logoColor=white)](https://github.com/johnzfitch/claude-cowork-linux)
 
 [Highlights](#highlights) &middot; [Upgrade](#upgrade) &middot; [What&rsquo;s fixed](#whats-fixed) &middot; [Verify](#verify-your-build) &middot; [Internals](#under-the-hood)
@@ -20,7 +20,8 @@
 ## Highlights
 
 - &#10003; **Cowork sessions start again.** The binary resolver *and* the `Helpers/disclaimer` wrapper were each producing exit `127`; both fixed.
-- &#10003; **Pin &amp; verify a known-good Desktop build.** [`COMPAT.md`](https://github.com/johnzfitch/claude-cowork-linux/blob/v4.1.0/COMPAT.md) now records the exact Anthropic <abbr title="Content Delivery Network">CDN</abbr> URL **and** a verified `SHA-256` for the last tested asar &mdash; no more hunting for a working version.
+- &#10003; **Pin &amp; verify a known-good Desktop build.** [`COMPAT.md`](https://github.com/johnzfitch/claude-cowork-linux/blob/v5.1.0/COMPAT.md) now records the exact Anthropic <abbr title="Content Delivery Network">CDN</abbr> URL **and** a verified `SHA-256` for the last tested asar &mdash; no more hunting for a working version.
+- &#10003; **Hardened security model.** A capability-based exec registry (<abbr title="object-capability">OCap</abbr>) replaces loose directory allowlists, plus tighter path / symlink handling, allowlisted `claude://` protocol URLs, and `/etc/passwd`-derived home resolution.
 - &#10003; **No more launch crash** on newer asar builds that call `app.configureWebAuthn()`.
 - &#10003; **Symlinks banned** in CLI resolution &mdash; real, executable Linux paths only.
 - &#10003; **Opt-in bwrap sandbox** for the spawned CLI, plus an installer escape hatch for untested versions.
@@ -116,8 +117,8 @@ Big thanks to **@elvanor** for the meticulous `--doctor` output and the `Helpers
 
 <div align="center">
 
-[Commit history](https://github.com/johnzfitch/claude-cowork-linux/commits/v4.1.0) &middot; [COMPAT.md](https://github.com/johnzfitch/claude-cowork-linux/blob/v4.1.0/COMPAT.md) &middot; [Report an issue](https://github.com/johnzfitch/claude-cowork-linux/issues/new/choose)
+[Full changelog](https://github.com/johnzfitch/claude-cowork-linux/compare/v5.0.0...v5.1.0) &middot; [COMPAT.md](https://github.com/johnzfitch/claude-cowork-linux/blob/v5.1.0/COMPAT.md) &middot; [Report an issue](https://github.com/johnzfitch/claude-cowork-linux/issues/new/choose)
 
 </div>
 
-[^ocap]: The object&#8209;capability (OCap) registry in `f41417e` replaced loose directory allowlists with a frozen capability set &mdash; good for security, but it tightened the disclaimer unwrap too far. v4.1.0 keeps the registry and its posture; it just teaches the unwrap to recognize the Claude CLI again.
+[^ocap]: The object&#8209;capability (OCap) registry in `f41417e` replaced loose directory allowlists with a frozen capability set &mdash; good for security, but it tightened the disclaimer unwrap too far. v5.1.0 keeps the registry and its posture; it just teaches the unwrap to recognize the Claude CLI again.
