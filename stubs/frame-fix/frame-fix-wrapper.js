@@ -738,7 +738,7 @@ try {
     const _cp = require('child_process');
     const _origExecFile = _cp.execFile;
     const _origSpawn = _cp.spawn;
-    const { createExecCapabilityRegistry } = require('../cowork/exec_capability_registry');
+    const { createExecCapabilityRegistry } = require('./cowork/exec_capability_registry');
     const _execRegistry = createExecCapabilityRegistry({
       homedir: PASSWD_HOMEDIR,
     });
@@ -762,6 +762,17 @@ try {
       return _origSpawn.call(_cp, file, args, ...rest);
     };
     Object.assign(_cp.spawn, _origSpawn);
+
+    // The asar bundle's spawnClaudeCodeProcess (jZi) uses MI=require("node:child_process"),
+    // a different module cache entry from require("child_process"). Patch it too so the
+    // disclaimer interception applies when the Cowork tab spawns Claude Code.
+    try {
+      const _cpNode = require('node:child_process');
+      if (_cpNode !== _cp) {
+        _cpNode.spawn = _cp.spawn;
+        _cpNode.execFile = _cp.execFile;
+      }
+    } catch (_) {}
 
     console.log('[disclaimer] Intercepting exec calls at ' + disclaimerBin);
   }
