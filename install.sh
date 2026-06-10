@@ -94,6 +94,7 @@ pkg_for_cmd() {
         *:bwrap) echo "bubblewrap" ;;
         zypper:node) echo "nodejs-default" ;;
         *:node) echo "nodejs" ;;
+        nix:npm) echo "nodejs" ;;   # nixpkgs bundles npm with nodejs
         *) echo "$cmd" ;;   # git, npm, curl, zstd map 1:1
     esac
 }
@@ -173,9 +174,13 @@ install_dependencies() {
     # hard gate.
     if [[ ${#missing[@]} -gt 0 ]]; then
         log_info "Missing commands: ${missing[*]}"
-        local pkgs=() failed=() c p
+        local pkgs=() failed=() seen=" " c p
         for c in "${missing[@]}"; do
-            pkgs+=("$(pkg_for_cmd "$pkg_manager" "$c")")
+            p="$(pkg_for_cmd "$pkg_manager" "$c")"
+            # Dedupe: several commands can map to one package (nix node+npm)
+            case "$seen" in *" $p "*) continue ;; esac
+            seen+="$p "
+            pkgs+=("$p")
         done
         case "$pkg_manager" in
             apt)
@@ -1085,7 +1090,15 @@ doctor() {
     # npm's electron dist links NSS/NSPR/ALSA that minimal installs lack
     # (issue #136). Skipped when there is no npm dist binary (e.g. Nix,
     # system electron) -- those package managers handle linkage themselves.
-    local electron_dist="$HOME/.local/lib/node_modules/electron/dist/electron"
+    local electron_dist=""
+    if command_exists npm; then
+        local npm_root
+        npm_root=$(npm root -g 2>/dev/null)
+        [[ -n "$npm_root" ]] && electron_dist="$npm_root/electron/dist/electron"
+    fi
+    if [[ ! -x "$electron_dist" ]]; then
+        electron_dist="$HOME/.local/lib/node_modules/electron/dist/electron"
+    fi
     if [[ -x "$electron_dist" ]] && command_exists ldd; then
         local missing_libs
         missing_libs=$(ldd "$electron_dist" 2>/dev/null | awk '/not found/ {print $1}' | paste -sd ', ' -)
