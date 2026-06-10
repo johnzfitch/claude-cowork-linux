@@ -118,10 +118,26 @@ You can also provide an archive manually:
 CLAUDE_ARCHIVE=~/Downloads/Claude-1.6259.1.dmg ./install.sh
 ```
 
+### Method 4: Nix flake (NixOS)
+
+NixOS can't use `install.sh` directly: its package-manager branch runs imperative `nix-env -iA`, and the npm `electron` it would otherwise install is a prebuilt ELF that won't run on NixOS. The flake builds the app against `electron_41` from nixpkgs instead.
+
+```bash
+# Run without installing
+nix run github:johnzfitch/claude-cowork-linux
+
+# Or add to a NixOS / home-manager config
+# environment.systemPackages = [ inputs.claude-cowork-linux.packages.${system}.default ];
+```
+
+The derivation extracts and patches the pinned Claude release at build time, then a wrapper mirrors the tree into `$XDG_DATA_HOME/claude-cowork-linux` (writable) and runs the upstream `launch.sh` with all dependencies on `PATH`. The pinned version lives in [`nix/package.nix`](nix/package.nix); override `claudeVersion`/`claudeUrl`/`claudeHash` to track a different release.
+
+A `nix develop` shell is also provided with every dependency `install.sh` needs, for the manual installer flow.
+
 ### Updating
 
 ```bash
-claude-desktop --update          # re-fetch and repack with prompt
+claude-desktop --update          # re-fetch and repack with prompt (install.sh flow)
 ```
 
 The launcher prints a `[WARN]` line once if your installed asar is newer than the last tested version listed in [COMPAT.md](COMPAT.md). To dismiss the warning permanently for the current version, just keep using the app -- it only fires once per asar version change.
