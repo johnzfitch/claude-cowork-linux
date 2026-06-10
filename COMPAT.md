@@ -55,6 +55,12 @@ These URLs and checksums are best-effort pointers contributed by users,
 not an endorsement to redistribute. If a recorded SHA-256 shows
 `<pending>`, compute it locally and open a PR to fill it in.
 
+> **Note on DMG vs ZIP:** older `.dmg` CDN URLs now serve LZFSE-compressed
+> images that `p7zip`/`7zz` cannot open. Recent releases ship as `.zip`
+> (the artifact the Homebrew cask tracks), which extracts cleanly — prefer
+> the `.zip` when pinning. `node fetch-dmg.js --json` prints the current
+> version, `.zip` URL, and SHA-256.
+
 ## Reporting a tested version
 
 Open a PR that bumps `LAST_TESTED_ASAR_VERSION` (the HTML comment line
