@@ -1628,6 +1628,83 @@ Module.prototype.require = function(id) {
       }
     }
 
+    // ── Tray icon fix (Linux, issue #64) ────────────────────────────────
+    // The asar creates its Tray from TrayIconTemplate.png — a black-on-
+    // transparent macOS template icon that macOS auto-tints but Linux does
+    // not, so it is invisible on dark panels; the path also resolves inside
+    // the asar where createFromPath can fail. Redirect tray template paths
+    // to the external copies in resources/, preferring the white -Dark@2x
+    // variant: most Linux panels are dark even under light themes. Override
+    // with CLAUDE_TRAY_ICON=light.
+    if (REAL_PLATFORM === 'linux' && module.nativeImage && !global.__coworkTrayIconPatched) {
+      global.__coworkTrayIconPatched = true;
+      try {
+        const _ni = module.nativeImage;
+        const _origCreateFromPath = _ni.createFromPath.bind(_ni);
+        const _extResources = path.join(__dirname, 'resources');
+        _ni.createFromPath = function(p) {
+          try {
+            if (typeof p === 'string' && path.basename(p).startsWith('TrayIconTemplate')) {
+              const preferLight = process.env.CLAUDE_TRAY_ICON === 'light';
+              const candidates = preferLight
+                ? ['TrayIconTemplate.png', 'TrayIconTemplate-Dark@2x.png']
+                : ['TrayIconTemplate-Dark@2x.png', 'TrayIconTemplate.png'];
+              for (const name of candidates) {
+                const ext = path.join(_extResources, name);
+                if (fs.existsSync(ext)) {
+                  const img = _origCreateFromPath(ext);
+                  if (img && !img.isEmpty()) {
+                    // Template tinting is a macOS concept; render as-is on Linux
+                    if (typeof img.setTemplateImage === 'function') img.setTemplateImage(false);
+                    console.log('[Frame Fix] Tray icon redirected to ' + ext);
+                    return img;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[Frame Fix] Tray icon redirect failed:', e.message);
+          }
+          return _origCreateFromPath(p);
+        };
+        console.log('[Frame Fix] nativeImage.createFromPath tray redirect installed');
+      } catch (e) {
+        console.warn('[Frame Fix] Tray icon patch setup failed:', e.message);
+      }
+    }
+
+    // Fallback tray activation: some StatusNotifier hosts (COSMIC, XWayland
+    // on Hyprland) deliver clicks the asar's macOS-oriented tray code never
+    // handles. A construct-trap Proxy keeps instances as genuine Trays
+    // (instanceof, statics and prototype all intact — unlike a function
+    // wrapper or subclass shim). Served via the module Proxy below.
+    if (REAL_PLATFORM === 'linux' && module.Tray && !global.__coworkPatchedTray) {
+      const _electronModule = module;
+      global.__coworkPatchedTray = new Proxy(module.Tray, {
+        construct(target, args, newTarget) {
+          const tray = Reflect.construct(target, args, newTarget);
+          try {
+            tray.on('click', () => {
+              // Ours is attached first; if the asar registered its own
+              // click handler, stay out of the way.
+              if (tray.listenerCount('click') > 1) return;
+              const BW = global.__coworkPatchedBrowserWindow || _electronModule.BrowserWindow;
+              const wins = BW.getAllWindows().filter((w) => !w.isDestroyed());
+              if (!wins.length) return;
+              const win = wins[0];
+              if (win.isMinimized()) win.restore();
+              win.show();
+              win.focus();
+            });
+            console.log('[Frame Fix] Tray click fallback attached');
+          } catch (e) {
+            console.warn('[Frame Fix] Tray click fallback failed:', e.message);
+          }
+          return tray;
+        },
+      });
+    }
+
   }
 
   // On Linux, wrap the electron module in a Proxy to intercept the
@@ -1636,6 +1713,7 @@ Module.prototype.require = function(id) {
     return new Proxy(module, {
       get(target, prop) {
         if (prop === 'BrowserWindow') return global.__coworkPatchedBrowserWindow;
+        if (prop === 'Tray' && global.__coworkPatchedTray) return global.__coworkPatchedTray;
         return target[prop];
       },
       set(target, prop, value) {
