@@ -727,6 +727,11 @@ EOF
 
     # Alias for familiarity. Symlinks are banned -- write a real wrapper script
     # that execs the canonical launcher by its full path instead of a symlink.
+    # Pre-8ad9bd7 installs left ~/.local/bin/claude-cowork as a symlink to
+    # claude-desktop; the cat-redirect below would follow that symlink and
+    # clobber the just-written claude-desktop launcher with the wrapper, which
+    # then exec's itself in an infinite loop. Unlink first.
+    rm -f "$HOME/.local/bin/claude-cowork"
     cat > "$HOME/.local/bin/claude-cowork" << 'WRAP'
 #!/bin/bash
 exec "$HOME/.local/bin/claude-desktop" "$@"
