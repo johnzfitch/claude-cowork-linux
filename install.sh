@@ -84,6 +84,27 @@ detect_pkg_manager() {
     else echo "unknown"; fi
 }
 
+# Map a required command to its package name for the active package manager.
+pkg_for_cmd() {
+    local mgr="$1" cmd="$2"
+    case "$mgr:$cmd" in
+        apt:7z) echo "p7zip-full" ;;
+        pacman:7z|dnf:7z|nix:7z) echo "p7zip" ;;
+        zypper:7z) echo "7zip" ;;
+        *:bwrap) echo "bubblewrap" ;;
+        zypper:node) echo "nodejs-default" ;;
+        *:node) echo "nodejs" ;;
+        *) echo "$cmd" ;;   # git, npm, curl, zstd map 1:1
+    esac
+}
+
+is_wsl() {
+    # WSL1/WSL2 kernels identify themselves in /proc/version
+    # (e.g. "...-microsoft-standard-WSL2"). Optional arg for testing.
+    local f="${1:-/proc/version}"
+    grep -qi microsoft "$f" 2>/dev/null
+}
+
 # ============================================================
 # Compatibility helpers (COMPAT.md)
 # ============================================================
@@ -145,16 +166,39 @@ install_dependencies() {
         fi
     done
 
+    # Only install packages for commands that are actually missing, and install
+    # them one at a time on apt: a single conflicting package (e.g. distro npm
+    # vs NodeSource nodejs, issue #136) must not abort the whole transaction
+    # and leave zstd/curl/etc. uninstalled. The verify loop below remains the
+    # hard gate.
     if [[ ${#missing[@]} -gt 0 ]]; then
-        log_info "Missing packages: ${missing[*]}"
+        log_info "Missing commands: ${missing[*]}"
+        local pkgs=() failed=() c p
+        for c in "${missing[@]}"; do
+            pkgs+=("$(pkg_for_cmd "$pkg_manager" "$c")")
+        done
         case "$pkg_manager" in
-            apt) sudo apt-get update -qq && sudo apt-get install -y git p7zip-full nodejs npm bubblewrap curl zstd ;;
-            pacman) sudo pacman -S --noconfirm --needed git p7zip nodejs npm bubblewrap curl zstd ;;
-            dnf) sudo dnf install -y git p7zip nodejs npm bubblewrap curl zstd ;;
-            zypper) sudo zypper install -y git 7zip nodejs-default npm bubblewrap curl zstd ;;
-            nix) nix-env -iA nixpkgs.git nixpkgs.p7zip nixpkgs.nodejs nixpkgs.bubblewrap nixpkgs.curl nixpkgs.zstd ;;
-            *) die "Unknown package manager. Install manually: git p7zip nodejs npm bubblewrap curl zstd" ;;
+            apt)
+                sudo apt-get update -qq || log_warn "apt-get update failed; trying install anyway"
+                for p in "${pkgs[@]}"; do
+                    sudo apt-get install -y "$p" || failed+=("$p")
+                done
+                ;;
+            pacman) sudo pacman -S --noconfirm --needed "${pkgs[@]}" || failed+=("${pkgs[@]}") ;;
+            dnf)    sudo dnf install -y "${pkgs[@]}" || failed+=("${pkgs[@]}") ;;
+            zypper) sudo zypper install -y "${pkgs[@]}" || failed+=("${pkgs[@]}") ;;
+            nix)    for p in "${pkgs[@]}"; do nix-env -iA "nixpkgs.$p" || failed+=("$p"); done ;;
+            *)      die "Unknown package manager. Install manually: ${pkgs[*]}" ;;
         esac
+        if [[ ${#failed[@]} -gt 0 ]]; then
+            log_warn "Could not install: ${failed[*]}"
+            case " ${failed[*]} " in
+                *" npm "*|*" nodejs "*)
+                    log_warn "If Node.js came from NodeSource, the distro nodejs/npm packages conflict with it."
+                    log_warn "NodeSource's nodejs already bundles npm -- reinstall it or enable corepack instead."
+                    ;;
+            esac
+        fi
     fi
 
     # Install npm packages to user prefix
@@ -173,6 +217,8 @@ install_dependencies() {
         npm install --silent -g --prefix="$npm_prefix" electron || die "Failed to install electron"
     fi
 
+    install_electron_runtime_libs
+
     # Verify
     for cmd in git 7z node npm asar electron bwrap curl zstd; do
         if command_exists "$cmd"; then
@@ -188,6 +234,29 @@ install_dependencies() {
         die "Node.js 18+ required, found v$node_version"
     fi
     log_success "Node.js version OK (v$node_version)"
+}
+
+install_electron_runtime_libs() {
+    # Electron from npm dynamically links NSS/NSPR/ALSA, which minimal
+    # Debian/Ubuntu installs (fresh WSL2 in particular) lack -- issue #136.
+    # Other distros ship them with common desktop packages; only the apt
+    # path needs this. Failures are non-fatal: --doctor has an ldd check.
+    [[ "$(detect_pkg_manager)" == "apt" ]] || return 0
+    local libs=(libnspr4 libnss3) lib
+    # libasound2 became libasound2t64 in Ubuntu 24.04 (time_t transition)
+    if apt-cache show libasound2t64 >/dev/null 2>&1; then
+        libs+=(libasound2t64)
+    else
+        libs+=(libasound2)
+    fi
+    local to_install=()
+    for lib in "${libs[@]}"; do
+        dpkg -s "$lib" >/dev/null 2>&1 || to_install+=("$lib")
+    done
+    [[ ${#to_install[@]} -eq 0 ]] && return 0
+    log_info "Installing Electron runtime libraries: ${to_install[*]}"
+    sudo apt-get install -y "${to_install[@]}" \
+        || log_warn "Failed to install ${to_install[*]} -- electron may fail to start (run --doctor)"
 }
 
 # ============================================================
@@ -831,6 +900,62 @@ EOF
 }
 
 # ============================================================
+# Step 8b: WSL2 support (issue #136)
+# ============================================================
+#
+# On WSL2, /usr/bin/xdg-open forwards URLs to Windows via interop. OAuth
+# then opens in a Windows browser and the claude:// callback never reaches
+# the Linux app. An opt-in wrapper at ~/.local/bin/xdg-open (earlier in
+# PATH) routes claude:// to claude-desktop and http(s) to a Linux browser,
+# falling through to the system xdg-open for everything else.
+
+setup_wsl_support() {
+    is_wsl || return 0
+    log_info "WSL2 detected (/proc/version contains 'microsoft')"
+    local wrapper="$HOME/.local/bin/xdg-open"
+    if [[ -f "$wrapper" ]] && grep -q 'claude-cowork-wsl-xdg-open' "$wrapper" 2>/dev/null; then
+        log_info "Updating existing WSL xdg-open wrapper"
+    elif [[ -e "$wrapper" ]]; then
+        log_warn "$wrapper exists and is not ours -- leaving it alone"
+        return 0
+    elif [[ "${INSTALL_WSL_XDG_OPEN:-0}" != "1" ]]; then
+        if [[ -t 0 ]]; then
+            echo "On WSL2, xdg-open forwards URLs to Windows, so Claude's OAuth"
+            echo "callback (claude://) never reaches the Linux app. A wrapper at"
+            echo "~/.local/bin/xdg-open can route claude:// to claude-desktop and"
+            echo "http(s) to a Linux browser. It affects ALL apps in your session."
+            local _ans
+            read -r -p "Install the wrapper? [y/N] " _ans
+            if [[ ! "$_ans" =~ ^[Yy] ]]; then
+                log_info "Skipped. Re-run with --wsl-xdg-open to install later."
+                return 0
+            fi
+        else
+            log_info "Non-interactive install: skipping xdg-open wrapper (use --wsl-xdg-open)"
+            return 0
+        fi
+    fi
+    mkdir -p "$HOME/.local/bin"
+    cat > "$wrapper" << 'WSLEOF'
+#!/bin/bash
+# claude-cowork-wsl-xdg-open: route claude:// to claude-desktop and web URLs
+# to a Linux browser on WSL2; everything else falls through to the system
+# xdg-open (which forwards to Windows via interop).
+case "${1:-}" in
+    claude://*) exec "$HOME/.local/bin/claude-desktop" "$1" ;;
+    http://*|https://*)
+        for b in "${BROWSER:-}" firefox chromium chromium-browser google-chrome brave-browser; do
+            [[ -n "$b" ]] && command -v "$b" >/dev/null 2>&1 && exec "$b" "$@"
+        done
+        ;;  # no Linux browser found: fall through to the Windows browser
+esac
+exec /usr/bin/xdg-open "$@"
+WSLEOF
+    chmod +x "$wrapper"
+    log_success "WSL xdg-open wrapper installed at $wrapper"
+}
+
+# ============================================================
 # Step 9: Icon extraction (hicolor PNG from embedded .icns blobs)
 # ============================================================
 
@@ -956,6 +1081,24 @@ doctor() {
         fi
     fi
 
+    # --- Electron shared libraries ---
+    # npm's electron dist links NSS/NSPR/ALSA that minimal installs lack
+    # (issue #136). Skipped when there is no npm dist binary (e.g. Nix,
+    # system electron) -- those package managers handle linkage themselves.
+    local electron_dist="$HOME/.local/lib/node_modules/electron/dist/electron"
+    if [[ -x "$electron_dist" ]] && command_exists ldd; then
+        local missing_libs
+        missing_libs=$(ldd "$electron_dist" 2>/dev/null | awk '/not found/ {print $1}' | paste -sd ', ' -)
+        if [[ -n "$missing_libs" ]]; then
+            log_error "Electron shared libraries missing: $missing_libs"
+            log_error "  On Debian/Ubuntu: sudo apt install -y libnspr4 libnss3 libasound2t64 (or libasound2)"
+            fail=$((fail + 1))
+        else
+            log_success "Electron shared libraries: all resolved"
+            ok=$((ok + 1))
+        fi
+    fi
+
     # --- Claude Code CLI ---
     local claude_found=""
     for p in \
@@ -1005,8 +1148,33 @@ doctor() {
         log_success "Secret service (org.freedesktop.secrets): available"
         ok=$((ok + 1))
     else
-        log_warn "Secret service: not available (will fall back to basic password store)"
+        if is_wsl; then
+            log_warn "Secret service: not available (expected on WSL2 -- credentials use the basic password store; re-login after each WSL restart. Enable systemd + gnome-keyring to persist.)"
+        else
+            log_warn "Secret service: not available (will fall back to basic password store)"
+        fi
         warn=$((warn + 1))
+    fi
+
+    # --- WSL2 ---
+    if is_wsl; then
+        log_info "WSL detected (/proc/version contains 'microsoft')"
+        local wsl_wrapper="$HOME/.local/bin/xdg-open"
+        if [[ -f "$wsl_wrapper" ]] && grep -q 'claude-cowork-wsl-xdg-open' "$wsl_wrapper" 2>/dev/null; then
+            log_success "WSL xdg-open wrapper: installed"
+            ok=$((ok + 1))
+            local wsl_browser=""
+            for b in firefox chromium chromium-browser google-chrome brave-browser; do
+                if command_exists "$b"; then wsl_browser="$b"; break; fi
+            done
+            if [[ -z "${BROWSER:-}" && -z "$wsl_browser" ]]; then
+                log_warn "No Linux browser found: http(s) URLs still open in Windows; copy the claude:// callback URL into the terminal manually after OAuth"
+                warn=$((warn + 1))
+            fi
+        else
+            log_warn "WSL xdg-open wrapper: not installed -- OAuth opens in a Windows browser and the claude:// callback may never reach the app. Run: ./install.sh --wsl-xdg-open"
+            warn=$((warn + 1))
+        fi
     fi
 
     # --- Asar version vs last tested ---
@@ -1110,6 +1278,15 @@ main() {
             --force|--yes)
                 INSTALL_FORCE=1
                 ;;
+            --wsl-xdg-open)
+                # Standalone action: install just the WSL xdg-open wrapper.
+                # (During a full install on WSL2 the wrapper is offered
+                # interactively, or forced with INSTALL_WSL_XDG_OPEN=1.)
+                is_wsl || die "--wsl-xdg-open: not running under WSL (no 'microsoft' in /proc/version)"
+                INSTALL_WSL_XDG_OPEN=1
+                setup_wsl_support
+                exit $?
+                ;;
             *)
                 if [[ -n "$archive_arg" ]]; then
                     die "Unexpected argument: $arg"
@@ -1187,6 +1364,10 @@ main() {
     setup_environment
     echo ""
 
+    # Step 8b: WSL2 support (no-op outside WSL)
+    setup_wsl_support
+    echo ""
+
     # Step 9: Icon extraction
     setup_icon
     echo ""
@@ -1214,6 +1395,7 @@ main() {
     echo "  claude-desktop --doctor     Run preflight diagnostics"
     echo "  claude-desktop --update     Re-fetch the Claude Desktop asar"
     echo "  bash install.sh --force     Skip the download confirmation prompt"
+    echo "  bash install.sh --wsl-xdg-open  Install the WSL2 OAuth/xdg-open wrapper"
     echo ""
     echo "Update:"
     echo "  claude-desktop --update                    (preferred)"
