@@ -239,11 +239,18 @@ done
 <details>
 <summary><strong>Global shortcuts don't work on GNOME Wayland (#28)</strong></summary>
 
-GNOME's `xdg-desktop-portal-gnome` has not implemented the GlobalShortcuts portal. This is an upstream limitation.
+`xdg-desktop-portal-gnome` implements the GlobalShortcuts portal since **GNOME 48** (refined in 50) — shortcuts work there, appear under Settings > Keyboard, and may prompt for confirmation on first registration. On GNOME < 48 the portal is missing and shortcuts silently fail.
 
-**Workaround**: Set a custom shortcut in GNOME Settings > Keyboard > Custom Shortcuts to launch `claude-desktop`.
+**Workaround for GNOME < 48**: Set a custom shortcut in GNOME Settings > Keyboard > Custom Shortcuts to launch `claude-desktop`.
 
-Works on: KDE Plasma, Hyprland, Sway (via `xdg-desktop-portal-wlr`).
+Also works on: KDE Plasma, Hyprland, COSMIC, Sway (via `xdg-desktop-portal-wlr`).
+
+</details>
+
+<details>
+<summary><strong>Tray icon invisible or wrong variant (#64)</strong></summary>
+
+The app ships a macOS template tray icon (black-on-transparent) that Linux panels don't auto-tint. The wrapper redirects it to the white variant by default, since most Linux panels are dark. On a light panel, set `CLAUDE_TRAY_ICON=light` before launching to use the black variant instead.
 
 </details>
 
@@ -271,6 +278,52 @@ sudo pacman -S libnotify
 # Debian/Ubuntu
 sudo apt install libnotify-bin
 ```
+
+</details>
+
+---
+
+## WSL2
+
+<details>
+<summary><strong>install.sh fails installing dependencies (npm conflict)</strong></summary>
+
+If Node.js was installed from NodeSource, the distro `npm` package conflicts with it and apt refuses the transaction. The installer now installs missing packages one at a time, so the conflict no longer blocks `zstd`, `curl`, etc. NodeSource's `nodejs` package already bundles npm — don't install distro `npm` alongside it.
+
+</details>
+
+<details>
+<summary><strong>Electron fails to start: missing shared libraries</strong></summary>
+
+Fresh minimal Ubuntu/WSL2 installs lack the NSS/NSPR/ALSA libraries the npm Electron build links against. The installer adds them on apt-based systems; manually:
+
+```bash
+sudo apt install -y libnspr4 libnss3 libasound2t64   # libasound2 before Ubuntu 24.04
+```
+
+`./install.sh --doctor` runs `ldd` against the Electron binary and lists anything unresolved.
+
+</details>
+
+<details>
+<summary><strong>OAuth login opens in the Windows browser and never completes</strong></summary>
+
+WSL2's `xdg-open` forwards URLs to Windows via interop, bypassing `$BROWSER`. The login page opens in your Windows browser, but the `claude://` callback is registered in Linux — so the login never round-trips.
+
+Fix: install the opt-in wrapper, which shadows `xdg-open` in `~/.local/bin` and routes `claude://` URLs to `claude-desktop`, `http(s)` to a Linux browser, and everything else to the system `xdg-open`:
+
+```bash
+bash install.sh --wsl-xdg-open
+```
+
+You need a Linux browser for the OAuth page (install Chrome or Firefox via apt/.deb, **not snap**, so it runs under WSLg). To remove the wrapper: `rm ~/.local/bin/xdg-open`. Note the wrapper affects every app in your WSL session that calls `xdg-open`.
+
+</details>
+
+<details>
+<summary><strong>Logged out after every WSL restart</strong></summary>
+
+Stock WSL2 has no Secret Service, so Electron's `safeStorage` falls back to the basic password store and credentials don't survive a WSL restart. This is expected and non-fatal. To persist logins, enable systemd in `/etc/wsl.conf` and set up `gnome-keyring`.
 
 </details>
 

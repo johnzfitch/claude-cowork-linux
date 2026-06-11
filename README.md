@@ -610,9 +610,21 @@ claude-desktop
 <details>
 <summary><strong>Global shortcuts don't work on Wayland (GNOME)</strong></summary>
 
-The app enables `GlobalShortcutsPortal` for Wayland global shortcut support via `xdg-desktop-portal`. This works on **KDE Plasma** and **Hyprland** but **not on GNOME** — `xdg-desktop-portal-gnome` has not implemented the GlobalShortcuts portal yet.
+The app routes global shortcuts through the `org.freedesktop.portal.GlobalShortcuts` portal on Wayland (Electron's native `globalShortcut` relies on X11 `XGrabKey`, which Wayland doesn't expose). This works on **KDE Plasma**, **Hyprland**, **COSMIC**, and **GNOME 48+** — `xdg-desktop-portal-gnome` implements the GlobalShortcuts portal since version 48 (refined in 50). The shortcut shows up under Settings > Keyboard and may prompt for confirmation the first time it's registered.
 
-**Workaround for GNOME Wayland users:** Set a custom shortcut in GNOME Settings > Keyboard > Custom Shortcuts to launch `claude-desktop`.
+**Workaround for GNOME < 48 (and compositors without the portal):** Set a custom shortcut in GNOME Settings > Keyboard > Custom Shortcuts to launch `claude-desktop`.
+
+</details>
+
+<details>
+<summary><strong>Running under WSL2</strong></summary>
+
+Cowork runs on WSL2 (tested with WSLg on Ubuntu). Four things to know — `./install.sh --doctor` checks all of them:
+
+1. **Dependency install conflicts** — if Node.js came from NodeSource, the distro `npm` package conflicts with it. The installer installs packages individually so one conflict no longer blocks the rest (`zstd`, `curl`, …); NodeSource's `nodejs` already bundles npm.
+2. **Missing Electron libraries** — fresh minimal installs lack NSS/NSPR/ALSA. The installer adds them on apt; manually: `sudo apt install -y libnspr4 libnss3 libasound2t64` (or `libasound2` before Ubuntu 24.04).
+3. **OAuth opens in the Windows browser** — WSL2's `xdg-open` forwards URLs to Windows via interop, so the `claude://` login callback never reaches the Linux app. The installer offers an opt-in wrapper at `~/.local/bin/xdg-open` that routes `claude://` to `claude-desktop` and `http(s)` to a Linux browser. Install it any time with `bash install.sh --wsl-xdg-open`; remove with `rm ~/.local/bin/xdg-open`. You'll need a Linux browser (install Chrome/Firefox via `.deb`/apt, not snap) for the OAuth round-trip under WSLg.
+4. **No Secret Service / safeStorage** — expected on stock WSL2; credentials fall back to the basic password store and you re-login after each WSL restart. Enabling systemd plus `gnome-keyring` makes logins persist.
 
 </details>
 
