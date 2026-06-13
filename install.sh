@@ -801,11 +801,22 @@ EOF
 
     # Alias for familiarity. Symlinks are banned -- write a real wrapper script
     # that execs the canonical launcher by its full path instead of a symlink.
-    cat > "$HOME/.local/bin/claude-cowork" << 'WRAP'
+    #
+    # Pre-8ad9bd7 installs left ~/.local/bin/claude-cowork as a symlink to
+    # claude-desktop. A plain `cat > claude-cowork` would FOLLOW that symlink
+    # and overwrite the just-written claude-desktop launcher with this wrapper,
+    # which then exec's itself in an infinite loop (PR #138). Write to a temp
+    # file in the same dir and `mv` it into place: mv replaces the symlink
+    # itself rather than its target, atomically, with no unconditional rm.
+    local cowork_alias="$HOME/.local/bin/claude-cowork"
+    local cowork_tmp
+    cowork_tmp="$(mktemp "$HOME/.local/bin/.claude-cowork.XXXXXX")" || die "Failed to create temp file for claude-cowork wrapper"
+    cat > "$cowork_tmp" << 'WRAP'
 #!/bin/bash
 exec "$HOME/.local/bin/claude-desktop" "$@"
 WRAP
-    chmod +x "$HOME/.local/bin/claude-cowork"
+    chmod +x "$cowork_tmp"
+    mv -f "$cowork_tmp" "$cowork_alias"
 
     log_success "Created launchers: ~/.local/bin/claude-desktop, ~/.local/bin/claude-cowork"
 }
