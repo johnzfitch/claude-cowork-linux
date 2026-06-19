@@ -1294,8 +1294,21 @@ class SwiftAddonStub extends EventEmitter {
           sharedCwdPath,
           onError: self._onError,
         });
+        // The asar (v1.5xx+) treats vm.spawn()'s return value as a Promise:
+        //   const o = vm.spawn(...); o.catch(()=>{});
+        //   await Promise.race([o, waitForExit()]);
+        //   const { failedMounts = [] } = await o;
+        // Returning a plain object here makes the app crash with
+        //   "o.catch is not a function"
+        // on every workspace bash command (resume/create/re-resume all fail).
+        // So spawn must resolve to an object exposing `failedMounts`, and
+        // reject when the process cannot be launched so the error surfaces
+        // instead of hanging until the 30s oneshot timeout.
         if (!preparedSpawn.success) {
-          return preparedSpawn;
+          return Promise.reject(Object.assign(
+            new Error(preparedSpawn.error || 'spawn preparation failed'),
+            { failedMounts: [] }
+          ));
         }
 
         console.log('[claude-swift] vm.spawn() id=' + id + ' cmd=' + preparedSpawn.command);
@@ -1312,7 +1325,25 @@ class SwiftAddonStub extends EventEmitter {
           preparedSpawn.sharedCwdPath
         );
 
-        return spawnResult;
+        if (!spawnResult || spawnResult.success !== true) {
+          return Promise.reject(Object.assign(
+            new Error((spawnResult && spawnResult.error) || 'spawn failed'),
+            { failedMounts: [] }
+          ));
+        }
+
+        // Resolve to the shape the asar destructures ({ failedMounts }).
+        // Critical mount failures already reject above via preparedSpawn;
+        // non-critical mounts are best-effort, so report none failed here.
+        const resolved = { ...spawnResult, failedMounts: [] };
+        // Hybrid: also expose success/pid synchronously so existing callers
+        // and the node test harness (which read spawnResult.success right
+        // after the call) keep working without awaiting.
+        const spawnPromise = Promise.resolve(resolved);
+        spawnPromise.success = spawnResult.success;
+        spawnPromise.pid = spawnResult.pid;
+        spawnPromise.failedMounts = resolved.failedMounts;
+        return spawnPromise;
       },
 
       kill: (id, signal) => {
