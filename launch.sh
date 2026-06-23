@@ -179,6 +179,24 @@ if [ -f "$INDEX_JS" ] && grep -qE '[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?pr
   sed -i -E 's/[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?process\.resourcesPath://g' "$INDEX_JS"
 fi
 
+# Fix MCP node-host path resolution ("MCP Filesystem: Node host not found").
+# The MCP runtime computes its host paths as
+#   app.isPackaged ? join(process.resourcesPath,"app.asar",...) : join(getAppPath(),...)
+# but frame-fix-wrapper.js overrides process.resourcesPath to
+# ~/.config/Claude/cowork-resources (so the disclaimer/Helpers dir is writable),
+# and that location has no app.asar — so the packaged branch resolves to a
+# nonexistent nodeHost.js/directMcpHost.js and the MCP server fails to start.
+# getAppPath() already points inside the running asar (and equals
+# resources/app.asar on a stock build), so rewrite the packaged branch to use
+# it. Covers nodeHost.js, directMcpHost.js, and the asar-root helper — every
+# isPackaged-guarded asar-internal lookup. The resourcesPath patch above only
+# matches the bare `isPackaged?process.resourcesPath:` shape, not these join()
+# forms, so this is a separate pass.
+if [ -f "$INDEX_JS" ] && grep -qE '[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?[a-zA-Z_$][a-zA-Z0-9_$]*\.join\(process\.resourcesPath,"app\.asar"' "$INDEX_JS"; then
+  echo "Patching MCP node-host asar paths to use getAppPath()..."
+  sed -i -E 's/([a-zA-Z_$][a-zA-Z0-9_$]*)\.app\.isPackaged\?([a-zA-Z_$][a-zA-Z0-9_$]*)\.join\(process\.resourcesPath,"app\.asar"/\1.app.isPackaged?\2.join(\1.app.getAppPath()/g' "$INDEX_JS"
+fi
+
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
 _needs_repack=false
