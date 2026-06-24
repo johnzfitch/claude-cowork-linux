@@ -68,9 +68,20 @@ function createSpacesStore(options) {
     }
   }
 
-  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  function isValidUUID(s) {
-    return typeof s === 'string' && UUID_RE.test(s);
+  // Resolve the nearest EXISTING ancestor of p through realpathSync. Used by
+  // create operations where the target (and possibly some parent dirs) don't
+  // exist yet, but we still must ensure no symlink in the existing portion of
+  // the chain redirects the write outside the allowed roots. Returns null if
+  // nothing along the chain can be resolved.
+  function resolveExistingAncestor(p) {
+    if (typeof p !== 'string' || !path.isAbsolute(p)) return null;
+    let cur = path.normalize(p);
+    while (!fs.existsSync(cur)) {
+      const parent = path.dirname(cur);
+      if (parent === cur) return null; // reached fs root without an existing dir
+      cur = parent;
+    }
+    return resolvePath(cur);
   }
 
   // Sanitize a value from the renderer to a plain string (max 10KB).
@@ -481,30 +492,70 @@ function createSpacesStore(options) {
     return true;
   }
 
-  function createSpaceFolder(_event, spaceId, folderName) {
-    // Internal operation: only allows simple basenames, no path separators
-    // or traversal. Output is always under localAgentRoot.
-    if (typeof folderName !== 'string' || folderName.length === 0 || folderName.length > 255) return null;
-    if (/[/\\]/.test(folderName) || folderName === '.' || folderName === '..') {
+  function createSpaceFolder(_event, parentPath, folderName) {
+    // Contract (asar 1.14271.0): the renderer's "New Project" flow invokes
+    // this with a filesystem parentPath at position 0 and a folderName at
+    // position 1 — confirmed against the bundle's IPC validator, which names
+    // the args "parentPath" then "folderName". We create
+    // <parentPath>/<folderName> on disk, dedup on collision ("name (1)",
+    // "name (2)", …) to match the native impl, and return the created path.
+    //
+    // Older builds used (spaceId, name) rooted under
+    // localAgentRoot/spaces/<uuid>; that contract changed and the old shape
+    // rejected every call with "invalid spaceId", so project creation failed.
+    if (typeof folderName !== 'string') return null;
+    const name = folderName.trim();
+    if (name.length === 0 || name.length > 255) {
       trace('[spaces] createSpaceFolder BLOCKED (invalid name): ' + folderName);
       return null;
     }
-    if (!isValidUUID(spaceId)) {
-      trace('[spaces] createSpaceFolder BLOCKED (invalid spaceId): ' + spaceId);
+    // folderName must be a single path segment — no separators or traversal.
+    if (/[/\\]/.test(name) || name === '.' || name === '..' || name.includes('\0')) {
+      trace('[spaces] createSpaceFolder BLOCKED (invalid name): ' + name);
       return null;
     }
-    const p = discoverSpacesPath();
-    if (!p) return null;
-    const spaceFolderPath = path.join(path.dirname(p), 'spaces', spaceId, folderName);
-    // Verify the constructed path is still under localAgentRoot
-    const normalized = path.normalize(spaceFolderPath);
-    if (!normalized.startsWith(localAgentRoot + path.sep)) {
-      trace('[spaces] createSpaceFolder BLOCKED (escaped localAgentRoot): ' + normalized);
+    if (typeof parentPath !== 'string' || !path.isAbsolute(parentPath) || parentPath.includes('\0')) {
+      trace('[spaces] createSpaceFolder BLOCKED (invalid parentPath): ' + parentPath);
+      return null;
+    }
+    // Security: the native macOS impl relies on the OS sandbox; Linux has
+    // none, so confine creation to allowed roots (homedir, no /tmp) — the
+    // same policy as addFolderToSpace. Validate the normalized target so a
+    // parentPath containing `..` segments can't escape lexically.
+    const base = path.normalize(path.join(parentPath, name));
+    if (!requireAllowedPath(base)) {
+      trace('[spaces] createSpaceFolder BLOCKED (outside allowed roots): ' + base);
+      return null;
+    }
+    // A lexical check alone is insufficient on Linux: a symlinked ancestor
+    // (e.g. ~/Projects -> /etc) would let recursive mkdir escape the home
+    // confinement. Mirror addFolderToSpace's symlink defense by resolving the
+    // nearest EXISTING ancestor through realpath and requiring it to stay
+    // within the allowed roots. We resolve the nearest existing ancestor
+    // (rather than parentPath itself) so a not-yet-created Projects tree still
+    // works — recursive mkdir then only adds fresh, non-symlink segments below
+    // a verified-real directory.
+    const resolvedAncestor = resolveExistingAncestor(base);
+    if (!resolvedAncestor || !requireAllowedPath(resolvedAncestor)) {
+      trace('[spaces] createSpaceFolder BLOCKED (symlinked/escaping ancestor): ' + base);
       return null;
     }
     try {
-      fs.mkdirSync(spaceFolderPath, { recursive: true });
-      return spaceFolderPath;
+      let target = base;
+      for (let i = 1; fs.existsSync(target); i++) {
+        if (i > 1000) {
+          trace('[spaces] createSpaceFolder BLOCKED (too many collisions): ' + base);
+          return null;
+        }
+        target = path.normalize(path.join(parentPath, name + ' (' + i + ')'));
+        if (!requireAllowedPath(target)) {
+          trace('[spaces] createSpaceFolder BLOCKED (outside allowed roots): ' + target);
+          return null;
+        }
+      }
+      fs.mkdirSync(target, { recursive: true });
+      trace('[spaces] createSpaceFolder created: ' + target);
+      return target;
     } catch (e) {
       trace('[spaces] createSpaceFolder error: ' + e.message);
       return null;
