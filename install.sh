@@ -694,7 +694,8 @@ seed_version_sentinel() {
 # ============================================================
 
 apply_patches() {
-    local index_js="$INSTALL_DIR/linux-app-extracted/.vite/build/index.js"
+    local build_dir="$INSTALL_DIR/linux-app-extracted/.vite/build"
+    local index_js="$build_dir/index.js"
     local script_dir
     script_dir=$(cd "$(dirname "$0")" && pwd)
     local patch_script=""
@@ -706,13 +707,29 @@ apply_patches() {
         patch_script="$INSTALL_DIR/enable-cowork.py"
     fi
 
-    if [[ -n "$patch_script" && -f "$index_js" ]]; then
-        log_info "Applying cowork patch..."
-        python3 "$patch_script" "$index_js" || log_warn "Patch may have already been applied"
-        log_success "Patches applied"
-    else
+    if [[ -z "$patch_script" || ! -f "$index_js" ]]; then
         log_warn "Patch script or index.js not found, skipping patches"
+        return
     fi
+
+    # Newer Claude Desktop builds emit index.js as a thin entry shim that
+    # require()s the real main code from an index.chunk-<hash>.js file, so the
+    # platform-gate / IPC / host-platform patterns live in the chunk, not in
+    # index.js. Patch index.js plus every chunk it require()s; enable-cowork.py
+    # is idempotent (marker-guarded) and reports "not found" harmlessly for
+    # files that don't contain a given pattern.
+    local -a targets=("$index_js")
+    local chunk
+    while IFS= read -r chunk; do
+        [[ -n "$chunk" && -f "$build_dir/$chunk" ]] && targets+=("$build_dir/$chunk")
+    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$index_js" | sort -u)
+
+    log_info "Applying cowork patch to ${#targets[@]} file(s)..."
+    local t
+    for t in "${targets[@]}"; do
+        python3 "$patch_script" "$t" || log_warn "Patch may have already been applied: ${t##*/}"
+    done
+    log_success "Patches applied"
 }
 
 # ============================================================

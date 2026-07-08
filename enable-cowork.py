@@ -146,8 +146,12 @@ def patch_host_platform(filepath):
 # add a file:// origin exemption at each call site: the original FUNC(i) still
 # validates non-file:// origins (e.g. would reject http://evil.com), so the
 # defense-in-depth layer is preserved for everything except our local renderer.
+# The validator name and the sender-arg name are both minified and rotate per
+# build (e.g. the arg was `i` in older builds and is `n` in 1.19367.0; validator
+# names like `$m` even contain `$`), so match both with [\w$]+ and reuse the
+# captured arg in the exemption rather than hardcoding it.
 IPC_ORIGIN_GUARD_RE = re.compile(
-    r'if\(!(\w+)\(i\)\)(throw new Error\(`[^`]*did not pass origin validation`\))'
+    r'if\(!([\w$]+)\(([\w$]+)\)\)(throw new Error\(`[^`]*did not pass origin validation`\))'
 )
 IPC_PATCH_MARKER = '/*cowork-ipc-patched*/'
 
@@ -162,10 +166,11 @@ def patch_ipc_origin_guards(filepath):
         print(f"  IPC origin guards: already patched")
         return True
 
-    # Replace if(!FUNC(i)) with if(!FUNC(i)&&!(i.senderFrame&&i.senderFrame.url&&i.senderFrame.url.startsWith("file://")))
+    # Replace if(!FUNC(ARG)) with
+    #   if(!FUNC(ARG)&&!(ARG.senderFrame&&ARG.senderFrame.url&&ARG.senderFrame.url.startsWith("file://")))
     # This lets file:// through while keeping the validator for everything else.
     new_content, count = IPC_ORIGIN_GUARD_RE.subn(
-        r'if(!\1(i)&&!(i.senderFrame&&i.senderFrame.url&&i.senderFrame.url.startsWith("file://")))\2',
+        r'if(!\1(\2)&&!(\2.senderFrame&&\2.senderFrame.url&&\2.senderFrame.url.startsWith("file://")))\3',
         content
     )
     if count == 0:
