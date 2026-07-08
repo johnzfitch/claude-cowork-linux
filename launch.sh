@@ -119,26 +119,56 @@ if [ -f "$PKG_JSON" ] && grep -q '"main":.*index\.pre\.js"' "$PKG_JSON"; then
   sed -i 's|"main":.*"\.vite/build/index\.pre\.js"|"main": "frame-fix-entry.js"|' "$PKG_JSON"
 fi
 
-# Fix window decorations: remove macOS-specific titlebar options from main window
-# The Vite bundle bypasses the frame-fix-wrapper's require interception, so we patch directly.
-INDEX_JS="linux-app-extracted/.vite/build/index.js"
-if [ -f "$INDEX_JS" ] && grep -q 'titleBarOverlay' "$INDEX_JS"; then
-  echo "Patching macOS titlebar options for Linux..."
-  # Main window: remove titleBarStyle:"hidden",titleBarOverlay:VAR,trafficLightPosition:VAR,
-  sed -i 's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_]\+,trafficLightPosition:[A-Za-z0-9_]\+,//g' "$INDEX_JS"
-  # About window: remove titleBarStyle:"hiddenInset" (keep other options)
-  sed -i 's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g' "$INDEX_JS"
+# ── Locate the main-process code file(s) ────────────────────────────────────
+# Vite compiles the main process into .vite/build/. Newer Claude Desktop builds
+# emit index.js as a thin entry shim that require()s the real code from an
+# index.chunk-<hash>.js file (the <hash> changes every build); older builds keep
+# everything in index.js. The patches below must run against whichever file
+# actually holds the code, so collect index.js plus every chunk it require()s.
+# Applying each grep-guarded patch across all of them is safe: a file that lacks
+# the pattern is skipped. This also survives minifier identifier rotation because
+# the patterns below match on stable API/string tokens, not minified var names.
+_BUILD_DIR="linux-app-extracted/.vite/build"
+INDEX_TARGETS=()
+if [ -f "$_BUILD_DIR/index.js" ]; then
+  INDEX_TARGETS+=("$_BUILD_DIR/index.js")
+  while IFS= read -r _chunk; do
+    [ -n "$_chunk" ] && [ -f "$_BUILD_DIR/$_chunk" ] && INDEX_TARGETS+=("$_BUILD_DIR/$_chunk")
+  done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_BUILD_DIR/index.js" | sort -u)
 fi
+
+# patch_index "<log message>" "<grep -E guard>" "<sed -E script>"
+# Runs the sed against every main-process code file matching the guard; logs once
+# if any file matched. Minified identifiers are matched with [A-Za-z0-9_$]+ so the
+# patches keep working when a new build reshuffles variable names.
+patch_index() {
+  local msg="$1" pat="$2" script="$3" f matched=""
+  for f in "${INDEX_TARGETS[@]}"; do
+    if grep -qE "$pat" "$f" 2>/dev/null; then
+      sed -i -E "$script" "$f"
+      matched=1
+    fi
+  done
+  [ -n "$matched" ] && echo "$msg"
+}
+
+# Fix window decorations: remove macOS-specific titlebar options from the windows.
+# The Vite bundle bypasses the frame-fix-wrapper's require interception, so we patch directly.
+patch_index "Patching macOS titlebar options for Linux (main window)..." \
+  'titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,' \
+  's/titleBarStyle:"hidden",titleBarOverlay:[A-Za-z0-9_$]+,trafficLightPosition:[A-Za-z0-9_$]+,//g'
+patch_index "Patching macOS titlebar options for Linux (about window)..." \
+  'titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0' \
+  's/titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
 
 # Fix origin validation: the asar's nue() function rejects file:// preloads
 # when app.isPackaged is false (which it always is when running via `electron .asar`).
 # This causes the mainWindow/findInPage preloads to crash before exposing `process`
 # via contextBridge, breaking the renderer shell. Drop the isPackaged requirement
 # for file:// origins — the content is inside our asar, so there's no security risk.
-if [ -f "$INDEX_JS" ] && grep -q 'e\.protocol==="file:"&&Ee\.app\.isPackaged===!0' "$INDEX_JS"; then
-  echo "Patching origin validation for file:// preloads..."
-  sed -i 's/e\.protocol==="file:"&&Ee\.app\.isPackaged===!0/e.protocol==="file:"/g' "$INDEX_JS"
-fi
+patch_index "Patching origin validation for file:// preloads..." \
+  '[A-Za-z0-9_$]+\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0' \
+  's/([A-Za-z0-9_$]+)\.protocol==="file:"&&[A-Za-z0-9_$]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
 
 # Fix preload origin validation: the mainView.js preload's h() guard checks
 # if window.location.href origin matches claude.ai/preview.claude.ai etc.
@@ -154,18 +184,18 @@ fi
 
 # Fix --effort xhigh: Claude Desktop may pass --effort xhigh but the SDK binary
 # only supports low/medium/high/max. Remap xhigh -> max in the CLI arg builder.
-if [ -f "$INDEX_JS" ] && grep -q 'O\.push("--effort",this\.options\.effort)' "$INDEX_JS"; then
-  echo "Patching --effort xhigh -> max..."
-  sed -i 's/O\.push("--effort",this\.options\.effort)/O.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/' "$INDEX_JS"
-fi
+patch_index "Patching --effort xhigh -> max..." \
+  '[A-Za-z0-9_$]+\.push\("--effort",this\.options\.effort\)' \
+  's/([A-Za-z0-9_$]+)\.push\("--effort",this\.options\.effort\)/\1.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/g'
 
 # Fix macOS Handoff API: invalidateCurrentActivity() and setUserActivity() are
 # macOS-only Electron APIs that crash on Linux. Replace with safe no-op fallbacks.
-if [ -f "$INDEX_JS" ] && grep -q 'cA\.app\.invalidateCurrentActivity()' "$INDEX_JS"; then
-  echo "Patching macOS Handoff APIs for Linux..."
-  sed -i 's/cA\.app\.invalidateCurrentActivity()/(cA.app.invalidateCurrentActivity||function(){})()/' "$INDEX_JS"
-  sed -i 's/cA\.app\.setUserActivity(adt,/((cA.app.setUserActivity||function(){}))(adt,/' "$INDEX_JS"
-fi
+patch_index "Patching macOS Handoff API invalidateCurrentActivity for Linux..." \
+  '[A-Za-z0-9_$]+\.app\.invalidateCurrentActivity\(\)' \
+  's/([A-Za-z0-9_$]+)\.app\.invalidateCurrentActivity\(\)/(\1.app.invalidateCurrentActivity||function(){})()/g'
+patch_index "Patching macOS Handoff API setUserActivity for Linux..." \
+  '[A-Za-z0-9_$]+\.app\.setUserActivity\([A-Za-z0-9_$]+,' \
+  's/([A-Za-z0-9_$]+)\.app\.setUserActivity\(([A-Za-z0-9_$]+),/((\1.app.setUserActivity||function(){}))(\2,/g'
 
 # Fix resource path lookup for i18n, shim-lib, icon, etc.
 # The asar uses `app.isPackaged ? process.resourcesPath : <asar-relative path>`.
@@ -174,10 +204,9 @@ fi
 # locales live at /usr/lib/electron39/locales/*.pak (wrong format, wrong path).
 # The fallback branch resolves to resources/ inside our asar, where launch.sh
 # populates resources/i18n/*.json. Always use the fallback so locale JSONs load.
-if [ -f "$INDEX_JS" ] && grep -qE '[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?process\.resourcesPath:' "$INDEX_JS"; then
-  echo "Patching resourcesPath lookups to use asar-internal resources/..."
-  sed -i -E 's/[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?process\.resourcesPath://g' "$INDEX_JS"
-fi
+patch_index "Patching resourcesPath lookups to use asar-internal resources/..." \
+  '[A-Za-z0-9_$]+\.app\.isPackaged\?process\.resourcesPath:' \
+  's/[A-Za-z0-9_$]+\.app\.isPackaged\?process\.resourcesPath://g'
 
 # Fix MCP node-host path resolution ("MCP Filesystem: Node host not found").
 # The MCP runtime computes its host paths as
@@ -192,10 +221,9 @@ fi
 # isPackaged-guarded asar-internal lookup. The resourcesPath patch above only
 # matches the bare `isPackaged?process.resourcesPath:` shape, not these join()
 # forms, so this is a separate pass.
-if [ -f "$INDEX_JS" ] && grep -qE '[a-zA-Z_$][a-zA-Z0-9_$]*\.app\.isPackaged\?[a-zA-Z_$][a-zA-Z0-9_$]*\.join\(process\.resourcesPath,"app\.asar"' "$INDEX_JS"; then
-  echo "Patching MCP node-host asar paths to use getAppPath()..."
-  sed -i -E 's/([a-zA-Z_$][a-zA-Z0-9_$]*)\.app\.isPackaged\?([a-zA-Z_$][a-zA-Z0-9_$]*)\.join\(process\.resourcesPath,"app\.asar"/\1.app.isPackaged?\2.join(\1.app.getAppPath()/g' "$INDEX_JS"
-fi
+patch_index "Patching MCP node-host asar paths to use getAppPath()..." \
+  '[A-Za-z0-9_$]+\.app\.isPackaged\?[A-Za-z0-9_$]+\.join\(process\.resourcesPath,"app\.asar"' \
+  's/([A-Za-z0-9_$]+)\.app\.isPackaged\?([A-Za-z0-9_$]+)\.join\(process\.resourcesPath,"app\.asar"/\1.app.isPackaged?\2.join(\1.app.getAppPath()/g'
 
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
