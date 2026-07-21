@@ -83,7 +83,15 @@ function getSpacesStore() {
   if (global.__coworkSpacesStore) return global.__coworkSpacesStore;
   const dirs = global.__coworkDirs;
   const localAgentRoot = dirs ? dirs.claudeLocalAgentRoot : path.join(_realHomeDir, '.config', 'Claude', 'local-agent-mode-sessions');
-  global.__coworkSpacesStore = createSpacesStore({ localAgentRoot, isPathAllowed: isPathWithinAllowedRoots, trace: vlog });
+  global.__coworkSpacesStore = createSpacesStore({
+    localAgentRoot,
+    isPathAllowed: isPathWithinAllowedRoots,
+    trace: vlog,
+    // Reuse the wrapper's webContents broadcaster if this module (rather than
+    // frame-fix-wrapper's early block) is the one that constructs the store,
+    // so space mutations still reach the renderer live.
+    emit: (e) => { try { if (global.__coworkEmitSpaceEvent) global.__coworkEmitSpaceEvent(e); } catch (_) {} },
+  });
   return global.__coworkSpacesStore;
 }
 

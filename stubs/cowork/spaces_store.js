@@ -20,7 +20,19 @@ const MAX_PROJECTS_PER_SPACE = 500;
 const MAX_LINKS_PER_SPACE = 500;
 
 function createSpacesStore(options) {
-  const { localAgentRoot, isPathAllowed, trace = () => {} } = options || {};
+  const { localAgentRoot, isPathAllowed, trace = () => {}, emit = () => {} } = options || {};
+
+  // Notify the renderer of a space mutation so its UI updates live. On macOS
+  // the native Swift module emits these events; on Linux nothing did, so
+  // create / archive / delete / add-folder only became visible after an app
+  // restart (which forces a fresh getAllSpaces()). The renderer's onSpaceEvent
+  // handler upserts e.space by id on 'created'/'updated' and drops e.space.id
+  // on 'deleted'. emit is best-effort: a throwing/absent transport must never
+  // fail the underlying mutation, which has already been persisted.
+  function emitSpaceEvent(type, space) {
+    if (!space) return;
+    try { emit({ type, space }); } catch (e) { trace('[spaces] emit failed: ' + e.message); }
+  }
 
   // Rate limiter for write operations. A compromised renderer can't exhaust
   // disk by spamming createSpace/updateSpace/etc.
@@ -303,6 +315,7 @@ function createSpacesStore(options) {
       return null;
     }
     trace('[spaces] Created space: ' + newSpace.id + ' (' + newSpace.name + ')');
+    emitSpaceEvent('created', newSpace);
     return newSpace;
   }
 
@@ -327,6 +340,7 @@ function createSpacesStore(options) {
     spaces[index] = updated;
     if (!writeSpaces(spaces)) return null;
     trace('[spaces] Updated space: ' + spaceId);
+    emitSpaceEvent('updated', updated);
     return updated;
   }
 
@@ -338,6 +352,7 @@ function createSpacesStore(options) {
     }
     if (!writeSpaces(filtered)) return false;
     trace('[spaces] Deleted space: ' + spaceId);
+    emitSpaceEvent('deleted', { id: spaceId });
     return true;
   }
 
@@ -366,6 +381,7 @@ function createSpacesStore(options) {
     }
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -377,6 +393,7 @@ function createSpacesStore(options) {
     space.folders = space.folders.filter(f => f.path !== folderPath && f.path !== resolved);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -390,6 +407,7 @@ function createSpacesStore(options) {
     space.projects.push(sanitized);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -401,6 +419,7 @@ function createSpacesStore(options) {
     space.projects = space.projects.filter(p => (p && 'id' in p ? p.id : p) !== projectId);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -414,6 +433,7 @@ function createSpacesStore(options) {
     space.links.push(sanitized);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -424,6 +444,7 @@ function createSpacesStore(options) {
     space.links = space.links.filter(l => (l && 'id' in l ? l.id : l) !== linkId);
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -606,6 +627,7 @@ function createSpacesStore(options) {
     space.autoDescription = sanitized;
     space.updatedAt = Date.now();
     if (!writeSpaces(spaces)) return null;
+    emitSpaceEvent('updated', space);
     return space;
   }
 
@@ -623,8 +645,11 @@ function createSpacesStore(options) {
     };
   }
 
-  // Event subscription — no-op, the renderer doesn't need real-time events on Linux
-  // since we don't have native filesystem watchers wired to spaces.
+  // Event subscription handler — intentionally a no-op. The renderer does NOT
+  // drive live updates through this IPC method: its preload subscribes directly
+  // with ipcRenderer.on(<onSpaceEvent channel>) and we push mutations to that
+  // channel via the injected `emit` (see emitSpaceEvent above). This handler
+  // only needs to exist so the method call resolves without error.
   function onSpaceEvent(_event, _callback) {
     return { dispose: () => {} };
   }

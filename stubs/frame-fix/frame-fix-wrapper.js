@@ -95,6 +95,44 @@ const { createAutoPermissionsCap } = require('./cowork/auto_permissions_cap.js')
 const { createBridgeCanary } = require('./cowork/bridge_canary.js');
 const { redactHomeDir } = require('./cowork/credential_classifier.js');
 
+// ── CoworkSpaces live events ────────────────────────────────────────────────
+// The renderer subscribes to space mutations via ipcRenderer.on(<channel>) and
+// patches its UI in place (upsert on created/updated, drop on deleted). On
+// macOS the native Swift module pushes these events; on Linux the spaces store
+// had no transport, so create / archive / delete / add-folder only became
+// visible after an app restart (which re-runs getAllSpaces()). We push the
+// event to every live webContents on the onSpaceEvent channel for each EIPC
+// UUID observed on a CoworkSpaces channel at handler-registration time. The set
+// is seeded with the UUID shipped in the tested asar so the cold path (a
+// mutation before any handler registered) still reaches a listening renderer;
+// sending on a channel nobody listens to is a harmless no-op.
+const _coworkEipcUuids = new Set(['f03aa98e-d1a9-4267-bc94-7de792a6d4be']);
+
+function noteCoworkEipcUuid(channel, uuid) {
+  if (uuid && typeof channel === 'string' && channel.indexOf('CoworkSpaces') >= 0) {
+    _coworkEipcUuids.add(uuid);
+  }
+}
+
+function emitCoworkSpaceEvent(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  let list;
+  try {
+    list = require('electron').webContents.getAllWebContents();
+  } catch (_) { return; }
+  for (const contents of list) {
+    if (!contents) continue;
+    if (typeof contents.isDestroyed === 'function' && contents.isDestroyed()) continue;
+    for (const uuid of _coworkEipcUuids) {
+      const channel = '$eipc_message$_' + uuid + '_$_claude.web_$_CoworkSpaces_$_onSpaceEvent';
+      try { contents.send(channel, payload); } catch (_) {}
+    }
+  }
+}
+// Expose so ipc_overrides.js reuses the same transport when it (rather than the
+// early block below) is the site that constructs the shared spaces store.
+global.__coworkEmitSpaceEvent = emitCoworkSpaceEvent;
+
 // Single cap instance for the process. Closure-private state lives inside
 // the factory; we just keep the wrapHandler reference. The cap is one of
 // the "wrapper-side rails" that bounds the manual permission flow which
@@ -655,6 +693,7 @@ try {
     ),
     isPathAllowed: _earlyIsPathAllowed,
     trace: (msg) => console.log(msg),
+    emit: emitCoworkSpaceEvent,
   });
   global.__coworkSpacesStore = _spacesStore;
 
@@ -1456,6 +1495,7 @@ Module.prototype.require = function(id) {
         // catch them. Proactive registration on ipcMain provides a fallback.
         const uuid = extractEipcUuid(channel);
         if (uuid) {
+          noteCoworkEipcUuid(channel, uuid);
           proactivelyRegisterOverrides(originalHandle, originalRemoveHandler, ipcOverrides, uuid);
         }
 
@@ -1635,6 +1675,7 @@ Module.prototype.require = function(id) {
           // handlers the asar never registers (ComputerUseTcc, CoworkSpaces).
           const uuid = extractEipcUuid(channel);
           if (uuid) {
+            noteCoworkEipcUuid(channel, uuid);
             proactivelyRegisterOverrides(originalHandle, originalRemoveHandler, ipcOverrides, uuid);
           }
 
