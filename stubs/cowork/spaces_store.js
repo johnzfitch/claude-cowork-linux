@@ -463,10 +463,23 @@ function createSpacesStore(options) {
     return spacesDir;
   }
 
-  function listFolderContents(_event, folderPath) {
-    const resolved = resolveWithinRegisteredFolder(folderPath);
+  // asar 1.22209.x changed the CoworkSpaces file-op contract from (path) to
+  // (spaceId, path): a spaceId was prepended and the real path moved to
+  // argument position 1. Older builds pass just (path). Accept BOTH shapes so
+  // the stub works across bundle versions (and survives a rollback): prefer the
+  // trailing path argument when it's a non-empty string, else fall back to the
+  // first. Without this, the stub reads the spaceId (a UUID) as the path,
+  // resolveWithinRegisteredFolder rejects it, and folder browsing/file reads
+  // silently return empty.
+  function pickPathArg(a, b) {
+    return (typeof b === 'string' && b.length > 0) ? b : a;
+  }
+
+  function listFolderContents(_event, spaceIdOrPath, folderPath) {
+    const target = pickPathArg(spaceIdOrPath, folderPath);
+    const resolved = resolveWithinRegisteredFolder(target);
     if (!resolved) {
-      trace('[spaces] listFolderContents BLOCKED: ' + folderPath);
+      trace('[spaces] listFolderContents BLOCKED: ' + target);
       return [];
     }
     try {
@@ -482,10 +495,11 @@ function createSpacesStore(options) {
     }
   }
 
-  function readFileContents(_event, filePath) {
-    const resolved = resolveWithinRegisteredFolder(filePath);
+  function readFileContents(_event, spaceIdOrPath, filePath) {
+    const target = pickPathArg(spaceIdOrPath, filePath);
+    const resolved = resolveWithinRegisteredFolder(target);
     if (!resolved) {
-      trace('[spaces] readFileContents BLOCKED: ' + filePath);
+      trace('[spaces] readFileContents BLOCKED: ' + target);
       return null;
     }
     try {
@@ -495,10 +509,11 @@ function createSpacesStore(options) {
     }
   }
 
-  function openFile(_event, filePath) {
-    const resolved = resolveWithinRegisteredFolder(filePath);
+  function openFile(_event, spaceIdOrPath, filePath) {
+    const target = pickPathArg(spaceIdOrPath, filePath);
+    const resolved = resolveWithinRegisteredFolder(target);
     if (!resolved) {
-      trace('[spaces] openFile BLOCKED: ' + filePath);
+      trace('[spaces] openFile BLOCKED: ' + target);
       return false;
     }
     try {

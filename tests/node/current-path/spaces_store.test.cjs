@@ -223,3 +223,33 @@ test('a throwing emit transport never fails or loses the mutation', (t) => {
   assert.ok(space && space.id, 'mutation must persist even when emit throws');
   assert.equal(store.getSpace(null, space.id).name, 'Alpha');
 });
+
+// ── File-op contract: asar 1.22209.x switched (path) -> (spaceId, path) ───────
+// The renderer now prepends a spaceId, moving the real path to argument 1.
+// The stub must accept BOTH shapes (new build + rollback) or folder browsing
+// and file reads silently return empty (BLOCKED on the UUID-as-path).
+test('listFolderContents/readFileContents accept both (spaceId, path) and (path)', (t) => {
+  const { tempHome, store } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'S' });
+  const folder = path.join(tempHome, 'proj');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'a.txt'), 'hello');
+  store.addFolderToSpace(null, space.id, folder);
+  const rf = fs.realpathSync(folder);
+  const file = path.join(rf, 'a.txt');
+
+  // New (spaceId, path)
+  assert.ok(store.listFolderContents(null, space.id, rf).some(e => e.name === 'a.txt'),
+    'new (spaceId, path) must list contents');
+  assert.equal(store.readFileContents(null, space.id, file), 'hello',
+    'new (spaceId, path) must read file');
+
+  // Old (path) — rollback safety
+  assert.ok(store.listFolderContents(null, rf).some(e => e.name === 'a.txt'),
+    'old (path) must still list contents');
+  assert.equal(store.readFileContents(null, file), 'hello',
+    'old (path) must still read file');
+
+  // spaceId alone (no path arg) is not a path -> rejected, no crash
+  assert.deepEqual(store.listFolderContents(null, space.id), []);
+});
