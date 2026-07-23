@@ -628,7 +628,9 @@ install_stubs() {
     mkdir -p "$target_dir/node_modules/@ant/claude-native"
 
     cp "$swift_src" "$target_dir/node_modules/@ant/claude-swift/js/index.js"
-    cp "$native_src" "$target_dir/node_modules/@ant/claude-native/index.js"
+    # index.js plus any sibling helper modules it require()s (e.g. safe_fs.js,
+    # added for the asar 1.22209.x safe-fs containment API).
+    cp "$stub_src"/stubs/@ant/claude-native/*.js "$target_dir/node_modules/@ant/claude-native/"
 
     # Copy frame-fix files
     for f in frame-fix-wrapper.js frame-fix-entry.js protocol-forwarder.js; do

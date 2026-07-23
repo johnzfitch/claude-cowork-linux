@@ -24,6 +24,7 @@ const path = require('path');
 const fs = require('fs');
 const { createDirs } = require('../../../cowork/dirs.js');
 const { redactCredentials } = require('../../../cowork/credential_classifier.js');
+const safeFs = require('./safe_fs.js');
 
 const LOG_PREFIX = '[claude-native-stub]';
 const DIRS = global.__coworkDirs || createDirs();
@@ -313,6 +314,9 @@ module.exports = {
   writeRegistryValue: write_registry_value,
   get_app_info_for_file,
   getAppInfoForFile: get_app_info_for_file,
+
+  // safe-fs containment API (asar 1.22209.x): openRootDir + *Beneath ops.
+  ...safeFs,
 
   // Native stub functions
   ...nativeStub,

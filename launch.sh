@@ -58,7 +58,11 @@ fi
 
 if [ -f "$NATIVE_STUB_SRC_FILE" ]; then
   mkdir -p "$(dirname "$NATIVE_STUB_FILE")"
-  cp -f "$NATIVE_STUB_SRC_FILE" "$NATIVE_STUB_FILE"
+  # Copy index.js plus any sibling helper modules it require()s (e.g.
+  # safe_fs.js, added for the asar 1.22209.x safe-fs containment API).
+  for _nat_src in stubs/@ant/claude-native/*.js; do
+    [ -f "$_nat_src" ] && cp -f "$_nat_src" "$(dirname "$NATIVE_STUB_FILE")/$(basename "$_nat_src")"
+  done
 fi
 
 # Sync frame-fix files so wrapper changes take effect without a full reinstall
