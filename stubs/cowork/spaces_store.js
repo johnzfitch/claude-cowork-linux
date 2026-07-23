@@ -154,6 +154,32 @@ function createSpacesStore(options) {
     return resolveWithinRegisteredFolder(filePath) !== null;
   }
 
+  // Also allow READ access within a space's own auto-memory dir —
+  // <dir-of-spaces.json>/spaces/<spaceId>/memory — which the CoWork UI browses
+  // via listFolderContents/readFileContents. These live under localAgentRoot,
+  // not a registered project folder, so resolveWithinRegisteredFolder alone
+  // rejects them (observed as "listFolderContents BLOCKED: .../spaces/<id>/
+  // memory"). Scope strictly to the ".../spaces/<id>/memory" subtree so the
+  // rest of localAgentRoot (spaces.json, session transcripts) stays off-limits.
+  function resolveWithinSpaceMemory(filePath) {
+    const resolved = resolvePath(filePath);
+    if (!resolved) return null;
+    const p = discoverSpacesPath();
+    if (!p) return null;
+    let spacesRoot = path.join(path.dirname(p), 'spaces');
+    try { spacesRoot = fs.realpathSync(spacesRoot); } catch (_) {}
+    if (resolved !== spacesRoot && !resolved.startsWith(spacesRoot + path.sep)) return null;
+    // Require a ".../<spaceId>/memory" segment: only the memory subtree is browsable.
+    const rel = resolved.slice(spacesRoot.length);
+    return /^[/\\][^/\\]+[/\\]memory([/\\]|$)/.test(rel) ? resolved : null;
+  }
+
+  // Read-path resolution for the CoWork spaces UI: a path is browsable if it is
+  // within a registered project folder OR within a space's auto-memory subtree.
+  function resolveReadable(filePath) {
+    return resolveWithinRegisteredFolder(filePath) || resolveWithinSpaceMemory(filePath);
+  }
+
   // Discover the spaces.json path by walking localAgentRoot/<accountId>/<orgId>/
   let spacesJsonPath = null;
 
@@ -477,7 +503,7 @@ function createSpacesStore(options) {
 
   function listFolderContents(_event, spaceIdOrPath, folderPath) {
     const target = pickPathArg(spaceIdOrPath, folderPath);
-    const resolved = resolveWithinRegisteredFolder(target);
+    const resolved = resolveReadable(target);
     if (!resolved) {
       trace('[spaces] listFolderContents BLOCKED: ' + target);
       return [];
@@ -497,7 +523,7 @@ function createSpacesStore(options) {
 
   function readFileContents(_event, spaceIdOrPath, filePath) {
     const target = pickPathArg(spaceIdOrPath, filePath);
-    const resolved = resolveWithinRegisteredFolder(target);
+    const resolved = resolveReadable(target);
     if (!resolved) {
       trace('[spaces] readFileContents BLOCKED: ' + target);
       return null;

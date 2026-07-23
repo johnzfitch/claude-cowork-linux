@@ -253,3 +253,29 @@ test('listFolderContents/readFileContents accept both (spaceId, path) and (path)
   // spaceId alone (no path arg) is not a path -> rejected, no crash
   assert.deepEqual(store.listFolderContents(null, space.id), []);
 });
+
+// ── Auto-memory dir browsing (asar 1.22209.x calls listFolderContents on it) ──
+// The CoWork UI lists a space's internal memory dir (localAgentRoot/.../spaces/
+// <id>/memory), which isn't a registered project folder. Allow that subtree for
+// read only — the rest of localAgentRoot must stay off-limits.
+test('auto-memory dir is browsable/readable; rest of localAgentRoot is not', (t) => {
+  const { store } = setupWithEvents(t);
+  const space = store.createSpace(null, { name: 'M' });
+  const memDir = store.getAutoMemoryDir(null, space.id);
+  assert.ok(memDir && fs.existsSync(memDir), 'getAutoMemoryDir must create the dir');
+  fs.writeFileSync(path.join(memDir, 'note.md'), '# note');
+
+  assert.ok(store.listFolderContents(null, space.id, memDir).some(e => e.name === 'note.md'),
+    'memory dir must be listable');
+  assert.equal(store.readFileContents(null, space.id, path.join(memDir, 'note.md')), '# note',
+    'memory file must be readable');
+
+  // The org dir (holds spaces.json + all session data) must NOT be browsable.
+  const orgDir = path.dirname(path.dirname(memDir)); // .../spaces/<id> -> .../spaces -> guard below
+  const spacesParent = path.dirname(path.dirname(path.dirname(memDir))); // .../<org>
+  assert.deepEqual(store.listFolderContents(null, space.id, spacesParent), [],
+    'localAgentRoot org dir must stay off-limits');
+  // The space dir above /memory is also not browsable (only the memory subtree).
+  assert.deepEqual(store.listFolderContents(null, space.id, orgDir), [],
+    'the spaces/<id> dir (above memory) must not be browsable');
+});
