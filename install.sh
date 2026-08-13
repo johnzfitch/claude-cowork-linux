@@ -804,7 +804,8 @@ apply_patches() {
     fi
 
     # Newer Claude Desktop builds emit index.js as a thin entry shim that
-    # require()s the real main code from an index.chunk-<hash>.js file, so the
+    # require()s the real main code from index.chunk-<hash>.js and, as of
+    # Desktop 1.28929.0, index2.chunk-<hash>.js files, so the
     # platform-gate / IPC / host-platform patterns live in the chunk, not in
     # index.js. Patch index.js plus every chunk it require()s; enable-cowork.py
     # is idempotent (marker-guarded) and reports "not found" harmlessly for
@@ -813,7 +814,7 @@ apply_patches() {
     local chunk
     while IFS= read -r chunk; do
         [[ -n "$chunk" && -f "$build_dir/$chunk" ]] && targets+=("$build_dir/$chunk")
-    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$index_js" | sort -u)
+    done < <(grep -oE 'index2?\.chunk-[A-Za-z0-9_-]+\.js' "$index_js" | sort -u)
 
     # enable-cowork.py exits 0 when it finds (or has already patched) the
     # platform gate in a file, and 1 otherwise. On split-entry builds the gate
@@ -832,7 +833,7 @@ apply_patches() {
     if [[ -n "$any_patched" ]]; then
         log_success "Patches applied"
     else
-        log_warn "Cowork patch matched no target: the platform gate was not found in index.js or any index.chunk-*.js."
+        log_warn "Cowork patch matched no target: the platform gate was not found in index.js or any index[2].chunk-*.js."
         log_warn "The Claude Desktop bundle layout may have changed; Cowork may not be enabled. See the enable-cowork.py output above."
     fi
 }
@@ -1353,7 +1354,7 @@ doctor() {
         log_success "Extracted app: $app_dir"
         ok=$((ok + 1))
         # Check cowork patch
-        if grep -q 'cowork-patched' "$app_dir/.vite/build/index.js" 2>/dev/null; then
+        if grep -q 'cowork-patched' "$app_dir/.vite/build"/index*.js 2>/dev/null; then
             log_success "Cowork patch: applied"
             ok=$((ok + 1))
         else

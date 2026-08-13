@@ -162,7 +162,8 @@ JSEOF
 
     # Locate the main-process code file(s). Newer Claude Desktop builds (asar
     # 1.19367.0+) emit index.js as a thin entry shim that require()s the real
-    # code from an index.chunk-<hash>.js file (the <hash> rotates every build);
+    # code from index.chunk-<hash>.js and index2.chunk-<hash>.js files (the
+    # hash rotates every build);
     # older builds keep everything in index.js. Patches must hit whichever file
     # actually holds the code, so collect index.js plus every chunk it require()s
     # and apply each grep-guarded patch across all of them (a file lacking the
@@ -180,7 +181,7 @@ JSEOF
     while IFS= read -r _chunk; do
         [ -n "$_chunk" ] && [ -f "$_build_dir/$_chunk" ] \
             && _index_targets+=("$_build_dir/$_chunk")
-    done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
+    done < <(grep -oE 'index2?\.chunk-[A-Za-z0-9_-]+\.js' "$_indexjs" | sort -u)
 
     # patch_index <log msg> <grep -E guard> <sed -E script>
     # Runs the sed against every main-process code file matching the guard; logs
@@ -273,7 +274,7 @@ JSEOF
         fi
     done
     if [ -z "$_any_patched" ]; then
-        echo "ERROR: cowork platform gate not found in index.js or any index.chunk-*.js" >&2
+        echo "ERROR: cowork platform gate not found in index.js or any index[2].chunk-*.js" >&2
         echo "       Claude Desktop's bundle layout may have changed; Cowork would not be enabled." >&2
         echo "       enable-cowork.py output follows:" >&2
         printf '%s' "$_miss_log" >&2

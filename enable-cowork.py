@@ -28,13 +28,16 @@ KNOWN_PATTERNS = [
 ]
 
 # Regex fallback: matches any function whose body starts with a platform check
-# and returns {status:"unsupported"} for non-darwin platforms
+# and returns {status:"unsupported"} for non-darwin platforms. Vite changed
+# minification style in Desktop 1.28929.0: the main-process gate moved to an
+# index2.chunk-* file and uses template-literal quotes (`darwin`) rather than
+# string quotes ("darwin"). Accept all three JavaScript quote styles.
 PLATFORM_GATE_RE = re.compile(
     r'function (\w+)\(\)\{'
-    r'(?:const \w+=process\.platform;)?'
+    r'(?:(?:const|let|var) \w+=process\.platform;)?'
     r'(?:return )?'
-    r'(?:if\(\w+!=="darwin"|\w+!=="darwin"\?)'
-    r'[^}]*status:"unsupported"'
+    r'(?:if\(\w+!==(["\'`])darwin\2|\w+!==(["\'`])darwin\3\?)'
+    r'[^}]*status:(["\'`])unsupported\4'
 )
 
 
@@ -85,7 +88,7 @@ def patch_file(filepath):
 
     if not func_name or not func_full:
         print(f"ERROR: Platform-gate function not found in {filepath}")
-        print("  Searched for known patterns (xPt, wj) and regex fallback.")
+        print("  Searched for known patterns (xPt, wj) and quote-agnostic regex fallback.")
         print("  The minified function name may have changed — inspect index.js for")
         print("  a function checking process.platform and returning {{status:\"unsupported\"}}.")
         return False
@@ -152,7 +155,7 @@ def patch_host_platform(filepath):
 # names like `$m` even contain `$`), so match both with [\w$]+ and reuse the
 # captured arg in the exemption rather than hardcoding it.
 IPC_ORIGIN_GUARD_RE = re.compile(
-    r'if\(!([\w$]+)\(([\w$]+)\)\)(throw new Error\(`[^`]*did not pass origin validation`\))'
+    r'if\(!([\w$]+)\(([\w$]+)\)\)(throw (?:new )?Error\(`[^`]*did not pass origin validation`\))'
 )
 IPC_PATCH_MARKER = '/*cowork-ipc-patched*/'
 
@@ -224,14 +227,64 @@ def patch_platform_return_gates(filepath):
     return True
 
 
+# Claude Code spools large MCP results beneath
+#   <config>/projects/<session>/tool-results/<tool-id>.json
+# and then asks the host Read tool to open that file. On Linux the desktop's
+# safe-path resolver rejects the session storage prefix as an "automount root"
+# before the normal allowed-root check runs. Only bypass that first resolver
+# for SDK-owned tool-result files; the existing containment check immediately
+# after this block still enforces the configured projects root.
+TOOL_RESULT_RESOLVE_RE = re.compile(
+    r'let ([\w$]+);try\{\1=await ([\w$]+)\.resolveFilePath\(([\w$]+),!0\)\}'
+)
+TOOL_RESULT_RESOLVE_MARKER = '/*cowork-tool-result-resolve-patched*/'
+
+
+def patch_tool_result_resolution(filepath):
+    """Allow host Read to consume SDK-spooled MCP tool-result files on Linux."""
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    if TOOL_RESULT_RESOLVE_MARKER in content:
+        print("  Tool-result path resolution: already patched")
+        return True
+
+    def replacement(match):
+        resolved, helpers, candidate = match.groups()
+        owned_result = (
+            f'/(?:^|\\/)\\.claude\\/projects\\/.+\\/tool-results\\/[^\\/]+$/.test({candidate})'
+        )
+        return (
+            f'let {resolved};if({owned_result}){resolved}={candidate};'
+            f'else try{{{resolved}=await {helpers}.resolveFilePath({candidate},!0)}}'
+        )
+
+    new_content, count = TOOL_RESULT_RESOLVE_RE.subn(replacement, content)
+    if count == 0:
+        print("  Tool-result path resolution: no matching sites found")
+        return True
+
+    new_content += TOOL_RESULT_RESOLVE_MARKER
+    with open(filepath, 'w') as f:
+        f.write(new_content)
+
+    print(f"  Tool-result path resolution patched: {count} host-loop sites")
+    return True
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
 
+    # The split bundle can place the Cowork platform gate and auxiliary patch
+    # sites in different chunks (Desktop 1.28929.0 does this for IPC origin
+    # guards). Always inspect every file passed by install.sh/launch.sh. Keep
+    # the exit-code contract tied to the platform gate so apply_patches still
+    # reports success only when the actual Cowork gate was found.
     success = patch_file(sys.argv[1])
-    if success:
-        patch_host_platform(sys.argv[1])
-        patch_ipc_origin_guards(sys.argv[1])
-        patch_platform_return_gates(sys.argv[1])
+    patch_host_platform(sys.argv[1])
+    patch_ipc_origin_guards(sys.argv[1])
+    patch_platform_return_gates(sys.argv[1])
+    patch_tool_result_resolution(sys.argv[1])
     sys.exit(0 if success else 1)

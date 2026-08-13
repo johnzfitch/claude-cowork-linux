@@ -47,7 +47,7 @@ assert_parses() {
 }
 
 # The exact discovery used by install.sh apply_patches and launch.sh.
-discover_chunks() { grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$1" | sort -u; }
+discover_chunks() { grep -oE 'index2?\.chunk-[A-Za-z0-9_-]+\.js' "$1" | sort -u; }
 
 # Write a chunk exercising every patch site, using identifiers that are NOT the
 # values any older hardcoded pattern used (function qZ9/var r; validator $m/arg
@@ -58,8 +58,10 @@ write_patch_fixture() {
 function qZ9(){const r=process.platform;if(r!=="darwin"&&r!=="win32")return{status:"unsupported",reason:"nope"};return{status:"supported"}}
 const gate=qZ9();
 function checkOrigin(n){if(!$m(n))throw new Error(`Incoming "doThing" call on interface "MyIface" from '${(i=n.senderFrame)==null?void 0:i.url}' did not pass origin validation`)}
+function checkOriginNoNew(e){if(!tn(e))throw Error(`Incoming "getInitialLocale" call on interface "DesktopIntl" from '${e.senderFrame?.url}' did not pass origin validation`)}
 function hostPlat(){if(process.platform==="darwin")return"darwin-x64";throw new Error("Unsupported platform: "+process.platform)}
 function extInstall(){return{status:2,error:`Unsupported platform: ${process.platform} not allowed`}}
+async function hostRead(De){let ee;try{ee=await helpers.resolveFilePath(De,!0)}catch(e){return e}return ee}
 const winOpts={show:!1,titleBarStyle:"hidden",titleBarOverlay:Ab,trafficLightPosition:Cd,webPreferences:{}};
 const aboutOpts={titleBarStyle:"hiddenInset",autoHideMenuBar:!0,skipTaskbar:!0};
 function guard(){return Zq.protocol==="file:"&&Yw.app.isPackaged===!0}
@@ -68,6 +70,17 @@ function handoff(){mB.app.invalidateCurrentActivity();mB.app.setUserActivity(qq,
 function wrapSpawn(t){return process.platform!=="darwin"?t:{cmd:rpt(),args:[t.cmd,...t.args]}}
 const res=kk.app.isPackaged?process.resourcesPath:someFallback;
 const host=kk.app.isPackaged?jn.join(process.resourcesPath,"app.asar","mcp-runtime","nodeHost.js"):jn.join(kk.app.getAppPath(),"nodeHost.js");
+EOF
+}
+
+# Desktop 1.28929.0 moved the gate into index2.chunk-* and switched the
+# minifier's string style to backticks. Keep this fixture close to the real
+# bundle shape so quote-style or secondary-chunk regressions are caught.
+write_128929_fixture() {
+  cat > "$1" <<'EOF'
+"use strict";
+function Me(){let r=process.platform;if(r!==`darwin`&&r!==`win32`)return{status:`unsupported`,reason:`nope`,unsupportedCode:`unsupported_platform`};return{status:`supported`}}
+const support=Me();
 EOF
 }
 
@@ -90,13 +103,25 @@ python3 "$REPO_ROOT/enable-cowork.py" "$CHUNK" >/dev/null 2>&1
 assert_grep  "$CHUNK" 'cowork-patched'                 "platform-gate marker present"
 assert_grep  "$CHUNK" 'cowork-ipc-patched'             "IPC marker present"
 assert_grep  "$CHUNK" 'cowork-platform-return-patched' "return-gate marker present"
+assert_grep  "$CHUNK" 'cowork-tool-result-resolve-patched' "tool-result resolver marker present"
 assert_grep  "$CHUNK" 'function qZ9\(\)\{return\{status:"supported"\}\}' "platform gate returns supported"
 # IPC guard: validator $m and sender arg n both preserved, file:// exempted
 assert_grep  "$CHUNK" 'if\(!\$m\(n\)&&!\(n\.senderFrame&&n\.senderFrame\.url&&n\.senderFrame\.url\.startsWith\("file://"\)\)\)' \
              "IPC guard exempts file:// (rotated validator \$m + arg n)"
+assert_grep  "$CHUNK" 'if\(!tn\(e\)&&!\(e\.senderFrame&&e\.senderFrame\.url&&e\.senderFrame\.url\.startsWith\("file://"\)\)\)' \
+             "IPC guard supports throw Error without new (1.28929)"
 assert_grep  "$CHUNK" 'return"darwin-x64"'             "getHostPlatform throw -> darwin-x64"
 refute_grep  "$CHUNK" 'error:`Unsupported platform'    "return-style platform gate neutralized"
+assert_grep  "$CHUNK" '\.claude\\/projects.*tool-results.*\.test\(De\)\)ee=De;else try' \
+             "SDK-spooled tool results bypass the automount resolver"
 assert_parses "$CHUNK" "chunk parses after enable-cowork.py"
+
+CHUNK2="$TMP/index2.chunk-DOB7tBaF.js"
+write_128929_fixture "$CHUNK2"
+python3 "$REPO_ROOT/enable-cowork.py" "$CHUNK2" >/dev/null 2>&1
+assert_grep "$CHUNK2" 'cowork-patched' "1.28929 index2 gate marker present"
+assert_grep "$CHUNK2" 'function Me\(\)\{return\{status:"supported"\}\}' "1.28929 backtick gate returns supported"
+assert_parses "$CHUNK2" "1.28929 index2 chunk parses after patch"
 
 # Exit-code contract that install.sh apply_patches relies on to log success
 # accurately: a file with the gate (or already patched) exits 0; a shim with no
@@ -107,22 +132,30 @@ else
   fail "re-running on an already-patched gate file should exit 0"
 fi
 SHIM="$TMP/shim_index.js"
-printf '"use strict";\nrequire("./index.chunk-V9ybBkRT.js");\n' > "$SHIM"
+cat > "$SHIM" <<'EOF'
+"use strict";
+require("./index.chunk-V9ybBkRT.js");
+function auxOnly(e){if(!tn(e))throw Error(`Incoming "auxOnly" call on interface "Aux" from '${e.senderFrame?.url}' did not pass origin validation`)}
+async function readSpooled(p){let out;try{out=await safe.resolveFilePath(p,!0)}catch(e){return e}return out}
+EOF
 if python3 "$REPO_ROOT/enable-cowork.py" "$SHIM" >/dev/null 2>&1; then
   fail "shim with no platform gate should exit non-zero"
 else
   pass "shim with no platform gate exits non-zero (apply_patches won't false-succeed)"
 fi
+assert_grep "$SHIM" 'cowork-ipc-patched' "auxiliary patches run even when platform gate is in another chunk"
+assert_grep "$SHIM" 'cowork-tool-result-resolve-patched' "tool-result auxiliary patch runs without a platform gate"
 
 # ---------------------------------------------------------------------------
 section "3. index.js -> chunk discovery (install.sh / launch.sh)"
 # ---------------------------------------------------------------------------
 mkdir -p "$TMP/build"
-printf '"use strict";\nrequire("./index.chunk-V9ybBkRT.js");\n' > "$TMP/build/index.js"
+printf '"use strict";\nrequire("./index.chunk-V9ybBkRT.js");\nrequire("./index2.chunk-DOB7tBaF.js");\n' > "$TMP/build/index.js"
 : > "$TMP/build/index.chunk-V9ybBkRT.js"
+: > "$TMP/build/index2.chunk-DOB7tBaF.js"
 found="$(discover_chunks "$TMP/build/index.js")"
-[[ "$found" == "index.chunk-V9ybBkRT.js" ]] && pass "split-entry: chunk discovered from shim" \
-  || fail "split-entry: chunk discovered from shim (got: '$found')"
+[[ "$found" == $'index.chunk-V9ybBkRT.js\nindex2.chunk-DOB7tBaF.js' ]] && pass "split-entry: index and index2 chunks discovered from shim" \
+  || fail "split-entry: index and index2 chunks discovered from shim (got: '$found')"
 # Single-entry build (no shim) -> discovery finds nothing (clean no-op)
 printf '"use strict";var x=1;\n' > "$TMP/build/single.js"
 [[ -z "$(discover_chunks "$TMP/build/single.js")" ]] && pass "single-entry: no chunk discovered (backward compatible)" \
@@ -192,7 +225,7 @@ fi
 # Source-level guards: the recipe must discover chunks and run enable-cowork.py
 # across every discovered target, never regress to the index.js-only invocation.
 if grep -qF 'chunk-[A-Za-z0-9_-]+' "$REPO_ROOT/PKGBUILD"; then
-  pass "PKGBUILD: discovers index.chunk-*.js from the shim"
+  pass "PKGBUILD: discovers index[2].chunk-*.js from the shim"
 else
   fail "PKGBUILD: chunk discovery missing"
 fi

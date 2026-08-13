@@ -5,8 +5,8 @@ to work with claude-cowork-linux. `install.sh` and the launcher grep the
 machine-readable lines below; the table further down is for humans.
 
 <!-- machine-readable; do not remove the next two lines -->
-<!-- LAST_TESTED_ASAR_VERSION=1.19367.0 -->
-<!-- LAST_TESTED_DATE=2026-07-15 -->
+<!-- LAST_TESTED_ASAR_VERSION=1.28929.0 -->
+<!-- LAST_TESTED_DATE=2026-08-14 -->
 
 ## Tested versions
 
@@ -20,6 +20,7 @@ machine-readable lines below; the table further down is for humans.
 | 1.22209.x | [PARTIAL]  | 2026-07-23 | Two contract changes land here, both handled in #160. CoworkSpaces file ops changed from `(path)` to `(spaceId, path)` (the stubs accept both shapes, so a rollback still works), and artifact/upload/attachment/transcript writes moved to a native safe-fs API (`openRootDir` + `*Beneath`), implemented for Linux in `stubs/@ant/claude-native/safe_fs.js`. Contributor-reported live; not exercised by a maintainer. |
 | 1.24012.9 | [PARTIAL]  | 2026-08-01 | Local MCP servers failed to connect ("Server disconnected" before any JSON-RPC): the bundle routes MCP spawns through the macOS disclaimer wrapper, which our unwrap rejected for user-installed binaries, and `realpath` walked npm-global shims out of the allowlist entirely (#164). Fixed by removing the unwrap's per-callsite carve-out so admission runs through the one shared rule, and by admitting user binaries the user declared as MCP servers instead of any file sitting in a user-writable directory. Contributor-reported; fix not exercised by a maintainer on this build. The 1.24012.1 `DeviceRegistry` blocker below is unrelated and still applies. |
 | 1.24012.1 | [PARTIAL]  | 2026-07-24 | Cowork sessions fail to link: the asar's own `DeviceRegistry.signCreateSessionBind` throws "device not registered (no row-PK for this account)", producing the "Couldn't link this session to a computer" banner. Not stubbable -- signing that binding here would forge a device-identity check (see #161). `BuddyBleTransport.reportState`, reported alongside it, is stubbed as a no-op. |
+| 1.28929.0 | [OK]       | 2026-08-14 | Adds `index2.chunk-*`, uses backticks and `let` in the Cowork platform gate, and distributes IPC guards across auxiliary chunks. Large internal MCP results also need host `Read` access to SDK-owned `.claude/projects/*/tool-results/*` files. Verified on Fedora 44 + GNOME Wayland with Electron 43.2.0: update/extract/repack, Cowork session start, tool permission prompts, and Visualize `read_me`/`show_widget` through iframe `firstrender` and `complete`. |
 
 Status legend:
 
@@ -42,6 +43,7 @@ what was exercised.
 |:----------|:------------------------------------------------------------------------------------------------------|:--------|
 | 1.6259.1  | `https://downloads.claude.ai/releases/darwin/universal/1.6259.1/Claude-5095e7dddcba4ca974d351ee397e17d204814f07.dmg` | `98c9de8dde01f083b73e7ef08cfaf7adfd2c1386e88d2995b4202dea1a31e898` |
 | 1.19367.0 | `https://downloads.claude.ai/releases/darwin/universal/1.19367.0/Claude-1a5be1fbf83d1832486e03a667557c18f0a0ec7a.dmg` | `<pending>` |
+| 1.28929.0 | `https://downloads.claude.ai/releases/darwin/universal/1.28929.0/Claude-d1a6bcd4ef8627d603a8290548a984220b6701cf.zip` | `d56ea682de438242b9fd142b0e4f8b55ba65c01a4ab22def02e881ef924bde8a` |
 
 The URL for each release embeds a per-release hash, so it cannot be
 constructed from the version number -- a build has a pinnable URL only if

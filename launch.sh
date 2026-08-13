@@ -126,7 +126,8 @@ fi
 # ── Locate the main-process code file(s) ────────────────────────────────────
 # Vite compiles the main process into .vite/build/. Newer Claude Desktop builds
 # emit index.js as a thin entry shim that require()s the real code from an
-# index.chunk-<hash>.js file (the <hash> changes every build); older builds keep
+# index.chunk-<hash>.js and index2.chunk-<hash>.js files (the hash changes every
+# build); older builds keep
 # everything in index.js. The patches below must run against whichever file
 # actually holds the code, so collect index.js plus every chunk it require()s.
 # Applying each grep-guarded patch across all of them is safe: a file that lacks
@@ -138,7 +139,7 @@ if [ -f "$_BUILD_DIR/index.js" ]; then
   INDEX_TARGETS+=("$_BUILD_DIR/index.js")
   while IFS= read -r _chunk; do
     [ -n "$_chunk" ] && [ -f "$_BUILD_DIR/$_chunk" ] && INDEX_TARGETS+=("$_BUILD_DIR/$_chunk")
-  done < <(grep -oE 'index\.chunk-[A-Za-z0-9_-]+\.js' "$_BUILD_DIR/index.js" | sort -u)
+  done < <(grep -oE 'index2?\.chunk-[A-Za-z0-9_-]+\.js' "$_BUILD_DIR/index.js" | sort -u)
 fi
 
 # patch_index "<log message>" "<grep -E guard>" "<sed -E script>"
