@@ -11,7 +11,7 @@
 #
 # Stages:
 #   1  Static analysis (bash -n, python -c)
-#   2  fetch-dmg.py output modes
+#   2  fetch-dmg.js output modes
 #   3  DMG download + extraction
 #   4  Stub baking + patching
 #   5  asar repack
@@ -129,18 +129,37 @@ stage_1() {
         fail "install.sh syntax check"
     fi
 
+    # launch.sh was missing from this list entirely, which is odd for a harness
+    # named after install paths: it is what every install actually execs.
+    if bash -n "$REPO_ROOT/launch.sh" 2>/dev/null; then
+        pass "launch.sh syntax OK"
+    else
+        fail "launch.sh syntax check"
+    fi
+
     if bash -n "$REPO_ROOT/PKGBUILD" 2>/dev/null; then
         pass "PKGBUILD syntax OK"
     else
         fail "PKGBUILD syntax check"
     fi
 
-    # Python syntax checks
-    if python3 -c "import py_compile; py_compile.compile('$REPO_ROOT/fetch-dmg.py', doraise=True)" 2>/dev/null; then
-        pass "fetch-dmg.py syntax OK"
+    if bash -n "$REPO_ROOT/patch-index.sh" 2>/dev/null; then
+        pass "patch-index.sh syntax OK"
     else
-        fail "fetch-dmg.py syntax check"
+        fail "patch-index.sh syntax check"
     fi
+
+    # fetch-dmg was rewritten from Python to Node; stage 2 already exercises its
+    # output modes by name. Check the file that exists, with the right tool.
+    if ! command -v node >/dev/null 2>&1; then
+        skip "fetch-dmg.js syntax (node not installed)"
+    elif node --check "$REPO_ROOT/fetch-dmg.js" 2>/dev/null; then
+        pass "fetch-dmg.js syntax OK"
+    else
+        fail "fetch-dmg.js syntax check"
+    fi
+
+    # Python syntax checks
 
     if python3 -c "import py_compile; py_compile.compile('$REPO_ROOT/enable-cowork.py', doraise=True)" 2>/dev/null; then
         pass "enable-cowork.py syntax OK"
@@ -150,7 +169,7 @@ stage_1() {
 }
 
 # ============================================================
-# Stage 2: fetch-dmg.py output modes
+# Stage 2: fetch-dmg.js output modes
 # ============================================================
 
 stage_2() {
@@ -552,7 +571,9 @@ stage_8() {
 
 main() {
     local start_stage="${1:-1}"
-    local end_stage="${2:-8}"
+    # A single argument selects exactly that stage, as the usage block above
+    # promises; it used to default end_stage to 8 and run N through 8.
+    local end_stage="${2:-${1:-8}}"
 
     echo -e "${BOLD}Claude Cowork Linux — Install Path Test Harness${NC}"
     echo -e "Repo: $REPO_ROOT"

@@ -1,7 +1,7 @@
 # Maintainer: Zack Fitch <zack@internetuniverse.org>
 pkgname=claude-cowork-linux
 pkgver=1.1.4010
-pkgrel=12
+pkgrel=13
 pkgdesc="Anthropic Claude Desktop with Cowork (local agent) support for Linux"
 arch=('x86_64')
 url="https://github.com/johnzfitch/claude-cowork-linux"
@@ -160,63 +160,42 @@ JSEOF
         echo "WARN: asar entry-point patch skipped (target not found)"
     fi
 
-    # Locate the main-process code file(s). Newer Claude Desktop builds (asar
-    # 1.19367.0+) emit index.js as a thin entry shim that require()s the real
-    # code from an index.chunk-<hash>.js file (the <hash> rotates every build);
-    # older builds keep everything in index.js. Patches must hit whichever file
-    # actually holds the code, so collect index.js plus every chunk it require()s
-    # and apply each grep-guarded patch across all of them (a file lacking the
-    # pattern is simply skipped).
+    # Apply the main-process patch passes. The pass list itself lives in the
+    # repo's patch-index.sh, which launch.sh sources too — one definition, so
+    # the recipe cannot fall behind the launcher again. It did: build() applied
+    # 3 of the 9 passes, and because /usr/bin/claude-cowork execs electron
+    # directly against the packaged asar and never runs launch.sh, AUR users
+    # silently lost the MCP node-host, resourcesPath, Handoff and --effort
+    # fixes — most visibly as "MCP Filesystem: Node host not found" (#170).
+    #
+    # patch_index_apply_all discovers index.js plus every index*.chunk-*.js in
+    # the build dir and leaves them in INDEX_TARGETS, which the enable-cowork.py
+    # loop below reuses.
     local _build_dir="${_ext}/.vite/build"
-    local -a _index_targets=()
     if [ ! -f "$_indexjs" ]; then
         echo "ERROR: main-process entry not found at $_indexjs" >&2
         echo "       The extracted Claude Desktop bundle layout may have changed;" >&2
         echo "       cannot locate the code to patch, so Cowork could not be enabled." >&2
         return 1
     fi
-    _index_targets+=("$_indexjs")
-    # Every index*.chunk-*.js in the build dir, not just the ones index.js names:
-    # chunks require() each other transitively, so the shim's direct requires are
-    # an incomplete list. Each patch is grep-guarded, so extra files are free.
-    local _chunk
-    while IFS= read -r _chunk; do
-        [ -n "$_chunk" ] && _index_targets+=("$_chunk")
-    done < <(find "$_build_dir" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
-
-    # patch_index <log msg> <grep -E guard> <sed -E script>
-    # Runs the sed against every main-process code file matching the guard; logs
-    # once if any matched, warns once if none did. Minified identifiers are
-    # matched with [A-Za-z0-9_$]+ so the patches survive per-build var renaming.
-    patch_index() {
-        local msg="$1" pat="$2" script="$3" f matched=""
-        for f in "${_index_targets[@]}"; do
-            if grep -qE "$pat" "$f" 2>/dev/null; then
-                sed -i -E "$script" "$f"
-                matched=1
-            fi
-        done
-        if [ -n "$matched" ]; then
-            echo "$msg"
-        else
-            echo "WARN: patch skipped (target not found): $msg"
-        fi
-    }
-
-    # Strip macOS titlebar opts (Vite ESM bypasses wrapper's require-Proxy).
-    patch_index "Stripping macOS titlebar options (main window)..." \
-        'titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,' \
-        's/titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,//g'
-    patch_index "Stripping macOS titlebar options (about window)..." \
-        'titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0' \
-        's/titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
-
-    # Drop isPackaged check on file:// preloads (else renderer shell never loads).
-    # The protocol/app identifiers are minified and rotate per build, so match
-    # with [A-Za-z0-9_$]+ rather than the old hardcoded e./Ee. names.
-    patch_index "Patching origin validation for file:// preloads..." \
-        '[A-Za-z0-9_$]+\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0' \
-        's/([A-Za-z0-9_$]+)\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
+    if [ ! -f "${_repo}/patch-index.sh" ]; then
+        echo "ERROR: patch-index.sh not found in ${_repo}" >&2
+        echo "       It carries every main-process patch pass; packaging without" >&2
+        echo "       it would ship an app with macOS titlebars, no local MCP" >&2
+        echo "       servers, and a renderer shell that never loads." >&2
+        return 1
+    fi
+    # shellcheck source=patch-index.sh
+    source "${_repo}/patch-index.sh"
+    # Fail the build on a chunk that no longer parses. launch.sh only warns --
+    # refusing to start an app that would otherwise work is worse than a warning
+    # -- but a package that opens a blank window should never leave the builder.
+    PATCH_INDEX_STRICT_SYNTAX=1
+    if ! patch_index_apply_all "$_build_dir"; then
+        echo "ERROR: a patched main-process chunk failed node --check." >&2
+        echo "       Packaging it would ship an app that opens a blank window." >&2
+        return 1
+    fi
 
     # Add linux branch to getHostPlatform() (without this, the minified
     # platform switch throws "Unsupported platform: linux-x64" and the
@@ -263,9 +242,9 @@ JSEOF
     # successful build log stays clean. Require at least one target to patch;
     # otherwise fail the build loudly — surfacing the stashed output to diagnose
     # a bundle-layout change — rather than ship a package with Cowork disabled.
-    echo "Applying cowork patch to ${#_index_targets[@]} file(s)..."
+    echo "Applying cowork patch to ${#INDEX_TARGETS[@]} file(s)..."
     local _t _out _any_patched="" _miss_log=""
-    for _t in "${_index_targets[@]}"; do
+    for _t in "${INDEX_TARGETS[@]}"; do
         if _out="$(python "${_repo}/enable-cowork.py" "$_t" 2>&1)"; then
             _any_patched=1
             [ -n "$_out" ] && printf '%s\n' "$_out"
@@ -282,6 +261,18 @@ JSEOF
         return 1
     fi
     echo "Cowork patches applied"
+
+    # Re-check syntax before packing. patch_index_apply_all already ran this,
+    # but three things rewrite these files AFTER it: the inline getHostPlatform
+    # sed above, and enable-cowork.py's own passes (several of which are
+    # markerless and substitute globally). Without this second call the
+    # "never ship a blank window" guarantee stops at the sed passes and misses
+    # the patcher entirely.
+    if ! PATCH_INDEX_STRICT_SYNTAX=1 patch_index_verify_syntax; then
+        echo "ERROR: a main-process chunk failed node --check after enable-cowork.py." >&2
+        echo "       Packaging it would ship an app that opens a blank window." >&2
+        return 1
+    fi
 
     # Repack into app.asar
     echo "Repacking app.asar..."

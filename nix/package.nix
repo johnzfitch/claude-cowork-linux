@@ -156,7 +156,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     share="$out/share/claude-cowork-linux"
     mkdir -p "$share"
     cp -r tree/linux-app-extracted "$share/"
-    cp launch.sh launch-devtools.sh enable-cowork.py COMPAT.md "$share/"
+    cp launch.sh launch-devtools.sh patch-index.sh enable-cowork.py COMPAT.md "$share/"
     cp -r stubs "$share/"
 
     icns="$share/linux-app-extracted/resources/electron.icns"

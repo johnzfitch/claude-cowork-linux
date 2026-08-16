@@ -46,11 +46,19 @@ jobs:
       - name: Compat pin consistency
         run: bash tests/test-compat-pins.sh
 
-      # Extracts the patch_index blocks from launch.sh and PKGBUILD and runs
-      # them against fixtures, including the backtick/let/index2 shapes from
-      # #166 and the minified-name fallback.
+      # Exercises the shared patch-index.sh pass list against fixtures, including
+      # the backtick/let/index2 shapes from #166 and the minified-name fallback,
+      # and guards that launch.sh and PKGBUILD still both source that one list.
       - name: Cowork patch passes
         run: bash tests/test-cowork-patch.sh
+
+      # Stage 1 of the install harness is pure static analysis -- no network, no
+      # Docker, no Arch -- so it can run here even though stages 2-8 cannot.
+      # Nothing ran this file at all, which is how it came to py_compile
+      # fetch-dmg.py for however many months after that script became
+      # fetch-dmg.js. A harness nobody runs rots into a harness nobody can run.
+      - name: Install harness static analysis
+        run: bash tests/test-install-paths.sh 1
 
   python:
     name: enable-cowork.py syntax

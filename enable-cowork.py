@@ -16,6 +16,8 @@ Example:
 
 import sys
 import re
+import shutil
+import subprocess
 
 # Minifiers emit string literals as either double quotes or template literals;
 # 1.26832.0 switched the main bundle wholesale from "darwin" to `darwin`. Match
@@ -112,8 +114,22 @@ def patch_file(filepath):
     return True
 
 # `new` is optional: 1.26832.0 emits a bare `throw Error(...)` here.
+#
+# The argument is matched with a paren-aware sub-pattern, not [^)]*. A bare
+# [^)]* stops at the FIRST ')', so a message built with a call in it --
+#   throw new Error("Unsupported platform: "+getPlatformName())
+# -- matched only up to `getPlatformName(`, and substituting the replacement
+# left the call's closing paren behind as `return"darwin-x64")`. That is a
+# syntax error, and patch_host_platform still returned True, so the whole script
+# printed SUCCESS and exited 0 on a bundle it had just corrupted. Template
+# literals interpolating a call, e.g. `${a.it()}`, hit the same shape.
+#
+# (?:[^()]|\([^()]*\))* allows one level of nesting, which covers a call in the
+# message. Deeper nesting still won't match -- that fails closed (no
+# substitution) rather than producing invalid JS.
+_ERR_ARG = r'(?:[^()]|\([^()]*\))*'
 HOST_PLATFORM_THROW_RE = re.compile(
-    r'throw (?:new )?Error\([^)]*Unsupported platform[^)]*\)'
+    r'throw (?:new )?Error\(' + _ERR_ARG + r'Unsupported platform' + _ERR_ARG + r'\)'
 )
 
 
@@ -236,6 +252,34 @@ def patch_platform_return_gates(filepath):
     return True
 
 
+def _warn_if_unparseable(filepath):
+    """Warn loudly if the patched file is no longer valid JavaScript.
+
+    Best-effort: silently skipped when node isn't on PATH, since node is a
+    hard dependency of the packaging path but not of this script.
+    """
+    node = shutil.which('node')
+    if not node:
+        return
+    try:
+        result = subprocess.run(
+            [node, '--check', filepath],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode != 0:
+        detail = (result.stderr or '').strip().splitlines()
+        print(
+            f"ERROR: {filepath} is not valid JavaScript after patching.\n"
+            "       A patch pattern matched more or less than intended. This file\n"
+            "       would load as a blank window; do not ship it.",
+            file=sys.stderr,
+        )
+        for line in detail[:5]:
+            print(f"       {line}", file=sys.stderr)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
@@ -253,6 +297,20 @@ if __name__ == "__main__":
     patch_host_platform(target)
     patch_ipc_origin_guards(target)
     patch_platform_return_gates(target)
+
+    # Every pass above is a regex substitution into minified JS, so a pattern
+    # that matches slightly more or less than intended produces a file that is
+    # no longer valid JavaScript. That used to be invisible: the passes report
+    # success from having substituted something, not from the result parsing,
+    # so a corrupted bundle still printed SUCCESS and exited 0, and surfaced
+    # much later as a blank window with no clue which pass did it.
+    #
+    # Deliberately does NOT change the exit code. Both callers treat non-zero as
+    # "no platform gate in this file", which is an expected, silent condition for
+    # most chunks -- failing that way would hide the corruption rather than
+    # surface it. Warn on stderr instead: install.sh lets it through, and
+    # PKGBUILD captures 2>&1 and prints it for any file it patched.
+    _warn_if_unparseable(target)
 
     # Exit code still reports only the platform gate: install.sh uses it to
     # decide whether Cowork was actually enabled across the whole bundle.

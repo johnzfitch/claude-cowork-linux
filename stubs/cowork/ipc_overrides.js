@@ -330,8 +330,13 @@ function whichApplicationForFile(filename) {
 }
 
 // -- Override registry --
-// Keys are matched via channel.includes(key). This handles the
-// _$_Namespace_$_Method pattern regardless of UUID prefix.
+// Keys are matched via channel.endsWith(key) (see matchOverride below). This
+// handles the _$_Namespace_$_Method pattern regardless of UUID prefix.
+//
+// endsWith, not includes: anchoring at the end means a key can only be shadowed
+// by another key that is a suffix of it, which is checkable by inspecting this
+// table. Under includes, any key appearing anywhere in a longer channel name
+// would match, so an unrelated channel could pick up a handler.
 
 function createOverrideRegistry(getProcessState) {
   return {

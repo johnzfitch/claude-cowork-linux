@@ -14,7 +14,9 @@
 #     hardcoded (platform gate, IPC origin guards, host-platform, return gate);
 #   - the index.js -> index.chunk discovery used by install.sh / launch.sh finds
 #     the chunk from the shim, and is a clean no-op on single-entry builds;
-#   - launch.sh's patch_index seds apply across a chunk with rotated identifiers.
+#   - patch-index.sh's seds apply across a chunk with rotated identifiers, and
+#     both consumers (launch.sh, PKGBUILD) still source that one shared list
+#     rather than growing private copies that drift apart (#170).
 #
 # No network or Docker needed. Requires python3 and node.
 #
@@ -111,7 +113,7 @@ section "1. Static analysis"
 # ---------------------------------------------------------------------------
 if python3 -c "import ast; ast.parse(open('$REPO_ROOT/enable-cowork.py').read())" 2>/dev/null; then
   pass "enable-cowork.py parses"; else fail "enable-cowork.py parses"; fi
-for s in launch.sh install.sh; do
+for s in launch.sh install.sh patch-index.sh; do
   if bash -n "$REPO_ROOT/$s" 2>/dev/null; then pass "$s syntax"; else fail "$s syntax"; fi
 done
 
@@ -181,21 +183,33 @@ printf '"use strict";var x=1;\n' > "$TMP/build_single/index.js"
   || fail "single-entry: no chunk discovered"
 
 # ---------------------------------------------------------------------------
-section "4. launch.sh patch_index seds on a chunk with rotated identifiers"
+section "4. shared patch-index.sh passes on a chunk with rotated identifiers"
 # ---------------------------------------------------------------------------
-# Extract the real patch_index() helper + every patch_index invocation verbatim
-# from launch.sh so this test tracks the shipped code, not a copy.
-BLOCK="$TMP/patch_block.sh"
-awk '/^patch_index\(\) \{/{f=1} f{print} /Only repack if stub/{exit}' "$REPO_ROOT/launch.sh" \
-  | sed '/# Only repack if stub/d' > "$BLOCK"
-NCALLS="$(grep -c '^patch_index ' "$BLOCK" || true)"
-if [[ "${NCALLS:-0}" -lt 1 ]]; then
-  fail "extracted patch_index block from launch.sh (found $NCALLS calls)"
+# launch.sh and PKGBUILD both source patch-index.sh, so there is one pass list
+# to exercise rather than two near-copies. Source the shipped file directly --
+# no awk extraction, so the test cannot drift from the code the way the two
+# hand-maintained blocks drifted from each other (#170).
+#
+# Drive it through patch_index_apply_all against a real build directory so the
+# chunk discovery and the node --check verification are exercised too, not just
+# the seds.
+SHARED="$REPO_ROOT/patch-index.sh"
+if [[ ! -f "$SHARED" ]]; then
+  fail "patch-index.sh exists at repo root"
 else
-  pass "extracted patch_index block from launch.sh ($NCALLS calls)"
-  LCHUNK="$TMP/launch_chunk.js"
+  pass "patch-index.sh exists at repo root"
+  NPASSES="$(grep -c '^  patch_index "' "$SHARED" || true)"
+  if [[ "${NPASSES:-0}" -lt 9 ]]; then
+    fail "patch-index.sh defines all 9 passes (found $NPASSES)"
+  else
+    pass "patch-index.sh defines all 9 passes ($NPASSES)"
+  fi
+
+  LBUILD="$TMP/shared_build"
+  mkdir -p "$LBUILD"
+  LCHUNK="$LBUILD/index.js"
   write_patch_fixture "$LCHUNK"
-  ( INDEX_TARGETS=("$LCHUNK"); source "$BLOCK" ) >/dev/null 2>&1
+  ( source "$SHARED"; patch_index_apply_all "$LBUILD" ) >/dev/null 2>&1
   refute_grep "$LCHUNK" 'titleBarStyle:"hidden"'                     "main-window titlebar removed"
   refute_grep "$LCHUNK" 'titleBarStyle:"hiddenInset"'                "about-window titlebar removed"
   assert_grep "$LCHUNK" 'return Zq\.protocol==="file:"\}'            "origin isPackaged requirement dropped for file://"
@@ -212,52 +226,140 @@ else
   # chose. Patching it away regresses #132, silently and only at session spawn.
   assert_grep "$LCHUNK" 'function wrapSpawn\(t\)\{return process\.platform!=="darwin"\?t:\{cmd:rpt\(\)' \
               "disclaimer wrap site left intact (removing it would regress #132)"
-  assert_parses "$LCHUNK" "chunk parses after launch.sh patches"
+  assert_parses "$LCHUNK" "chunk parses after the shared passes"
+
+  # Discovery must reach index*.chunk-*.js siblings, not just index.js.
+  DBUILD="$TMP/discovery_build"
+  mkdir -p "$DBUILD"
+  echo '"use strict";' > "$DBUILD/index.js"
+  write_patch_fixture "$DBUILD/index2.chunk-Cqfh0Vpp.js"
+  ( source "$SHARED"; patch_index_apply_all "$DBUILD" ) >/dev/null 2>&1
+  assert_grep "$DBUILD/index2.chunk-Cqfh0Vpp.js" 'this\.options\.effort==="xhigh"\?"max"' \
+              "passes reach a chunk the shim never require()s"
+
+  # Idempotency: a second run must not corrupt an already-patched tree.
+  BEFORE="$(cat "$LCHUNK")"
+  ( source "$SHARED"; patch_index_apply_all "$LBUILD" ) >/dev/null 2>&1
+  if [[ "$BEFORE" == "$(cat "$LCHUNK")" ]]; then
+    pass "re-running the passes on a patched tree is a no-op"
+  else
+    fail "re-running the passes on a patched tree changed it again"
+  fi
+
+  # mainView.js: on a miss the pass must leave the file completely alone. sed -i
+  # rewrites regardless of whether the pattern matched, and a miss also leaves
+  # the marker absent — so the old shape re-ran every launch, bumped mtime every
+  # launch, and made launch.sh's "anything newer than the cached asar?" check
+  # true forever, repacking the whole asar on every start. Pin mtime, not just
+  # content: content was already unchanged, which is why this went unnoticed.
+  MVBUILD="$TMP/mainview_build"
+  mkdir -p "$MVBUILD"
+  echo '"use strict";' > "$MVBUILD/index.js"
+  # identifier is `q`, not `e`, so the substitution cannot match
+  printf 'function h(q){return q.hostname===`localhost`}\n' > "$MVBUILD/mainView.js"
+  touch -d '2020-01-01 00:00:00' "$MVBUILD/mainView.js"
+  MV_BEFORE="$(stat -c %Y "$MVBUILD/mainView.js")"
+  ( source "$SHARED"; patch_index_apply_all "$MVBUILD" ) >/dev/null 2>&1
+  if [[ "$MV_BEFORE" == "$(stat -c %Y "$MVBUILD/mainView.js")" ]]; then
+    pass "mainView.js untouched when the substitution target is absent"
+  else
+    fail "mainView.js rewritten on a miss (bumps mtime, forces a repack every launch)"
+  fi
+  # And it must still patch when the target IS present, and be idempotent after.
+  printf 'function h(e){return e.hostname===`localhost`}\n' > "$MVBUILD/mainView.js"
+  ( source "$SHARED"; patch_index_apply_all "$MVBUILD" ) >/dev/null 2>&1
+  assert_grep "$MVBUILD/mainView.js" 'e\.protocol==="file:"' "mainView.js patched when the target is present"
+  MV_PATCHED="$(stat -c %Y "$MVBUILD/mainView.js")"
+  ( source "$SHARED"; patch_index_apply_all "$MVBUILD" ) >/dev/null 2>&1
+  if [[ "$MV_PATCHED" == "$(stat -c %Y "$MVBUILD/mainView.js")" ]]; then
+    pass "mainView.js untouched on a second run (marker holds)"
+  else
+    fail "mainView.js rewritten on a second run"
+  fi
+
+  # PKGBUILD builds with PATCH_INDEX_STRICT_SYNTAX=1 so a chunk that no longer
+  # parses fails the build instead of shipping a blank-window package; launch.sh
+  # leaves it unset so a bad chunk only warns rather than blocking a launch.
+  if [[ "$HAVE_NODE" -eq 0 ]]; then
+    skip "syntax gate strict/warn split (node not installed)"
+  else
+    BADBUILD="$TMP/bad_build"
+    mkdir -p "$BADBUILD"
+    printf 'function f({ // unbalanced\n' > "$BADBUILD/index.js"
+    if ( source "$SHARED"; PATCH_INDEX_STRICT_SYNTAX=1; \
+         patch_index_apply_all "$BADBUILD" ) >/dev/null 2>&1; then
+      fail "strict syntax gate fails the build on an unparseable chunk"
+    else
+      pass "strict syntax gate fails the build on an unparseable chunk"
+    fi
+    if ( source "$SHARED"; patch_index_apply_all "$BADBUILD" ) >/dev/null 2>&1; then
+      pass "default syntax check warns without failing"
+    else
+      fail "default syntax check warns without failing"
+    fi
+  fi
+
+  # patch_index must return 0 when nothing matched. PKGBUILD's build() runs
+  # under makepkg's `set -e`, so a non-zero return from a legitimately-missing
+  # pass would abort the package build.
+  if ( set -e; source "$SHARED"; INDEX_TARGETS=(); \
+       PATCH_INDEX_WARN_ON_MISS=0 patch_index "x" 'nomatch' 's/a/b/' ) >/dev/null 2>&1; then
+    pass "patch_index returns 0 on no match (safe under PKGBUILD's set -e)"
+  else
+    fail "patch_index returns non-zero on no match (would abort makepkg build)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
-section "5. PKGBUILD build() patches reach the chunk (AUR path, issue #156)"
+section "5. both consumers use the shared list (drift guard, issue #170)"
 # ---------------------------------------------------------------------------
-# The AUR PKGBUILD applies the same class of patches as launch.sh, but in its
-# own build() function. It regressed once (issue #156): it patched index.js
-# only and hardcoded minified identifiers, silently disabling Cowork on
-# split-entry builds. Extract its patch_index() helper + invocations verbatim
-# and exercise them on a chunk with rotated identifiers so the drift can't recur.
-PKGBLOCK="$TMP/pkg_patch_block.sh"
-awk '/^    patch_index\(\) \{/{inf=1} inf{print} inf&&/^    \}/{inf=0}' "$REPO_ROOT/PKGBUILD" > "$PKGBLOCK"
-grep -A2 '^    patch_index "' "$REPO_ROOT/PKGBUILD" | grep -v '^--$' >> "$PKGBLOCK"
-PKCALLS="$(grep -c '^    patch_index ' "$PKGBLOCK" || true)"
-if [[ "${PKCALLS:-0}" -lt 1 ]]; then
-  fail "extracted patch_index block from PKGBUILD (found $PKCALLS calls)"
+# launch.sh grew to 9 passes while PKGBUILD's build() stayed at 3, and because
+# /usr/bin/claude-cowork execs electron directly against the packaged asar and
+# never runs launch.sh, AUR users silently lost six of them. The fix is one
+# shared list; these assertions are what keep it one.
+for _consumer in launch.sh PKGBUILD; do
+  if grep -qE 'source .*patch-index\.sh' "$REPO_ROOT/$_consumer"; then
+    pass "$_consumer sources patch-index.sh"
+  else
+    fail "$_consumer sources patch-index.sh"
+  fi
+  if grep -qE '(^|[^_])patch_index_apply_all ' "$REPO_ROOT/$_consumer"; then
+    pass "$_consumer calls patch_index_apply_all"
+  else
+    fail "$_consumer calls patch_index_apply_all"
+  fi
+  # A local redefinition is exactly how the two lists drifted apart before.
+  if grep -qE '^\s*patch_index\(\) \{' "$REPO_ROOT/$_consumer"; then
+    fail "$_consumer defines its own patch_index() (drift risk)"
+  else
+    pass "$_consumer does not redefine patch_index()"
+  fi
+  if grep -qE '^\s*patch_index "' "$REPO_ROOT/$_consumer"; then
+    fail "$_consumer still carries inline patch_index calls (drift risk)"
+  else
+    pass "$_consumer carries no inline patch_index calls"
+  fi
+done
+
+# launch.sh refuses to start without it, so install.sh must ship it alongside.
+if grep -q 'patch-index.sh' "$REPO_ROOT/install.sh"; then
+  pass "install.sh copies patch-index.sh into the install dir"
 else
-  pass "extracted patch_index block from PKGBUILD ($PKCALLS calls)"
-  PKCHUNK="$TMP/pkg_chunk.js"
-  write_patch_fixture "$PKCHUNK"
-  ( _index_targets=("$PKCHUNK"); source "$PKGBLOCK" ) >/dev/null 2>&1
-  refute_grep "$PKCHUNK" 'titleBarStyle:"hidden"'          "PKGBUILD: main-window titlebar removed (chunk)"
-  refute_grep "$PKCHUNK" 'titleBarStyle:"hiddenInset"'     "PKGBUILD: about-window titlebar removed (chunk)"
-  assert_grep "$PKCHUNK" 'return Zq\.protocol==="file:"\}' "PKGBUILD: origin isPackaged dropped for file:// (chunk)"
-  assert_grep "$PKCHUNK" 'function wrapSpawn\(t\)\{return process\.platform!=="darwin"\?t:\{cmd:rpt\(\)' \
-              "PKGBUILD: disclaimer wrap site left intact (chunk)"
-  assert_parses "$PKCHUNK" "PKGBUILD: chunk parses after patch_index seds"
+  fail "install.sh does not copy patch-index.sh (installed launcher would abort)"
 fi
-# Source-level guards: the recipe must discover chunks and run enable-cowork.py
-# across every discovered target, never regress to the index.js-only invocation.
-# Either mechanism counts: following the shim's require()s (the historical
-# approach) or globbing the build dir for index*.chunk-*.js (which also reaches
-# chunks required transitively rather than by the shim directly).
-if grep -qF 'chunk-[A-Za-z0-9_-]+' "$REPO_ROOT/PKGBUILD" \
-   || grep -qF "name 'index*.chunk-*.js'" "$REPO_ROOT/PKGBUILD"; then
-  pass "PKGBUILD: discovers index*.chunk-*.js chunks"
+
+# Source-level guards: chunk discovery now lives in the shared script, and the
+# recipe must still run enable-cowork.py across every discovered target.
+if grep -qF "name 'index*.chunk-*.js'" "$REPO_ROOT/patch-index.sh"; then
+  pass "shared script discovers index*.chunk-*.js chunks"
 else
-  fail "PKGBUILD: chunk discovery missing"
+  fail "shared script: chunk discovery missing"
 fi
 if grep -q 'enable-cowork.py" "$_t"' "$REPO_ROOT/PKGBUILD"; then
   pass "PKGBUILD: runs enable-cowork.py across every discovered target"
 else
   fail "PKGBUILD: enable-cowork.py not run per-target (regressed to index.js only?)"
 fi
-
 # ---------------------------------------------------------------------------
 section "6. backtick-literal bundle (asar 1.26832.0 shapes, issue #166)"
 # ---------------------------------------------------------------------------
@@ -299,11 +401,65 @@ fi
 assert_grep "$BTGATE" 'function zQ7x\(\)\{return\{status:"supported"\}\}' "backtick: unknown-named gate rewritten"
 assert_parses "$BTGATE" "backtick: unknown-named gate parses after patching"
 
-# launch.sh patch_index passes against the same shapes.
-if [[ -f "$BLOCK" ]]; then
-  BTL="$TMP/backtick_launch.js"
+# getHostPlatform throw whose message contains a call. HOST_PLATFORM_THROW_RE
+# used [^)]*, which stops at the FIRST ')', so the match ended inside the call
+# and the substitution left its closing paren behind as `return"darwin-x64")`.
+# enable-cowork.py reported SUCCESS and exited 0 on a file it had just made
+# unparseable. Every fixture above happens to use a paren-free message, which is
+# why nothing caught it.
+PARENGATE="$TMP/host_platform_paren.js"
+cat > "$PARENGATE" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+function hostPlat(){if(process.platform==="darwin")return"darwin-x64";throw new Error("Unsupported platform: "+getPlatformName())}
+EOF
+python3 "$REPO_ROOT/enable-cowork.py" "$PARENGATE" >/dev/null 2>&1
+refute_grep "$PARENGATE" 'throw new Error\("Unsupported platform'  "paren: getHostPlatform throw rewritten"
+refute_grep "$PARENGATE" 'return"darwin-x64"\)'                    "paren: no dangling paren left behind"
+assert_parses "$PARENGATE" "paren: chunk still parses after patching"
+
+# Nesting deeper than the pattern handles must fail CLOSED — leave the throw
+# alone — rather than emit invalid JS.
+DEEPGATE="$TMP/host_platform_deep.js"
+cat > "$DEEPGATE" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+function hostPlat(){throw new Error("Unsupported platform: "+fmt(name(x)))}
+EOF
+python3 "$REPO_ROOT/enable-cowork.py" "$DEEPGATE" >/dev/null 2>&1
+assert_parses "$DEEPGATE" "deep nesting: fails closed, chunk still parses"
+
+# The corruption guard must actually fire, on stderr, without changing the
+# exit code — both callers read non-zero as "no platform gate here", so failing
+# that way would hide the corruption instead of surfacing it.
+BADJS="$TMP/unparseable.js"
+cat > "$BADJS" <<'EOF'
+"use strict";
+function ke(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`nope`};return{status:`supported`}}
+function oops(){ return 1)  }
+EOF
+BADERR="$(python3 "$REPO_ROOT/enable-cowork.py" "$BADJS" 2>&1 >/dev/null)"
+BADRC=$?
+if [[ "$HAVE_NODE" -eq 0 ]]; then
+  skip "corruption guard warns on stderr (node not installed)"
+elif [[ "$BADERR" == *"not valid JavaScript after patching"* ]]; then
+  pass "corruption guard warns on stderr"
+else
+  fail "corruption guard silent on an unparseable file"
+fi
+if [[ "$BADRC" -eq 0 ]]; then
+  pass "corruption guard leaves the exit-code contract alone"
+else
+  fail "corruption guard changed the exit code (callers read non-zero as 'no gate here')"
+fi
+
+# The shared patch passes against the same shapes.
+if [[ -f "$SHARED" ]]; then
+  BTBUILD="$TMP/backtick_build"
+  mkdir -p "$BTBUILD"
+  BTL="$BTBUILD/index.js"
   write_patch_fixture_backtick "$BTL"
-  ( INDEX_TARGETS=("$BTL"); source "$BLOCK" ) >/dev/null 2>&1
+  ( source "$SHARED"; patch_index_apply_all "$BTBUILD" ) >/dev/null 2>&1
   refute_grep "$BTL" 'titleBarStyle:`hidden`'          "backtick: main-window titlebar removed (!1 / dotted value)"
   refute_grep "$BTL" 'titleBarStyle:`hiddenInset`'     "backtick: about-window titlebar removed"
   assert_grep "$BTL" 'return Zq\.protocol==="file:"\}' "backtick: origin isPackaged dropped (r.default arg)"
@@ -317,7 +473,7 @@ if [[ -f "$BLOCK" ]]; then
   assert_grep "$BTL" 'shell-path-worker'                  "backtick: shellPathWorker site still resolves a path"
   assert_grep "$BTL" 'function wrapSpawn\(t\)\{return process\.platform!==`darwin`\?t:\{cmd:rpt\(\)' \
               "backtick: disclaimer wrap site left intact (#132)"
-  assert_parses "$BTL" "backtick: chunk parses after launch.sh patches"
+  assert_parses "$BTL" "backtick: chunk parses after the shared passes"
 fi
 
 # ---------------------------------------------------------------------------

@@ -123,161 +123,24 @@ if [ -f "$PKG_JSON" ] && grep -q '"main":.*index\.pre\.js"' "$PKG_JSON"; then
   sed -i 's|"main":.*"\.vite/build/index\.pre\.js"|"main": "frame-fix-entry.js"|' "$PKG_JSON"
 fi
 
-# ── Locate the main-process code file(s) ────────────────────────────────────
-# Vite compiles the main process into .vite/build/. Newer Claude Desktop builds
-# emit index.js as a thin entry shim that require()s the real code from an
-# index.chunk-<hash>.js file (the <hash> changes every build, and 1.26832.0 adds a
-# parallel index2.chunk-<hash>.js series that holds the Cowork gate); older builds keep
-# everything in index.js. The patches below must run against whichever file
-# actually holds the code, so collect index.js plus every chunk it require()s.
-# Applying each grep-guarded patch across all of them is safe: a file that lacks
-# the pattern is skipped. This also survives minifier identifier rotation because
-# the patterns below match on stable API/string tokens, not minified var names.
-# Collect index.js plus *every* index*.chunk-*.js in the build dir, not just the
-# ones index.js names: chunks are also require()d transitively by other chunks
-# (on 1.26832.0 the --effort builder lives in index2.chunk-Cqfh0Vpp.js, which the
-# shim never references), so following only the shim's direct requires misses
-# them. Every patch below is grep-guarded, so listing a chunk that lacks the
-# pattern costs nothing.
-_BUILD_DIR="linux-app-extracted/.vite/build"
-INDEX_TARGETS=()
-if [ -f "$_BUILD_DIR/index.js" ]; then
-  INDEX_TARGETS+=("$_BUILD_DIR/index.js")
-  while IFS= read -r _chunk; do
-    [ -n "$_chunk" ] && INDEX_TARGETS+=("$_chunk")
-  done < <(find "$_BUILD_DIR" -maxdepth 1 -name 'index*.chunk-*.js' -type f | sort)
+# ── Main-process patches ────────────────────────────────────────────────────
+# The sed passes that make the minified main-process bundle work on Linux live
+# in patch-index.sh, not here. launch.sh and PKGBUILD's build() both source that
+# one file, so the two entry points cannot drift apart again (#170: launch.sh
+# had grown to 9 passes while the AUR recipe still applied 3, and AUR users
+# silently lost the MCP node-host and resourcesPath fixes).
+if [ ! -f "$SCRIPT_DIR/patch-index.sh" ]; then
+  echo "ERROR: patch-index.sh not found next to launch.sh ($SCRIPT_DIR)." >&2
+  echo "       It carries every main-process patch pass. Launching without it" >&2
+  echo "       would start an unpatched app: macOS titlebars, no local MCP" >&2
+  echo "       servers, and a renderer shell that never loads. Re-run" >&2
+  echo "       install.sh to restore it." >&2
+  exit 1
 fi
+# shellcheck source=patch-index.sh
+source "$SCRIPT_DIR/patch-index.sh"
 
-# patch_index "<log message>" "<grep -E guard>" "<sed -E script>"
-# Runs the sed against every main-process code file matching the guard; logs once
-# if any file matched. Minified identifiers are matched with [A-Za-z0-9_$]+ so the
-# patches keep working when a new build reshuffles variable names.
-patch_index() {
-  local msg="$1" pat="$2" script="$3" f matched=""
-  for f in "${INDEX_TARGETS[@]}"; do
-    if grep -qE "$pat" "$f" 2>/dev/null; then
-      sed -i -E "$script" "$f"
-      matched=1
-    fi
-  done
-  [ -n "$matched" ] && echo "$msg"
-}
-
-# Fix window decorations: remove macOS-specific titlebar options from the windows.
-# The Vite bundle bypasses the frame-fix-wrapper's require interception, so we patch directly.
-patch_index "Patching macOS titlebar options for Linux (main window)..." \
-  'titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,' \
-  's/titleBarStyle:["`]hidden["`],titleBarOverlay:[A-Za-z0-9_$!.]+,trafficLightPosition:[A-Za-z0-9_$!.]+,//g'
-patch_index "Patching macOS titlebar options for Linux (about window)..." \
-  'titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0' \
-  's/titleBarStyle:["`]hiddenInset["`],autoHideMenuBar:!0,skipTaskbar:!0/autoHideMenuBar:!0/g'
-
-# Fix origin validation: the asar's nue() function rejects file:// preloads
-# when app.isPackaged is false (which it always is when running via `electron .asar`).
-# This causes the mainWindow/findInPage preloads to crash before exposing `process`
-# via contextBridge, breaking the renderer shell. Drop the isPackaged requirement
-# for file:// origins — the content is inside our asar, so there's no security risk.
-patch_index "Patching origin validation for file:// preloads..." \
-  '[A-Za-z0-9_$]+\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0' \
-  's/([A-Za-z0-9_$]+)\.protocol===["`]file:["`]&&[A-Za-z0-9_$.]+\.app\.isPackaged===!0/\1.protocol==="file:"/g'
-
-# Fix preload origin validation: the mainView.js preload's h() guard checks
-# if window.location.href origin matches claude.ai/preview.claude.ai etc.
-# On Linux with file:// protocol, origin is "null" and h() returns false,
-# preventing CoworkSpaces (and other IPC bridges) from being exposed to the
-# renderer. This causes the Projects page to be empty and spaces to not persist.
-# Patch: add file:// protocol as an allowed origin.
-MAINVIEW_JS="linux-app-extracted/.vite/build/mainView.js"
-if [ -f "$MAINVIEW_JS" ] && ! grep -qE 'e\.protocol===["`]file:["`]' "$MAINVIEW_JS"; then
-  echo "Patching preload origin validation for file:// protocol..."
-  sed -i -E 's/e\.hostname===["`]localhost["`]/&||e.protocol==="file:"/g' "$MAINVIEW_JS"
-fi
-
-# Fix --effort xhigh: Claude Desktop may pass --effort xhigh but the SDK binary
-# only supports low/medium/high/max. Remap xhigh -> max in the CLI arg builder.
-patch_index "Patching --effort xhigh -> max..." \
-  '[A-Za-z0-9_$]+\.push\(["`]--effort["`],this\.options\.effort\)' \
-  's/([A-Za-z0-9_$]+)\.push\(["`]--effort["`],this\.options\.effort\)/\1.push("--effort",this.options.effort==="xhigh"?"max":this.options.effort)/g'
-
-# NOTE: do not "simplify" the disclaimer wrapper away by patching the bundle's
-#   f(t){return process.platform!=="darwin"?t:{cmd:disclaimerBin(),args:[t.cmd,...t.args]}}
-# to its non-darwin (identity) branch. It looks like dead weight we only incur
-# because we spoof platform, but on Linux that wrap is load-bearing: it is the
-# only chokepoint where our spawn interception sees the bundle's own spawn
-# decisions, and the unwrap substitutes OUR resolved Claude binary for whatever
-# path the asar chose (claude-code-vm/<ver>/claude, a macOS .app path). Taking
-# the identity branch hands the SDK the asar's path unchanged and regresses
-# #132. See resolveDisclaimerCommand in stubs/cowork/exec_capability_registry.js.
-
-# Fix macOS Handoff API: invalidateCurrentActivity() and setUserActivity() are
-# macOS-only Electron APIs that crash on Linux. Replace with safe no-op fallbacks.
-patch_index "Patching macOS Handoff API invalidateCurrentActivity for Linux..." \
-  '[A-Za-z0-9_$]+\.app\.invalidateCurrentActivity\(\)' \
-  's/([A-Za-z0-9_$]+)\.app\.invalidateCurrentActivity\(\)/(\1.app.invalidateCurrentActivity||function(){})()/g'
-patch_index "Patching macOS Handoff API setUserActivity for Linux..." \
-  '[A-Za-z0-9_$]+\.app\.setUserActivity\([A-Za-z0-9_$]+,' \
-  's/([A-Za-z0-9_$]+)\.app\.setUserActivity\(([A-Za-z0-9_$]+),/((\1.app.setUserActivity||function(){}))(\2,/g'
-
-# Fix resource path lookup for i18n, shim-lib, icon, etc.
-# The asar uses `app.isPackaged ? process.resourcesPath : <asar-relative path>`.
-# On Arch Linux, `process.resourcesPath` is the system electron's dir
-# (e.g., /usr/lib/electron39/resources/), which only has default_app.asar —
-# locales live at /usr/lib/electron39/locales/*.pak (wrong format, wrong path).
-# The fallback branch resolves to resources/ inside our asar, where launch.sh
-# populates resources/i18n/*.json. Always use the fallback so locale JSONs load.
-patch_index "Patching resourcesPath lookups to use asar-internal resources/..." \
-  '[A-Za-z0-9_$]+\.app\.isPackaged\?process\.resourcesPath:' \
-  's/[A-Za-z0-9_$]+\.app\.isPackaged\?process\.resourcesPath://g'
-
-# Fix MCP node-host path resolution ("MCP Filesystem: Node host not found").
-# The MCP runtime computes its host paths as
-#   app.isPackaged ? join(process.resourcesPath,"app.asar",...) : join(getAppPath(),...)
-# but frame-fix-wrapper.js overrides process.resourcesPath to
-# ~/.config/Claude/cowork-resources (so the disclaimer/Helpers dir is writable),
-# and that location has no app.asar — so the packaged branch resolves to a
-# nonexistent nodeHost.js/directMcpHost.js and the MCP server fails to start.
-# getAppPath() already points inside the running asar (and equals
-# resources/app.asar on a stock build), so rewrite the packaged branch to use
-# it. Covers nodeHost.js, directMcpHost.js, and the asar-root helper — every
-# isPackaged-guarded asar-internal lookup. The resourcesPath patch above only
-# matches the bare `isPackaged?process.resourcesPath:` shape, not these join()
-# forms, so this is a separate pass.
-patch_index "Patching MCP node-host asar paths to use getAppPath()..." \
-  '[A-Za-z0-9_$]+\.app\.isPackaged\?[A-Za-z0-9_$.]+\.join\(process\.resourcesPath,["`]app\.asar["`]' \
-  's/([A-Za-z0-9_$]+)\.app\.isPackaged\?([A-Za-z0-9_$.]+)\.join\(process\.resourcesPath,["`]app\.asar["`]/\1.app.isPackaged?\2.join(\1.app.getAppPath()/g'
-
-# Catch-all for the same join with NO isPackaged guard (reported by @shawnyeager
-# on #167). shellPathWorker.js is resolved unconditionally:
-#   function v(){return o.default.join(process.resourcesPath,`app.asar`,`.vite`,`build`,`shell-path-worker`,`shellPathWorker.js`)}
-# The guarded pass above can't reach it, so it keeps resolving through the
-# overridden process.resourcesPath (~/.config/Claude/cowork-resources), which has
-# no app.asar — breaking login-shell PATH priming.
-#
-# This must run AFTER the guarded pass: that pass has already rewritten its own
-# sites away from `process.resourcesPath,app.asar`, so this only touches what it
-# missed. The main-process chunks are CJS with require in scope, so require the
-# app lazily rather than assuming a minified electron binding is in scope here.
-patch_index "Patching unguarded resourcesPath+app.asar joins to use getAppPath()..." \
-  'process\.resourcesPath,["`]app\.asar["`]' \
-  's/process\.resourcesPath,["`]app\.asar["`]/require("electron").app.getAppPath()/g'
-
-# Syntax-check every patched chunk before repacking. We now rewrite ~300 files
-# instead of 2, and patch_host_platform in particular is markerless and subs
-# globally, so a malformed rewrite would otherwise surface as a blank window at
-# launch with no clue which pass produced it. node --check is cheap next to the
-# repack and names the offending file. Warn rather than abort: a syntax error in
-# a chunk we never patched shouldn't block a launch that would otherwise work.
-if command -v node >/dev/null 2>&1; then
-  _bad=0
-  for _f in "${INDEX_TARGETS[@]}"; do
-    [ -f "$_f" ] || continue
-    if ! node --check "$_f" 2>/dev/null; then
-      echo "WARNING: $_f fails node --check after patching" >&2
-      _bad=$((_bad + 1))
-    fi
-  done
-  [ "$_bad" -gt 0 ] && echo "WARNING: $_bad patched chunk(s) failed syntax check" >&2
-fi
+patch_index_apply_all "linux-app-extracted/.vite/build"
 
 # Only repack if stub is newer than asar (or asar doesn't exist)
 # Repack if any file in the extracted tree is newer than the cached asar.
@@ -294,7 +157,18 @@ else
 fi
 if [ "$_needs_repack" = true ]; then
   echo "Repacking app.asar..."
-  asar pack linux-app-extracted "$ASAR_FILE"
+  # Stop on failure. launch.sh has no `set -e`, so an asar pack that died
+  # (asar not installed, disk full, a partially-written target) used to fall
+  # straight through to launching electron against whatever was there before —
+  # a stale asar, or none at all. The stale case is the dangerous one: the app
+  # comes up looking fine, running the previous build, with the failure already
+  # scrolled off.
+  if ! asar pack linux-app-extracted "$ASAR_FILE"; then
+    echo "ERROR: asar pack failed." >&2
+    echo "       Refusing to launch against a stale or missing $ASAR_FILE." >&2
+    echo "       Is the 'asar' command installed, and is there free disk space?" >&2
+    exit 1
+  fi
 else
   echo "Using cached app.asar (no changes)"
 fi
