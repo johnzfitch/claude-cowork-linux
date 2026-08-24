@@ -1,0 +1,119 @@
+# DRAFT manifest for #85 — not submitted to Flathub, not verified end to end.
+# flatpak-builder was not available where this was written, so build/install
+# have not been run even once. Treat this as a starting skeleton, not a
+# working release. See flatpak/README.md for what's untested and why.
+#
+# Architecture mirrors nix/package.nix: extract Claude's archive, stub the
+# macOS-native modules, run enable-cowork.py once at build time, then ship a
+# launcher that mirrors the read-only /app tree into a writable per-user copy
+# before handing off to launch.sh, which does its own per-run sed/asar-repack
+# pass. That mirror step needs no extra permission here — Flatpak already
+# gives every app a private, writable XDG_DATA_HOME under
+# ~/.var/app/<id>/data, so $XDG_DATA_HOME inside the sandbox just works.
+app-id: io.github.johnzfitch.ClaudeCoworkLinux
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: '24.08'
+command: claude-desktop
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  # Attached-folder access for Cowork tasks. --filesystem=home is broad;
+  # narrowing this to specific accepted folders (portal-based, like the
+  # normal file-open dialog) instead of a blanket home grant is open work.
+  - --filesystem=home
+  # NOT yet used by any code change here. This only grants the permission a
+  # flatpak-spawn --host approach would need if the Cowork task sandbox is
+  # rewritten to delegate its bwrap invocation to the host instead of
+  # nesting it inside this sandbox (see flatpak/README.md, "sandbox in
+  # sandbox"). Requesting it now so that fix doesn't also need a manifest
+  # change. Safe to drop if a different approach is taken instead.
+  - --talk-name=org.freedesktop.Flatpak
+
+modules:
+  - name: claude-cowork-linux
+    buildsystem: simple
+
+    sources:
+      # Pinned to the same release nix/package.nix tracks. To bump: run
+      # `node fetch-dmg.js --json` for the current version/url/sha256.
+      # Flathub builds are network-isolated; extra-data is fetched by the
+      # flatpak installer before build-commands run, so it's already on
+      # disk (as dest-filename, in the module's build directory) by the
+      # time this module's build-commands execute — same offline-build
+      # constraint Chrome's and 1Password's Flathub manifests solve the
+      # same way.
+      - type: extra-data
+        filename: claude-desktop.zip
+        url: https://downloads.claude.ai/releases/darwin/universal/1.11187.4/Claude-58400536f3ccde1cff9a129de6c3112dc8cb489a.zip
+        sha256: PLACEHOLDER_SHA256_FROM_fetch-dmg.js
+        size: 0 # PLACEHOLDER — fill from `node fetch-dmg.js --json`
+        only-arches: [x86_64]
+      - type: dir
+        path: ..
+
+    build-commands:
+      # Mirrors nix/package.nix's buildPhase almost verbatim — see that file
+      # for the extract/stub/patch pipeline this reproduces. Kept identical
+      # on purpose so the two packaging paths don't drift into two different
+      # sources of truth for what the tree looks like.
+      - mkdir -p claude-app && unzip -q claude-desktop.zip -d claude-app
+      - |
+        set -e
+        appDir=$(find claude-app -maxdepth 2 -name "*.app" -type d | head -1)
+        [ -n "$appDir" ] || { echo "Claude.app not found in archive" >&2; exit 1; }
+        res="$appDir/Contents/Resources"
+        [ -f "$res/app.asar" ] || { echo "app.asar not found at $res" >&2; exit 1; }
+        tree=tree/linux-app-extracted
+        mkdir -p tree
+        asar extract "$res/app.asar" "$tree"
+        if [ -d "$res/app.asar.unpacked" ]; then
+          cp -r "$res/app.asar.unpacked"/* "$tree/" || true
+        fi
+        mkdir -p "$tree/resources"
+        for item in "$res"/*; do
+          case "$(basename "$item")" in
+            app.asar | app.asar.unpacked) continue ;;
+          esac
+          cp -r "$item" "$tree/resources/" || true
+        done
+        mkdir -p "$tree/resources/i18n"
+        if ls "$tree/resources"/*.json >/dev/null 2>&1; then
+          mv "$tree/resources"/*.json "$tree/resources/i18n/"
+        fi
+        mkdir -p "$tree/node_modules/@ant/claude-swift/js" "$tree/node_modules/@ant/claude-native"
+        cp stubs/@ant/claude-swift/js/index.js "$tree/node_modules/@ant/claude-swift/js/index.js"
+        cp stubs/@ant/claude-native/index.js "$tree/node_modules/@ant/claude-native/index.js"
+        for f in frame-fix-wrapper.js frame-fix-entry.js protocol-forwarder.js; do
+          [ -f "stubs/frame-fix/$f" ] && cp "stubs/frame-fix/$f" "$tree/$f"
+        done
+        mkdir -p "$tree/cowork"
+        cp -f stubs/cowork/*.js "$tree/cowork/"
+        python3 enable-cowork.py "$tree/.vite/build/index.js"
+      - |
+        set -e
+        share=/app/share/claude-cowork-linux
+        mkdir -p "$share"
+        cp -r tree/linux-app-extracted "$share/"
+        cp launch.sh launch-devtools.sh patch-index.sh enable-cowork.py COMPAT.md "$share/"
+        cp -r stubs "$share/"
+        echo "1.11187.4" > "$share/.version"
+        install -Dm755 flatpak/claude-desktop-wrapper.sh /app/bin/claude-desktop
+        install -Dm644 flatpak/io.github.johnzfitch.ClaudeCoworkLinux.desktop \
+          /app/share/applications/io.github.johnzfitch.ClaudeCoworkLinux.desktop
+        install -Dm644 flatpak/io.github.johnzfitch.ClaudeCoworkLinux.metainfo.xml \
+          /app/share/metainfo/io.github.johnzfitch.ClaudeCoworkLinux.metainfo.xml
+        icns="$share/linux-app-extracted/resources/electron.icns"
+        if [ -f "$icns" ]; then
+          python3 nix/extract-icns.py "$icns" /app/share/icons/hicolor && \
+            for f in /app/share/icons/hicolor/*/apps/claude.png; do
+              mv "$f" "$(dirname "$f")/io.github.johnzfitch.ClaudeCoworkLinux.png"
+            done || echo "icon extraction failed (non-fatal)" >&2
+        fi

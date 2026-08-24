@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.johnzfitch.ClaudeCoworkLinux</id>
+  <name>Claude</name>
+  <summary>Run Claude Desktop's Cowork mode natively on Linux</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      Runs Claude Desktop's Cowork (Local Agent Mode) natively on Linux, no
+      macOS or VM required. This is an unofficial compatibility layer: it
+      downloads Anthropic's official macOS build and stubs the macOS-native
+      modules it depends on, it does not modify or redistribute Anthropic's
+      code.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.johnzfitch.ClaudeCoworkLinux.desktop</launchable>
+  <url type="homepage">https://github.com/johnzfitch/claude-cowork-linux</url>
+  <url type="bugtracker">https://github.com/johnzfitch/claude-cowork-linux/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="5.2.0" date="2026-07-02">
+      <description>
+        <p>See COMPAT.md and the GitHub releases page for details.</p>
+      </description>
+    </release>
+  </releases>
+</component>

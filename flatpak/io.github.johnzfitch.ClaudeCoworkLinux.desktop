@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Claude
+Comment=AI assistant by Anthropic (Cowork mode, unofficial Linux packaging)
+Exec=claude-desktop %U
+Icon=io.github.johnzfitch.ClaudeCoworkLinux
+Terminal=false
+Type=Application
+StartupWMClass=Claude
+Categories=Utility;Development;Chat;
+Keywords=AI;assistant;chat;anthropic;
+MimeType=x-scheme-handler/claude;
