@@ -252,6 +252,66 @@ def patch_platform_return_gates(filepath):
     return True
 
 
+# Stop the darwin platform spoof from leaking into a general Linux path-safety
+# check (issue #172).
+#
+# The bundle's automount-root check treats a path as an untrusted "automount
+# root" using one of two regexes, chosen by process.platform:
+#   darwin:        /^\/(net|home)(\/|$)/
+#   everything else: /^\/net(\/|$)/
+# Because this project spoofs process.platform to "darwin" so the Cowork gate
+# returns "supported", this check also sees darwin and applies the macOS
+# rule, which additionally treats anything under /home as an automount root.
+# That's correct on real macOS, where network homes are commonly automounted
+# under /home; on Linux, /home is the normal, non-automounted home hierarchy,
+# so every path under it gets refused as "a protected location" instead.
+#
+# Confirmed on 1.26832.0 to be reachable from Cowork's attach-folder
+# enumeration (every subfolder of $HOME is checked against this and, today,
+# refused) via a { refuseSubstitutedPath: <this function> } option passed to
+# the shared path resolver, and is the most likely mechanism behind #172's
+# report that MCP tool-result files under ~/.claude and local-agent-mode
+# session outputs get rejected the same way.
+#
+# The fix forces the non-darwin regex unconditionally: this compat layer only
+# ever runs on real Linux, so there is no case where the darwin branch should
+# apply here regardless of the spoof. /net stays refused either way -- this
+# doesn't weaken the check or bypass any resolver, it corrects which
+# platform's rule the existing check evaluates.
+AUTOMOUNT_DARWIN_BRANCH = re.escape('?/^\\/(net|home)(\\/|$)/:')
+AUTOMOUNT_LINUX_BRANCH = re.escape('/^\\/net(\\/|$)/')
+AUTOMOUNT_DARWIN_LEAK_RE = re.compile(
+    r'process\.platform===' + Q + r'darwin' + Q +
+    AUTOMOUNT_DARWIN_BRANCH + r'(' + AUTOMOUNT_LINUX_BRANCH + r')'
+)
+AUTOMOUNT_DARWIN_LEAK_MARKER = '/*cowork-automount-patched*/'
+
+
+def patch_automount_darwin_leak(filepath):
+    """Stop the darwin platform spoof from making the automount-root check
+    treat every path under /home as untrusted (issue #172)."""
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    if AUTOMOUNT_DARWIN_LEAK_MARKER in content:
+        print(f"  Automount-root check: already patched")
+        return True
+
+    match = AUTOMOUNT_DARWIN_LEAK_RE.search(content)
+    if not match:
+        print(f"  Automount-root check: no matching site found")
+        return True
+
+    content = content[:match.start()] + match.group(1) + content[match.end():]
+    content += AUTOMOUNT_DARWIN_LEAK_MARKER
+
+    with open(filepath, 'w') as f:
+        f.write(content)
+
+    print(f"  Automount-root check patched: darwin branch no longer treats /home as an automount root")
+    return True
+
+
 def _warn_if_unparseable(filepath):
     """Warn loudly if the patched file is no longer valid JavaScript.
 
@@ -297,6 +357,7 @@ if __name__ == "__main__":
     patch_host_platform(target)
     patch_ipc_origin_guards(target)
     patch_platform_return_gates(target)
+    patch_automount_darwin_leak(target)
 
     # Every pass above is a regex substitution into minified JS, so a pattern
     # that matches slightly more or less than intended produces a file that is
