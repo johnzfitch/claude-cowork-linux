@@ -602,6 +602,45 @@ function coworkSpaceRoute(targetUrl) {
   }
 }
 
+// Issue #174: the welcome screen's heading picks its platform word from the
+// darwin spoof we present to the Cowork gate, so signed-out Linux users see
+// "Claude for Mac". Un-spoofing isn't an option -- that's the whole
+// mechanism -- so this rewrites the rendered text node in place: strike
+// through "Mac" (U+0336 combining overlay, so it's a plain string survives
+// minifier rotation) and append "Linux". A MutationObserver reapplies it
+// across SPA navigation since the heading can remount.
+function buildMacLinuxRewriteScript() {
+  return [
+    '(function(){',
+    '  try {',
+    '    var STRIKE = "\\u0336";',
+    '    function struck(s) { return s.split("").join(STRIKE) + STRIKE; }',
+    '    function rewrite() {',
+    '      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);',
+    '      var node;',
+    '      while ((node = walker.nextNode())) {',
+    '        if (node.nodeValue !== "Mac") continue;',
+    '        var el = node.parentElement, depth = 0;',
+    '        while (el && depth < 5) {',
+    '          if (el.textContent && el.textContent.trim() === "Claude for Mac") {',
+    '            node.nodeValue = struck("Mac") + " Linux";',
+    '            break;',
+    '          }',
+    '          el = el.parentElement;',
+    '          depth++;',
+    '        }',
+    '      }',
+    '    }',
+    '    rewrite();',
+    '    if (!window.__coworkMacLinuxObserver) {',
+    '      window.__coworkMacLinuxObserver = new MutationObserver(rewrite);',
+    '      window.__coworkMacLinuxObserver.observe(document.body, { childList: true, subtree: true, characterData: true });',
+    '    }',
+    '  } catch (e) {}',
+    '})();',
+  ].join('\n');
+}
+
 // Build the JS injected into the renderer to perform client-side navigation.
 // The route is JSON-encoded (never string-concatenated raw) so a hostile space
 // name/URL cannot break out of the string literal into executable code.
@@ -1428,9 +1467,11 @@ Module.prototype.require = function(id) {
         _appRef.on('web-contents-created', (_ev, contents) => {
           contents.on('dom-ready', () => {
             contents.insertCSS(_fixCSS).catch(() => {});
+            contents.executeJavaScript(buildMacLinuxRewriteScript()).catch(() => {});
           });
           contents.on('did-navigate', () => {
             contents.insertCSS(_fixCSS).catch(() => {});
+            contents.executeJavaScript(buildMacLinuxRewriteScript()).catch(() => {});
           });
           // Issue #147: convert a full-page navigation to a locally-created
           // Cowork space into an in-app SPA route change, so it loads from IPC
