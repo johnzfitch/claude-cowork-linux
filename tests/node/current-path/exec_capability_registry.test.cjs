@@ -222,6 +222,32 @@ describe('exec_capability_registry', () => {
         assert.deepStrictEqual(result.rest, ['-p', 'hi']);
       });
 
+      it('resolves a claude path passed with a leading -- separator (Code tab / HostCLIRunner)', () => {
+        // HostCLIRunner (Code tab) invokes the wrapper as
+        // `disclaimer -- <cmd> <args...>` -- a leading `--` with no command
+        // in args[0]. Before this fix, cmd read args[0] unconditionally, saw
+        // the literal string "--", matched neither the claude.app regex nor
+        // the basename check, and fell through to the exit-127 stub on every
+        // Code-tab session -- same failure mode as #132, a different argv
+        // shape at a different call site.
+        const reg = createExecCapabilityRegistry({
+          homedir: os.homedir(),
+          resolveClaudeBinaryPath: () => '/usr/local/bin/claude',
+        });
+        const result = reg.resolveDisclaimerCommand([
+          '--',
+          '/home/u/.config/Claude/claude-code/2.1.246/claude.app/Contents/MacOS/claude',
+        ]);
+        assert.ok(result, 'a leading -- must be skipped, not treated as the command');
+        assert.strictEqual(result.cmd, '/usr/local/bin/claude');
+        assert.deepStrictEqual(result.rest, []);
+      });
+
+      it('rejects a bare -- with no following command', () => {
+        const result = registry.resolveDisclaimerCommand(['--']);
+        assert.strictEqual(result, null);
+      });
+
       // Why the wrap/unwrap round-trip is kept rather than patched out of the
       // bundle. The asar sets pathToClaudeCodeExecutable from Ql({cmd:r}): with
       // the wrap it is the disclaimer binary and r rides in argv, so this unwrap

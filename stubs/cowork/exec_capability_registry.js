@@ -246,8 +246,16 @@ function createExecCapabilityRegistry({
   // agrees with resolve() for every class is what keeps that true.
   function resolveDisclaimerCommand(args) {
     if (!Array.isArray(args) || args.length === 0) return null;
-    var cmd = args[0];
-    var rest = args.slice(1);
+    // Some call sites (e.g. HostCLIRunner/Code tab) invoke the wrapper as
+    // `disclaimer -- <cmd> <args...>`, a leading `--` separator with no
+    // command in args[0]. Skip it before reading the command, or cmd becomes
+    // the literal string "--", which matches nothing below and falls through
+    // to the exit-127 stub -- the same failure mode as #132 but for this
+    // callsite's argv shape instead of the path shape.
+    var offset = args[0] === '--' ? 1 : 0;
+    var cmd = args[offset];
+    var rest = args.slice(offset + 1);
+    if (cmd === undefined) return null;
     // The asar invokes the Claude CLI through the disclaimer wrapper using
     // whatever path it chose -- a macOS-style claude.app/.../Claude path, or
     // the SDK path it installed (claude-code-vm/<ver>/claude), or a native
