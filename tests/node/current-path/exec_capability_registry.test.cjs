@@ -251,6 +251,33 @@ describe('exec_capability_registry', () => {
         }
       });
 
+      // Regression for the asar >= ~1.40609.0 arg shape: the bundle now calls
+      // the wrapper as `disclaimer -- <cmd> [args...]`. Reading args[0] blindly
+      // made cmd "--", which realpath cannot resolve, so the unwrap returned
+      // null and the exit-127 stub ran: #132's failure mode with a new shape.
+      it('unwraps the `--` separator without widening admission', () => {
+        const reg = createExecCapabilityRegistry({
+          homedir: os.homedir(),
+          resolveClaudeBinaryPath: () => '/usr/local/bin/claude',
+        });
+
+        const result = reg.resolveDisclaimerCommand([
+          '--',
+          '/home/u/.config/Claude/claude-code/2.1.247/claude.app/Contents/MacOS/claude',
+          '-p', 'hi',
+        ]);
+        assert.ok(result, 'a separated call must unwrap, not fall through to the stub');
+        assert.strictEqual(result.cmd, '/usr/local/bin/claude');
+        assert.deepStrictEqual(result.rest, ['-p', 'hi'],
+          'the separator is consumed, not forwarded to the binary');
+
+        // Admission is still delegated: the separator changes where the command
+        // is read from, not what is allowed to run.
+        assert.strictEqual(
+          reg.resolveDisclaimerCommand(['--', '/opt/evil/hack', '--rm-rf']), null);
+        assert.strictEqual(reg.resolveDisclaimerCommand(['--']), null);
+      });
+
       it('resolves system binary commands', (t) => {
         const git = ['/usr/bin/git', '/usr/local/bin/git'].find(p => fs.existsSync(p));
         if (!git) return t.skip('no git at any SYSTEM_PATHS location');
