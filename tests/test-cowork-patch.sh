@@ -75,6 +75,8 @@ function wrapSpawn(t){return process.platform!=="darwin"?t:{cmd:rpt(),args:[t.cm
 const res=kk.app.isPackaged?process.resourcesPath:someFallback;
 const host=kk.app.isPackaged?jn.join(process.resourcesPath,"app.asar","mcp-runtime","nodeHost.js"):jn.join(kk.app.getAppPath(),"nodeHost.js");
 function Ce(e){let t=process.platform==="darwin"?/^\/(net|home)(\/|$)/:/^\/net(\/|$)/;return[e,F(e)].filter(x=>x!==null).some(x=>t.test(S(x)))}
+async function mkSock(u,o){if(o?.forceWs||!fJ9()){return new WsTr(new sw.default(u))}return new NetTr(new q7.net.WebSocket(u))}
+class BridgeConn{wantedTransport(){return fJ9()&&!this.forceWsTransport?"net":"ws"}}
 EOF
 }
 
@@ -107,6 +109,8 @@ const res=T.app.isPackaged?process.resourcesPath:someFallback;
 function c(e,t){let n=i.app.isPackaged?r.default.join(process.resourcesPath,`app.asar`):i.app.getAppPath();return r.default.join(n,`.vite`)}
 function v(){return o.default.join(process.resourcesPath,`app.asar`,`.vite`,`build`,`shell-path-worker`,`shellPathWorker.js`)}
 function Ce(e){let t=process.platform===`darwin`?/^\/(net|home)(\/|$)/:/^\/net(\/|$)/;return[e,F(e)].filter(x=>x!==null).some(x=>t.test(S(x)))}
+async function mkSock(u,o){if(o?.forceWs||!fJ9()){return new WsTr(new sw.default(u))}return new NetTr(new q7.net.WebSocket(u))}
+class BridgeConn{wantedTransport(){return fJ9()&&!this.forceWsTransport?`net`:`ws`}}
 EOF
 }
 
@@ -210,10 +214,10 @@ if [[ ! -f "$SHARED" ]]; then
 else
   pass "patch-index.sh exists at repo root"
   NPASSES="$(grep -c '^  patch_index "' "$SHARED" || true)"
-  if [[ "${NPASSES:-0}" -lt 9 ]]; then
-    fail "patch-index.sh defines all 9 passes (found $NPASSES)"
+  if [[ "${NPASSES:-0}" -lt 11 ]]; then
+    fail "patch-index.sh defines all 11 passes (found $NPASSES)"
   else
-    pass "patch-index.sh defines all 9 passes ($NPASSES)"
+    pass "patch-index.sh defines all 11 passes ($NPASSES)"
   fi
 
   LBUILD="$TMP/shared_build"
@@ -229,6 +233,16 @@ else
   assert_grep "$LCHUNK" '\(mB\.app\.setUserActivity\|\|function\(\)\{\}\)\)\(qq,'          "Handoff setUserActivity no-op fallback"
   refute_grep "$LCHUNK" 'kk\.app\.isPackaged\?process\.resourcesPath:' "resourcesPath fallback forced"
   assert_grep "$LCHUNK" 'kk\.app\.isPackaged\?jn\.join\(kk\.app\.getAppPath\(\),"mcp-runtime"' "MCP node-host uses getAppPath()"
+  # Bridge transport: the net.WebSocket path throws on any Electron without that
+  # constructor, and the guard is a capability test rather than an override --
+  # where it exists the flag still decides. Both sites must agree, or the
+  # flag-change subscription re-applies the flag over the factory's choice.
+  assert_grep "$LCHUNK" '\?\.forceWs\|\|!fJ9\(\)\|\|typeof require\("electron"\)\.net\.WebSocket!="function"\)\{' \
+              "bridge factory falls back to ws when net.WebSocket is absent"
+  assert_grep "$LCHUNK" 'fJ9\(\)&&typeof require\("electron"\)\.net\.WebSocket=="function"&&!this\.forceWsTransport' \
+              "bridge wantedTransport() gated on the same capability"
+  refute_grep "$LCHUNK" '\?\.forceWs\|\|!fJ9\(\)\)\{'          "bridge factory: unguarded net.WebSocket shape gone"
+  refute_grep "$LCHUNK" 'fJ9\(\)&&!this\.forceWsTransport'        "bridge wantedTransport: ungated shape gone"
   # The disclaimer wrap site must survive patching untouched. Neutralising it to
   # the asar's non-darwin (identity) branch is a tempting simplification -- it
   # removes the wrap/unwrap round-trip -- but that wrap is the only chokepoint
@@ -581,6 +595,10 @@ if [[ -f "$SHARED" ]]; then
   assert_grep "$BTL" 'shell-path-worker'                  "backtick: shellPathWorker site still resolves a path"
   assert_grep "$BTL" 'function wrapSpawn\(t\)\{return process\.platform!==`darwin`\?t:\{cmd:rpt\(\)' \
               "backtick: disclaimer wrap site left intact (#132)"
+  assert_grep "$BTL" '\?\.forceWs\|\|!fJ9\(\)\|\|typeof require\("electron"\)\.net\.WebSocket!="function"\)\{' \
+              "backtick: bridge factory falls back to ws when net.WebSocket is absent"
+  assert_grep "$BTL" 'fJ9\(\)&&typeof require\("electron"\)\.net\.WebSocket=="function"&&!this\.forceWsTransport' \
+              "backtick: bridge wantedTransport() gated on the same capability"
   assert_parses "$BTL" "backtick: chunk parses after the shared passes"
 fi
 

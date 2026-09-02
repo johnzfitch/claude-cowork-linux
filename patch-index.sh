@@ -257,6 +257,53 @@ patch_index_apply_all() {
     'process\.resourcesPath,["`]app\.asar["`]' \
     's/process\.resourcesPath,["`]app\.asar["`]/require("electron").app.getAppPath()/g'
 
+  # Fix the Claude-in-Chrome / remote-control bridge transport on Electron builds
+  # that have no net.WebSocket.
+  #
+  # The bridge picks between Electron's net.WebSocket and the bundled `ws`
+  # package, behind a remote feature flag. With the flag on it takes the
+  # net.WebSocket path -- but electron.net.WebSocket does not exist in every
+  # Electron (Electron 42.1.0 exposes no WebSocket on the net module at all), and
+  # the constructor call then throws synchronously:
+  #
+  #   [bridge-ws] using net.WebSocket transport for wss://bridge.claudeusercontent.com/chrome/<uuid>
+  #   [claude-in-chrome] Failed to create WebSocket after 21ms: o.net.WebSocket is not a constructor
+  #   [claude-in-chrome] Giving up bridge reconnection after 100 attempts
+  #
+  # The visible symptom is a Chrome extension that never pairs with the desktop
+  # app, which reads as an extension or sign-in problem. It is neither: the
+  # failure is 21ms in, before any network I/O.
+  #
+  # This is a CAPABILITY TEST, not an override. Where net.WebSocket exists the
+  # condition is unchanged and the flag still decides, so builds on a newer or
+  # patched Electron behave exactly as upstream intends; only builds that would
+  # have thrown fall through to the `ws` transport the same code already uses
+  # whenever the flag is off or forceWs is set. That path is also the more
+  # capable one -- it is the only transport implementing protocol ping, and the
+  # bundle already falls back to it at runtime when the peer requires ping.
+  #
+  # Two sites, and both are needed: the factory decides which socket is built,
+  # while wantedTransport() reports which one is wanted and is re-consulted by
+  # the flag-change subscription. Patching only the factory leaves the two
+  # disagreeing, and the subscription re-applies the flag on top.
+  #
+  # Anchored on the forceWs / forceWsTransport property names, never on the flag
+  # id or the minified gate identifier: property names survive minification, and
+  # the flag id is Anthropic's to rotate. require() lazily, per the note on the
+  # unguarded resourcesPath pass -- these are CJS chunks and no minified electron
+  # binding is guaranteed to be in scope here.
+  #
+  # Both guards match the unpatched shape only, so re-runs are no-ops: the
+  # factory guard requires the condition to be immediately followed by `){`,
+  # and the wantedTransport guard requires `<ident>()` directly before the
+  # `&&!this.forceWsTransport`. After patching neither holds.
+  patch_index "Patching bridge transport to fall back to ws when net.WebSocket is absent..." \
+    '\?\.forceWs\|\|![A-Za-z0-9_$]+\(\)\)\{' \
+    's/(\?\.forceWs\|\|![A-Za-z0-9_$]+\(\))\)\{/\1||typeof require("electron").net.WebSocket!="function"){/g'
+  patch_index "Patching bridge wantedTransport() to match the net.WebSocket capability..." \
+    '[A-Za-z0-9_$]+\(\)&&!this\.forceWsTransport' \
+    's/([A-Za-z0-9_$]+\(\))&&!this\.forceWsTransport/\1\&\&typeof require("electron").net.WebSocket=="function"\&\&!this.forceWsTransport/g'
+
   # Fix preload origin validation: the mainView.js preload's h() guard checks
   # if window.location.href origin matches claude.ai/preview.claude.ai etc.
   # On Linux with file:// protocol, origin is "null" and h() returns false,
