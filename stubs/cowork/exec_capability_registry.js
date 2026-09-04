@@ -246,8 +246,15 @@ function createExecCapabilityRegistry({
   // agrees with resolve() for every class is what keeps that true.
   function resolveDisclaimerCommand(args) {
     if (!Array.isArray(args) || args.length === 0) return null;
-    var cmd = args[0];
-    var rest = args.slice(1);
+    // Newer bundles (asar >= ~1.40609.0) invoke the wrapper as
+    // `disclaimer -- <cmd> [args...]`; older ones passed `<cmd> [args...]`.
+    // Without this, cmd is "--", realpath fails, and the caller falls through
+    // to the exit-127 disclaimer stub: #132's failure mode, new arg shape.
+    // Parsing only -- admission stays delegated to resolveClaudeCli()/resolve().
+    var argv = (args[0] === '--') ? args.slice(1) : args;
+    if (argv.length === 0) return null;
+    var cmd = argv[0];
+    var rest = argv.slice(1);
     // The asar invokes the Claude CLI through the disclaimer wrapper using
     // whatever path it chose -- a macOS-style claude.app/.../Claude path, or
     // the SDK path it installed (claude-code-vm/<ver>/claude), or a native

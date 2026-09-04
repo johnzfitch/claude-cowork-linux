@@ -213,7 +213,7 @@ find ~/.config/Claude/local-agent-mode-sessions/ -name "*.jsonl" -path "*project
 <details>
 <summary><strong>Code tab: exit code 126 / binary not executable</strong></summary>
 
-The asar downloads a macOS Mach-O binary to `~/.config/Claude/claude-code/<version>/claude`. `launch.sh` detects this and replaces it with a symlink to your Linux Claude binary.
+The asar downloads a macOS Mach-O binary to `~/.config/Claude/claude-code/<version>/claude`. `launch.sh` detects this and replaces it with a copy of your Linux Claude binary (a copy rather than a symlink, so the path resolver only ever sees a real binary).
 
 If the fix didn't apply:
 ```bash
@@ -225,10 +225,30 @@ LINUX_CLAUDE=$(which claude)
 for bin in ~/.config/Claude/claude-code/*/claude; do
   if file "$bin" | grep -q "Mach-O"; then
     mv "$bin" "${bin}.macho-backup"
-    ln -s "$(readlink -f "$LINUX_CLAUDE")" "$bin"
+    cp "$(readlink -f "$LINUX_CLAUDE")" "$bin"
   fi
 done
 ```
+
+</details>
+
+<details>
+<summary><strong>"Claude Code crashed" on every message / exit code 127 (asar 1.40609.0+)</strong></summary>
+
+**Log**: `startup.log` shows `[exec-capability] BLOCKED (unresolvable): --`, then
+`Claude Code process exited with code 127` a few milliseconds after spawn.
+
+From asar 1.40609.0 the bundle invokes the disclaimer wrapper as
+`disclaimer -- <cmd> [args...]`. Ports before #186 read the command from the
+first argument, saw `--`, could not resolve it, and fell through to the
+fail-closed disclaimer stub, which exits 127 by design (#185).
+
+Update the port and relaunch (`claude-desktop --update`, or `git pull` and
+`bash install.sh --force` from the install directory, as in the README's
+Recovery section). The `Fix Code tab binary` step in `launch.sh` is not the
+lever here: it only matches the flat `claude-code/<version>/claude` layout,
+and the bundle re-downloads the macOS binary at session start anyway. The
+unwrap in `stubs/cowork/exec_capability_registry.js` is what has to work.
 
 </details>
 
@@ -336,7 +356,30 @@ Stock WSL2 has no Secret Service, so Electron's `safeStorage` falls back to the 
 
 **Message**: `[Chrome Extension MCP] Skipping native host setup: binary not found`
 
-This is harmless. The Chrome Extension native messaging host binary is only built for macOS/Windows. Use MCP servers instead. See [extensions.md](extensions.md).
+This is harmless. The Chrome Extension native messaging host binary is only built for macOS/Windows. Newer bundles pair the Claude in Chrome extension over a WebSocket bridge instead of that native host, and that path does work on Linux once the bridge transport passes are applied -- see the next entry. Otherwise use MCP servers instead. See [extensions.md](extensions.md).
+
+</details>
+
+<details>
+<summary><strong>Claude in Chrome never pairs: "o.net.WebSocket is not a constructor"</strong></summary>
+
+**Log**: `startup.log` shows
+`[bridge-ws] using net.WebSocket transport for wss://bridge.claudeusercontent.com/chrome/<uuid>`,
+then `[claude-in-chrome] Failed to create WebSocket after 21ms: o.net.WebSocket is not a constructor`,
+and eventually `Giving up bridge reconnection after 100 attempts`.
+
+The desktop app chooses between Electron's `net.WebSocket` and the bundled
+`ws` package behind a remote feature flag. Electron 42.1.0, the version this
+port installs, has no `net.WebSocket`, so the constructor call throws before
+any network I/O. The in-app assistant tends to report this as the extension
+being signed out; re-authenticating in the side panel cannot fix it.
+
+Two `patch-index.sh` passes (#187) test for `net.WebSocket` and fall back to
+`ws` when it is absent; where it exists the flag still decides. Update the
+port and relaunch: the launcher re-applies the passes to the extracted tree
+and repacks `app.asar` whenever anything in it changed. If the log still says
+`using net.WebSocket transport` afterwards, the pass did not match your
+bundle -- run `claude-desktop --doctor` and open an issue with the asar version.
 
 </details>
 
