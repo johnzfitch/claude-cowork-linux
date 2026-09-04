@@ -74,6 +74,13 @@ After adding this, restart Claude Desktop. The filesystem tools will appear in y
 
 ## Chrome Extension (Not Yet Supported)
 
+> **Update (asar 1.30096.5, #187):** newer bundles pair the Claude in Chrome
+> extension over a WebSocket bridge (`bridge.claudeusercontent.com`) rather
+> than the native messaging host described below, and that path is reported
+> working end to end on Linux once the bridge transport passes in
+> `patch-index.sh` are applied. See the FAQ entry "Claude in Chrome never
+> pairs". The material below describes the older native-host mechanism.
+
 ### What is it?
 
 The Chrome Extension integration allows Claude to:
