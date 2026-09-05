@@ -157,7 +157,12 @@ async function defaultFileMode(basePath) {
   // keeps 0600. Unreadable root -> fail closed at 0600.
   try {
     const st = await fs.promises.stat(basePath);
-    return (st.mode & 0o077) === 0 ? 0o600 : 0o666;
+    // 0o664, not 0o666: the umask normally clears the world-write bit anyway,
+    // but under a 0000 umask it would survive. Ordinary programs hand it out
+    // there; this path writes on behalf of a remote peer, so withhold it. The
+    // root is only read as a yes/no signal here — its bits are never copied,
+    // so a 0777 root still yields 0664 under a 0002 umask, not 0777.
+    return (st.mode & 0o077) === 0 ? 0o600 : 0o664;
   } catch (_) {
     return 0o600;
   }

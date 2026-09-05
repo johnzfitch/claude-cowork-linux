@@ -300,3 +300,22 @@ test('the app default 0600 is kept in a private root', async (t) => {
   assert.equal((fs.statSync(path.join(root, 'state.json')).mode & 0o777).toString(8), '600',
     'app-private data stays private');
 });
+
+// A permissive umask is the one case where the derived default could hand out
+// world-write: 0666 & ~0000 is 0666. That is what every ordinary program does
+// too, but this path writes files on behalf of a remote peer, so the bit is
+// cheap to withhold. Raised in review of the upstream PR (2026-09-05).
+test('a new file never becomes world-writable, whatever the umask', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o777);
+  const prev = process.umask(0o000);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['loose.txt'], 'w', 0o600);
+  fs.closeSync(fd);
+
+  const mode = fs.statSync(path.join(root, 'loose.txt')).mode & 0o777;
+  assert.equal(mode & 0o002, 0, 'world-write must never be granted');
+  assert.equal(mode.toString(8), '664');
+});
