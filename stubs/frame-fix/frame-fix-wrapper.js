@@ -30,6 +30,12 @@ if (typeof systemPreferences.getUserDefault !== 'function') {
     return undefined;
   };
 }
+if (typeof systemPreferences.registerDefaults !== 'function') {
+  systemPreferences.registerDefaults = function(defaults) {
+    // no-op on Linux — NSUserDefaults registration domain has no equivalent.
+    // Kept consistent with getUserDefault() above, which returns undefined.
+  };
+}
 if (typeof systemPreferences.promptTouchID !== 'function') {
   systemPreferences.promptTouchID = function(reason) {
     return Promise.reject(new Error('Touch ID unavailable on Linux'));
@@ -52,6 +58,12 @@ if (_earlyApp) {
     // WebAuthn (passkey/security-key) setup is macOS-only; absent on Linux
     // Electron, so the darwin-gated callsite throws and crashes launch. See #128.
     'configureWebAuthn',
+    // App-wide hide/show is an NSApplication concept: @platform darwin in
+    // Electron's typings, absent on Linux. Linux has per-window minimize, not
+    // an application-level hidden state, so these are no-ops and isHidden()
+    // below reports "not hidden" to match.
+    'hide',
+    'show',
   ];
   for (const _m of _macOnlyAppMethods) {
     if (typeof _earlyApp[_m] !== 'function') {
@@ -62,6 +74,14 @@ if (_earlyApp) {
   // by a confirm dialog but stub it defensively so a stray call can't crash.
   if (typeof _earlyApp.moveToApplicationsFolder !== 'function') {
     _earlyApp.moveToApplicationsFolder = function() { return false; };
+  }
+
+  // isHidden() is the reader for the hide/show pair stubbed above. It returns a
+  // boolean rather than nothing, so it cannot go in the no-op list: a caller
+  // that branches on it would read undefined. Seen 2026-09-05 as
+  // "TypeError: o.app.isHidden is not a function" from a BrowserWindow handler.
+  if (typeof _earlyApp.isHidden !== 'function') {
+    _earlyApp.isHidden = function() { return false; };
   }
 }
 
@@ -1667,6 +1687,9 @@ Module.prototype.require = function(id) {
       module.systemPreferences.getUserDefault = function(key, type) {
         console.log('[Frame Fix] Stubbed systemPreferences.getUserDefault:', key);
         return undefined;
+      };
+      module.systemPreferences.registerDefaults = function(defaults) {
+        console.log('[Frame Fix] Stubbed systemPreferences.registerDefaults');
       };
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }

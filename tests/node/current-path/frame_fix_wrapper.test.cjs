@@ -520,3 +520,34 @@ test('a non-object payload is never broadcast', () => {
   for (const bad of [null, undefined, 'x', 42]) ctx.emitCoworkSpaceEvent(bad);
   assert.equal(sent.length, 0);
 });
+
+// The port spoofs process.platform === "darwin", so the asar reaches callsites
+// gated on macOS. app.hide/show/isHidden are all @platform darwin in Electron's
+// own typings and simply absent on Linux, so such a call throws. Observed
+// 2026-09-05 after a restart: "TypeError: o.app.isHidden is not a function",
+// caught by Sentry from a BrowserWindow handler. Same class as the
+// NSUserActivity stubs above (#104, #106).
+test('the wrapper stubs the macOS-only app visibility methods Linux Electron lacks', () => {
+  const wrapperPath = path.join(__dirname, '../../../stubs/frame-fix/frame-fix-wrapper.js');
+  const src = fs.readFileSync(wrapperPath, 'utf8');
+  const start = src.indexOf("const { systemPreferences, app: _earlyApp } = require('electron');");
+  const end = src.indexOf('// Inject frame fix and Cowork support before main app loads');
+  assert.ok(start !== -1 && end > start, 'early stub block not found — did the wrapper header move?');
+
+  // A Linux Electron app object: none of the darwin-only methods exist.
+  const app = {};
+  const systemPreferences = {};
+  const ctx = {
+    require: (id) => (id === 'electron' ? { systemPreferences, app } : require(id)),
+    process,
+    console,
+  };
+  vm.runInNewContext(src.slice(start, end), ctx);
+
+  assert.equal(typeof app.isHidden, 'function', 'isHidden must exist');
+  assert.equal(app.isHidden(), false, 'nothing is hidden app-wide on Linux');
+  assert.equal(typeof app.hide, 'function', 'hide must exist');
+  assert.equal(typeof app.show, 'function', 'show must exist');
+  assert.equal(app.hide(), undefined);
+  assert.equal(app.show(), undefined);
+});
