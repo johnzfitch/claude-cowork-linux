@@ -238,3 +238,65 @@ test('renaming onto a free name keeps the source permissions', async (t) => {
   await safeFs.renameBeneath(h, ['quelle.txt'], ['ziel.txt']);
   assert.equal((fs.statSync(path.join(root, 'ziel.txt')).mode & 0o777).toString(8), '640');
 });
+// Regression: newly created files came out 0600 regardless of where they were
+// written, because the stub hardcoded the native module's `?? 384` default.
+// In a normal work folder (0775, neighbours 0664) a bridge-written file landed
+// as 0600 and stood out from every file around it (owner report 2026-09-05);
+// the same app writing through bash produced 0664, so one app produced two
+// permission regimes. Files must not be more accessible than the directory
+// holding them, and no less accessible either: a private root (0700, e.g. the
+// app's own data dir) still gets 0600.
+test('a new file in a group-readable root follows the umask, not a hardcoded 0600', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['written.txt'], 'w');
+  fs.closeSync(fd);
+
+  const mode = fs.statSync(path.join(root, 'written.txt')).mode & 0o777;
+  assert.equal(mode.toString(8), '664', 'should match 0666 & ~umask, like its neighbours');
+});
+test('a new file in a private root (0700) stays 0600', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o700);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['secret.json'], 'w');
+  fs.closeSync(fd);
+
+  const mode = fs.statSync(path.join(root, 'secret.json')).mode & 0o777;
+  assert.equal(mode.toString(8), '600', 'app-private data must not be loosened');
+});
+// --- Option B: the app's own 0600 default must not win in a shared folder ---
+// writeFileAtomic() resolves `n?.mode ?? 384` and hd() resolves `r ?? 384`
+// again, so 0600 reaches us as an explicit argument and is indistinguishable
+// from "the caller expressed no preference". In a group-accessible root that is
+// almost certainly not a deliberate choice; in a private root it is kept.
+test('the app default 0600 is relaxed to the umask default in a shared root', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['neu.md'], 'w', 0o600);
+  fs.closeSync(fd);
+  assert.equal((fs.statSync(path.join(root, 'neu.md')).mode & 0o777).toString(8), '664');
+});
+test('the app default 0600 is kept in a private root', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o700);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['state.json'], 'w', 0o600);
+  fs.closeSync(fd);
+  assert.equal((fs.statSync(path.join(root, 'state.json')).mode & 0o777).toString(8), '600',
+    'app-private data stays private');
+});

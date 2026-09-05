@@ -146,6 +146,23 @@ function numericFlags(flags) {
   throw denied('safe-fs: unsupported open flags: ' + String(flags));
 }
 
+async function defaultFileMode(basePath) {
+  // The native module defaults to 0600 (`?? 384`). That is right for the app's
+  // own data directory (0700), but wrong for a user's work folder: a
+  // bridge-written file landed as 0600 among 0664 neighbours, while the same
+  // app writing through bash produced 0664 — one app, two permission regimes.
+  // Derive it from the root instead, so a file is neither more nor less
+  // accessible than the directory tree holding it. Any group/other bit on the
+  // root means a shared location -> the usual 0666 & ~umask; a private root
+  // keeps 0600. Unreadable root -> fail closed at 0600.
+  try {
+    const st = await fs.promises.stat(basePath);
+    return (st.mode & 0o077) === 0 ? 0o600 : 0o666;
+  } catch (_) {
+    return 0o600;
+  }
+}
+
 function openFd(target, nflags, fmode) {
   // fs.open's callback form yields a raw numeric fd. Deliberately NOT
   // fs.promises.open().fd: that would leave a FileHandle whose finalizer closes
@@ -164,7 +181,8 @@ async function openBeneath(root, segments, flags, mode) {
   // fs.fstat, fs.fsync, fs.ftruncate, fs.fchmod — each of which validates fd as
   // an int32. Handing back an fs.promises FileHandle made every one of those
   // throw ERR_INVALID_ARG_TYPE, which broke bridge file transfers (#file-commit).
-  // Mode defaults to 0o600 to match the native call's `?? 384`.
+  // Mode is derived from the root when the caller passes none or the app's
+  // own 0600 default (see defaultFileMode); any other explicit mode wins.
   //
   // O_NOFOLLOW on the final component. resolveBeneath's ancestor realpath
   // cannot see through a *dangling* symlink: existsSync() is false for a
@@ -175,7 +193,12 @@ async function openBeneath(root, segments, flags, mode) {
   const base = rootPathOf(root);
   const target = resolveBeneath(root, segments);
   const nflags = numericFlags(flags);
-  const fmode = mode == null ? 0o600 : mode;
+  // 0o600 is treated as "no preference": the app resolves its own `?? 384`
+  // twice (writeFileAtomic, then hd) before calling us, so a deliberate 0600
+  // and an unset mode are indistinguishable here. defaultFileMode keeps 0600
+  // in a private root and relaxes it only in a group/other-accessible one.
+  // Every other explicit mode (0o640, 0o644, ...) is passed through untouched.
+  const fmode = (mode == null || mode === 0o600) ? await defaultFileMode(base) : mode;
   try {
     return await openFd(target, nflags | fs.constants.O_NOFOLLOW, fmode);
   } catch (e) {
