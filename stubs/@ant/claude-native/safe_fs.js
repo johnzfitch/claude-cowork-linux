@@ -151,10 +151,18 @@ async function defaultFileMode(basePath) {
   // own data directory (0700), but wrong for a user's work folder: a
   // bridge-written file landed as 0600 among 0664 neighbours, while the same
   // app writing through bash produced 0664 — one app, two permission regimes.
-  // Derive it from the root instead, so a file is neither more nor less
-  // accessible than the directory tree holding it. Any group/other bit on the
-  // root means a shared location -> the usual 0666 & ~umask; a private root
-  // keeps 0600. Unreadable root -> fail closed at 0600.
+  // Derive it from the ROOT instead — the directory openRootDir() was called
+  // with, not the file's immediate parent. Any group/other bit on the root
+  // means a shared location; a private root keeps 0600; an unreadable root
+  // fails closed at 0600.
+  //
+  // Consequence worth knowing: a private SUBdirectory inside a shared root
+  // still gets shared-location files (a 0700 subdir under a 0775 root yields
+  // 0664). The subdirectory still denies access, so nothing leaks — but the
+  // files are not themselves private. Using the immediate parent would be
+  // more precise and less predictable: the same operation would produce
+  // different modes depending on where it lands, and it costs a stat per
+  // path. The root is one stat and one rule for the whole tree.
   try {
     const st = await fs.promises.stat(basePath);
     // 0o664, not 0o666: the umask normally clears the world-write bit anyway,
