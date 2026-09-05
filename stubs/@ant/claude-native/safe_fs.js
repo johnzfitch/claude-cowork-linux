@@ -11,9 +11,9 @@
 // existing-ancestor realpath) — the same defense spaces_store uses. It is
 // marginally more TOCTOU-exposed than the native openat2, but fail-closed: any
 // segment that could escape the root throws EACCES rather than proceeding.
-// Actual byte I/O is delegated to Node's fs.promises FileHandle, whose
-// read(buffer, offset, length, position) / write / stat / close / sync /
-// truncate signatures are exactly what the caller drives.
+// openBeneath hands back a raw numeric fd, matching the native module: the
+// caller stores that value and drives it through the node:fs callback API
+// (write / read / fstat / fsync / ftruncate / fchmod), which requires an int32.
 
 const fs = require('fs');
 const path = require('path');
@@ -84,11 +84,29 @@ async function unlinkBeneath(root, segments) {
   return fs.promises.unlink(resolveBeneath(root, segments));
 }
 
+async function inheritReplacedMode(fromPath, toPath) {
+  // The app writes files atomically: temp file next to the target, then rename
+  // over it. rename() swaps the inode, so the replacement would carry the temp
+  // file's mode and silently drop the permissions the user's file had (a 0664
+  // file came back 0600). Copy the target's mode onto the source first, so a
+  // file that keeps its place keeps its permissions.
+  //
+  // lstat, and only for a regular file: a symlink target must not donate its
+  // 0777 mode, and rename() would replace the link itself anyway.
+  try {
+    const st = await fs.promises.lstat(toPath);
+    if (!st.isFile()) return;
+    await fs.promises.chmod(fromPath, st.mode & 0o7777);
+  } catch (_) {
+    // No target yet, or its mode is unreadable: the source keeps its own mode.
+  }
+}
+
 async function renameBeneath(root, fromSegments, toSegments) {
-  return fs.promises.rename(
-    resolveBeneath(root, fromSegments),
-    resolveBeneath(root, toSegments)
-  );
+  const from = resolveBeneath(root, fromSegments);
+  const to = resolveBeneath(root, toSegments);
+  await inheritReplacedMode(from, to);
+  return fs.promises.rename(from, to);
 }
 
 // Node string open-flags -> numeric, so we can OR in O_NOFOLLOW. Mirrors the
@@ -128,10 +146,56 @@ function numericFlags(flags) {
   throw denied('safe-fs: unsupported open flags: ' + String(flags));
 }
 
+async function defaultFileMode(basePath) {
+  // The native module defaults to 0600 (`?? 384`). That is right for the app's
+  // own data directory (0700), but wrong for a user's work folder: a
+  // bridge-written file landed as 0600 among 0664 neighbours, while the same
+  // app writing through bash produced 0664 — one app, two permission regimes.
+  // Derive it from the ROOT instead — the directory openRootDir() was called
+  // with, not the file's immediate parent. Any group/other bit on the root
+  // means a shared location; a private root keeps 0600; an unreadable root
+  // fails closed at 0600.
+  //
+  // Consequence worth knowing: a private SUBdirectory inside a shared root
+  // still gets shared-location files (a 0700 subdir under a 0775 root yields
+  // 0664). The subdirectory still denies access, so nothing leaks — but the
+  // files are not themselves private. Using the immediate parent would be
+  // more precise and less predictable: the same operation would produce
+  // different modes depending on where it lands, and it costs a stat per
+  // path. The root is one stat and one rule for the whole tree.
+  try {
+    const st = await fs.promises.stat(basePath);
+    // 0o664, not 0o666: the umask normally clears the world-write bit anyway,
+    // but under a 0000 umask it would survive. Ordinary programs hand it out
+    // there; this path writes on behalf of a remote peer, so withhold it. The
+    // root is only read as a yes/no signal here — its bits are never copied,
+    // so a 0777 root still yields 0664 under a 0002 umask, not 0777.
+    return (st.mode & 0o077) === 0 ? 0o600 : 0o664;
+  } catch (_) {
+    return 0o600;
+  }
+}
+
+function openFd(target, nflags, fmode) {
+  // fs.open's callback form yields a raw numeric fd. Deliberately NOT
+  // fs.promises.open().fd: that would leave a FileHandle whose finalizer closes
+  // the descriptor as soon as it is garbage collected, yanking the fd out from
+  // under a caller that still holds the number ("Warning: Closing file
+  // descriptor N on garbage collection").
+  return new Promise((resolve, reject) => {
+    fs.open(target, nflags, fmode, (err, fd) => (err ? reject(err) : resolve(fd)));
+  });
+}
+
 async function openBeneath(root, segments, flags, mode) {
-  // Returns a Node fs.promises FileHandle — read(buf,off,len,pos) / write /
-  // stat / close / sync / truncate — the exact surface the caller uses. Mode
-  // defaults to 0o600 to match the native call's `?? 384`.
+  // Returns a RAW NUMERIC fd, matching the macOS native module. The caller
+  // (Claude Desktop's main bundle) does not use FileHandle methods: it stores
+  // this value and passes it to the node:fs *callback* APIs — fs.write, fs.read,
+  // fs.fstat, fs.fsync, fs.ftruncate, fs.fchmod — each of which validates fd as
+  // an int32. Handing back an fs.promises FileHandle made every one of those
+  // throw ERR_INVALID_ARG_TYPE, which broke bridge file transfers (#file-commit).
+  // Mode is derived from the root when the caller passes none or the app's
+  // own 0600 default (see defaultFileMode); any other explicit mode wins.
   //
   // O_NOFOLLOW on the final component. resolveBeneath's ancestor realpath
   // cannot see through a *dangling* symlink: existsSync() is false for a
@@ -142,9 +206,14 @@ async function openBeneath(root, segments, flags, mode) {
   const base = rootPathOf(root);
   const target = resolveBeneath(root, segments);
   const nflags = numericFlags(flags);
-  const fmode = mode == null ? 0o600 : mode;
+  // 0o600 is treated as "no preference": the app resolves its own `?? 384`
+  // twice (writeFileAtomic, then hd) before calling us, so a deliberate 0600
+  // and an unset mode are indistinguishable here. defaultFileMode keeps 0600
+  // in a private root and relaxes it only in a group/other-accessible one.
+  // Every other explicit mode (0o640, 0o644, ...) is passed through untouched.
+  const fmode = (mode == null || mode === 0o600) ? await defaultFileMode(base) : mode;
   try {
-    return await fs.promises.open(target, nflags | fs.constants.O_NOFOLLOW, fmode);
+    return await openFd(target, nflags | fs.constants.O_NOFOLLOW, fmode);
   } catch (e) {
     if (!e || e.code !== 'ELOOP') throw e;
     // The final component IS a symlink. Native RESOLVE_BENEATH permits links
@@ -160,7 +229,7 @@ async function openBeneath(root, segments, flags, mode) {
     if (real !== base && !real.startsWith(base + path.sep)) {
       throw denied('safe-fs: symlinked path escapes root');
     }
-    return fs.promises.open(real, nflags | fs.constants.O_NOFOLLOW, fmode);
+    return openFd(real, nflags | fs.constants.O_NOFOLLOW, fmode);
   }
 }
 
