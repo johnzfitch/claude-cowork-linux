@@ -11,9 +11,9 @@
 // existing-ancestor realpath) — the same defense spaces_store uses. It is
 // marginally more TOCTOU-exposed than the native openat2, but fail-closed: any
 // segment that could escape the root throws EACCES rather than proceeding.
-// Actual byte I/O is delegated to Node's fs.promises FileHandle, whose
-// read(buffer, offset, length, position) / write / stat / close / sync /
-// truncate signatures are exactly what the caller drives.
+// openBeneath hands back a raw numeric fd, matching the native module: the
+// caller stores that value and drives it through the node:fs callback API
+// (write / read / fstat / fsync / ftruncate / fchmod), which requires an int32.
 
 const fs = require('fs');
 const path = require('path');
@@ -128,10 +128,25 @@ function numericFlags(flags) {
   throw denied('safe-fs: unsupported open flags: ' + String(flags));
 }
 
+function openFd(target, nflags, fmode) {
+  // fs.open's callback form yields a raw numeric fd. Deliberately NOT
+  // fs.promises.open().fd: that would leave a FileHandle whose finalizer closes
+  // the descriptor as soon as it is garbage collected, yanking the fd out from
+  // under a caller that still holds the number ("Warning: Closing file
+  // descriptor N on garbage collection").
+  return new Promise((resolve, reject) => {
+    fs.open(target, nflags, fmode, (err, fd) => (err ? reject(err) : resolve(fd)));
+  });
+}
+
 async function openBeneath(root, segments, flags, mode) {
-  // Returns a Node fs.promises FileHandle — read(buf,off,len,pos) / write /
-  // stat / close / sync / truncate — the exact surface the caller uses. Mode
-  // defaults to 0o600 to match the native call's `?? 384`.
+  // Returns a RAW NUMERIC fd, matching the macOS native module. The caller
+  // (Claude Desktop's main bundle) does not use FileHandle methods: it stores
+  // this value and passes it to the node:fs *callback* APIs — fs.write, fs.read,
+  // fs.fstat, fs.fsync, fs.ftruncate, fs.fchmod — each of which validates fd as
+  // an int32. Handing back an fs.promises FileHandle made every one of those
+  // throw ERR_INVALID_ARG_TYPE, which broke bridge file transfers (#file-commit).
+  // Mode defaults to 0o600 to match the native call's `?? 384`.
   //
   // O_NOFOLLOW on the final component. resolveBeneath's ancestor realpath
   // cannot see through a *dangling* symlink: existsSync() is false for a
@@ -144,7 +159,7 @@ async function openBeneath(root, segments, flags, mode) {
   const nflags = numericFlags(flags);
   const fmode = mode == null ? 0o600 : mode;
   try {
-    return await fs.promises.open(target, nflags | fs.constants.O_NOFOLLOW, fmode);
+    return await openFd(target, nflags | fs.constants.O_NOFOLLOW, fmode);
   } catch (e) {
     if (!e || e.code !== 'ELOOP') throw e;
     // The final component IS a symlink. Native RESOLVE_BENEATH permits links
@@ -160,7 +175,7 @@ async function openBeneath(root, segments, flags, mode) {
     if (real !== base && !real.startsWith(base + path.sep)) {
       throw denied('safe-fs: symlinked path escapes root');
     }
-    return fs.promises.open(real, nflags | fs.constants.O_NOFOLLOW, fmode);
+    return openFd(real, nflags | fs.constants.O_NOFOLLOW, fmode);
   }
 }
 
