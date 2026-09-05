@@ -84,11 +84,29 @@ async function unlinkBeneath(root, segments) {
   return fs.promises.unlink(resolveBeneath(root, segments));
 }
 
+async function inheritReplacedMode(fromPath, toPath) {
+  // The app writes files atomically: temp file next to the target, then rename
+  // over it. rename() swaps the inode, so the replacement would carry the temp
+  // file's mode and silently drop the permissions the user's file had (a 0664
+  // file came back 0600). Copy the target's mode onto the source first, so a
+  // file that keeps its place keeps its permissions.
+  //
+  // lstat, and only for a regular file: a symlink target must not donate its
+  // 0777 mode, and rename() would replace the link itself anyway.
+  try {
+    const st = await fs.promises.lstat(toPath);
+    if (!st.isFile()) return;
+    await fs.promises.chmod(fromPath, st.mode & 0o7777);
+  } catch (_) {
+    // No target yet, or its mode is unreadable: the source keeps its own mode.
+  }
+}
+
 async function renameBeneath(root, fromSegments, toSegments) {
-  return fs.promises.rename(
-    resolveBeneath(root, fromSegments),
-    resolveBeneath(root, toSegments)
-  );
+  const from = resolveBeneath(root, fromSegments);
+  const to = resolveBeneath(root, toSegments);
+  await inheritReplacedMode(from, to);
+  return fs.promises.rename(from, to);
 }
 
 // Node string open-flags -> numeric, so we can OR in O_NOFOLLOW. Mirrors the

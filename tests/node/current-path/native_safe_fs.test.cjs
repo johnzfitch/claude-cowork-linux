@@ -202,3 +202,39 @@ test('overwriting an existing file leaves its permissions alone', async (t) => {
   fs.closeSync(fd);
   assert.equal((fs.statSync(target).mode & 0o777).toString(8), '664');
 });
+// --- Option A: atomic replace must not drop the replaced file's permissions ---
+// The app writes files atomically: it creates a hidden temp file next to the
+// target, fills it, then renames it over the target. rename() swaps the inode,
+// so without this the replacement carries the temp file's mode and the user's
+// 0664 file silently came back as 0600 (owner report 2026-09-05).
+test('renaming onto an existing file inherits the replaced permissions', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const h = await safeFs.openRootDir(root);
+
+  const target = path.join(root, 'notes.md');
+  fs.writeFileSync(target, 'alt');
+  fs.chmodSync(target, 0o664);
+
+  const tmp = path.join(root, '.notes.md.1234.abc.tmp');
+  fs.writeFileSync(tmp, 'neu');
+  fs.chmodSync(tmp, 0o600);
+
+  await safeFs.renameBeneath(h, ['.notes.md.1234.abc.tmp'], ['notes.md']);
+
+  assert.equal(fs.readFileSync(target, 'utf8'), 'neu');
+  assert.equal((fs.statSync(target).mode & 0o777).toString(8), '664',
+    'the file kept its place, so it keeps its permissions');
+});
+test('renaming onto a free name keeps the source permissions', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const h = await safeFs.openRootDir(root);
+
+  const src = path.join(root, 'quelle.txt');
+  fs.writeFileSync(src, 'x');
+  fs.chmodSync(src, 0o640);
+
+  await safeFs.renameBeneath(h, ['quelle.txt'], ['ziel.txt']);
+  assert.equal((fs.statSync(path.join(root, 'ziel.txt')).mode & 0o777).toString(8), '640');
+});
