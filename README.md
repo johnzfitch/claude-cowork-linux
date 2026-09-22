@@ -98,6 +98,37 @@ The installer prompts before downloading the Claude Desktop asar so you can conf
 yay -S claude-cowork-linux
 ```
 
+> **Check that the AUR package is current before relying on it.** The AUR
+> listing is pushed by a workflow that can fail, and when it does the package
+> keeps serving an older recipe with nothing to say so. That happened between
+> 2026-04-23 and the fix for [#189](https://github.com/johnzfitch/claude-cowork-linux/issues/189):
+> the publish workflow failed on a bad signing key for five months, so
+> `yay -S` kept building `pkgrel` 10 while this repo moved on to 13.
+>
+> It fails in a way that looks like something else. The package's `source=`
+> clones this repo at `master` with no tag pinned, so a stale build recipe
+> drives current helper scripts — you get today's `enable-cowork.py` invoked
+> the way a recipe from months ago invoked it. On a split-entry Claude Desktop
+> bundle that means the patcher is pointed at the `index.js` shim alone and
+> reports:
+>
+> ```
+> ERROR: Platform-gate function not found in .../.vite/build/index.js
+> ```
+>
+> which reads like a new bundle layout and is not. `enable-cowork.py` now
+> recognises that shape and says so, but only once the stale recipe reaches the
+> point of calling it.
+>
+> Compare the published version with this tree at any time:
+>
+> ```bash
+> ./check-aur-sync.sh
+> ```
+>
+> If they differ, build from the repo — Methods 1 and 3 both do, and so does
+> `makepkg -si` in a clone.
+
 ### Method 3: curl pipe
 
 ```bash
@@ -360,6 +391,7 @@ claude-cowork-linux/
 ├── launch-devtools.sh                 # Launcher with --inspect (Node.js DevTools)
 ├── validate.sh                        # Env var checks, stub URL validation, log scanning
 ├── PKGBUILD                           # Arch Linux AUR package definition
+├── check-aur-sync.sh                  # is the published AUR package this recipe?
 ├── docs/releases/                     # Per-version release notes
 ├── docs/OAUTH-COMPLIANCE.md           # OAuth token handling audit
 ├── COMPAT.md                          # Tested asar versions and known breakage

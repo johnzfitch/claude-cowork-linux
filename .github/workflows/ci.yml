@@ -81,6 +81,25 @@ jobs:
       - name: Byte-compile the patcher
         run: python -m py_compile enable-cowork.py
 
+  aur-sync:
+    name: AUR serves this recipe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The srcinfo job below proves .SRCINFO matches the PKGBUILD in this tree.
+      # It says nothing about whether the AUR ever received either one. #189 is
+      # what that gap costs: the publish workflow had been failing on a
+      # malformed AUR_SSH_KEY since 2026-04-23, so `yay -S` kept building
+      # pkgrel 10's recipe while this tree moved to 13 -- and the fix those
+      # users needed (split-entry chunk sweeping) landed in 12.
+      #
+      # Reports only, never fails the build: the drift it finds is clearable
+      # solely by a repo admin re-adding a secret, and a red check no
+      # contributor can act on is a check people learn to route around.
+      - name: Compare with the published AUR package
+        run: bash check-aur-sync.sh
+
   srcinfo:
     name: .SRCINFO matches PKGBUILD
     runs-on: ubuntu-latest

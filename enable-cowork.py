@@ -8,14 +8,24 @@ the function by its characteristic return shape and replaces it to
 unconditionally return {status:"supported"}.
 
 Usage:
-    python3 enable-cowork.py <path-to-index.js>
+    python3 enable-cowork.py <path-to-index.js> [--sweep]
 
 Example:
     python3 enable-cowork.py linux-app-extracted/.vite/build/index.js
+
+--sweep tells this script that the caller is iterating over index.js AND every
+sibling index*.chunk-*.js itself, so a file without the platform gate is an
+expected miss rather than a symptom. Both in-repo callers sweep: install.sh's
+apply_patches and PKGBUILD's build(). (launch.sh applies patch-index.sh's sed
+passes and never invokes this script, so it has nothing to declare.) Without
+the flag, a miss on a split-entry build is reported as the stale-recipe error
+it almost always is -- see _report_stale_recipe below.
 """
 
 import sys
+import os
 import re
+import glob
 import shutil
 import subprocess
 
@@ -345,12 +355,170 @@ def _warn_if_unparseable(filepath):
             print(f"       {line}", file=sys.stderr)
 
 
+def _sibling_chunks(filepath):
+    """Every index*.chunk-*.js next to `filepath`, excluding `filepath` itself.
+
+    Same discovery rule as patch_index_collect_targets in patch-index.sh, kept
+    to a glob rather than reading the shim's require() list: chunks require each
+    other transitively, so following only the shim's own requires misses most of
+    them (#166).
+    """
+    build_dir = os.path.dirname(os.path.abspath(filepath)) or '.'
+    target = os.path.abspath(filepath)
+    return sorted(
+        c for c in glob.glob(os.path.join(build_dir, 'index*.chunk-*.js'))
+        if os.path.abspath(c) != target and os.path.isfile(c)
+    )
+
+
+# A minified chunk runs to megabytes and a split bundle has hundreds of them, so
+# the sibling scan below is bounded rather than trusting the file count.
+_MARKER_SCAN_BUDGET = 256 * 1024 * 1024
+# An entry shim is a few require() calls. A real chunk is orders of magnitude
+# bigger, and this is the cheap test that keeps the scan off the 300-odd chunks
+# a sweep legitimately misses.
+_SHIM_MAX_BYTES = 256 * 1024
+
+
+def _contains_marker(filepath, budget):
+    """Is PATCH_MARKER in `filepath`? Returns (found, bytes_read).
+
+    Streams in blocks rather than reading the file whole: these are minified
+    bundles, and _sibling_chunks can hand back hundreds of them.
+    """
+    read = 0
+    try:
+        with open(filepath, 'r', errors='replace') as f:
+            tail = ''
+            while read < budget:
+                block = f.read(1 << 20)
+                if not block:
+                    break
+                read += len(block)
+                # Keep an overlap so a marker straddling a block boundary is
+                # still found.
+                window = tail + block
+                if PATCH_MARKER in window:
+                    return True, read
+                tail = window[-len(PATCH_MARKER):]
+    except OSError:
+        return False, read
+    return False, read
+
+
+def _looks_like_entry_shim(filepath, chunks):
+    """Is `filepath` a thin entry shim whose real code is in a sibling chunk?
+
+    This is the shape that makes a lone-file run diagnosable: a tiny file that
+    require()s a chunk. Checking it first is also what keeps the marker scan
+    affordable. A caller too old to pass --sweep still sweeps every target, so
+    without this test the scan below would run once per gate-less file --
+    hundreds of times on a split bundle, each pass re-reading its siblings.
+    """
+    try:
+        if os.path.getsize(filepath) > _SHIM_MAX_BYTES:
+            return False
+        with open(filepath, 'r', errors='replace') as f:
+            head = f.read(_SHIM_MAX_BYTES)
+    except OSError:
+        return False
+    names = [os.path.basename(c) for c in chunks]
+    return any(n in head for n in names)
+
+
+def _report_stale_recipe(filepath):
+    """Name the stale packaging recipe when a lone-file run misses the gate.
+
+    WHY THIS EXISTS (issue #189)
+    ---------------------------
+    A reporter on the AUR package hit "Platform-gate function not found in
+    .../.vite/build/index.js" and reasonably read it as another per-version
+    pattern mismatch (#166, #185). It was not. The AUR recipe is pinned at
+    pkgrel 10 -- the last release the publish workflow managed to push, on
+    2026-03-26 -- and that build() runs this script against index.js alone.
+    Split-entry chunk sweeping landed in pkgrel 12. Every publish run since
+    2026-04-23 has failed on a malformed AUR_SSH_KEY, so the recipe froze
+    two pkgrels before the fix it needed.
+
+    The recipe is stale but this script is not: the PKGBUILD's source= is
+    `git+https://github.com/johnzfitch/claude-cowork-linux.git` with no tag or
+    commit fragment, so makepkg clones master and the AUR build executes an
+    old build() against current scripts. That asymmetry is why this message
+    can reach an affected user at all: it ships the moment it lands on master,
+    with no AUR publish in between.
+
+    So say what is actually wrong. The old text sent people hunting for a
+    renamed minified function in a file that never held it.
+    """
+    chunks = _sibling_chunks(filepath)
+    if not chunks:
+        # Genuinely a single-file bundle: a miss here really is a pattern
+        # problem, and the message patch_file already printed is the right one.
+        return
+    if not _looks_like_entry_shim(filepath, chunks):
+        # A real chunk that happens to lack the gate. On a split bundle that is
+        # every chunk but one, so saying anything here would be noise.
+        return
+
+    budget = _MARKER_SCAN_BUDGET
+    for c in chunks:
+        found, read = _contains_marker(c, budget)
+        if found:
+            # A sibling already carries the gate patch. This run is one
+            # iteration of a sweep whose caller predates --sweep: expected.
+            return
+        budget -= read
+        if budget <= 0:
+            # Out of budget with no marker seen. Unproven either way, so stay
+            # quiet rather than blame a recipe that may be fine.
+            return
+
+    build_dir = os.path.dirname(os.path.abspath(filepath)) or '.'
+    name = os.path.basename(filepath)
+    print()
+    print("  This looks like a STALE PACKAGING RECIPE, not a new bundle layout.")
+    print(f"  {build_dir} holds {len(chunks)} index*.chunk-*.js file(s), and this run")
+    print(f"  was given only {name}, which is a thin require() shim. On split-entry")
+    print("  builds the platform gate lives in one of those chunks, so a caller that")
+    print(f"  patches {name} alone can never find it.")
+    print()
+    print("  If you are building from the AUR: that recipe is older than this script.")
+    print("  The package's source= clones this repo at master, so the scripts are")
+    print("  current while the recipe that drives them is not. Build from the repo:")
+    print()
+    print("    git clone https://github.com/johnzfitch/claude-cowork-linux")
+    print("    cd claude-cowork-linux")
+    print("    makepkg -si          # or: ./install.sh")
+    print()
+    print("  Tracking issue: https://github.com/johnzfitch/claude-cowork-linux/issues/189")
+    print("  A caller that sweeps every chunk itself should pass --sweep after the")
+    print("  path; this note is then suppressed for its expected misses.")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    # --sweep is accepted in any position but documented as trailing the path,
+    # and that ordering matters for more than style: install.sh resolves the
+    # patcher from $INSTALL_DIR when the source tree has none, so a new caller
+    # can pair with an older copy of this script. An older copy reads
+    # sys.argv[1] as the target and ignores the rest, so `<path> --sweep`
+    # degrades to the old behaviour while `--sweep <path>` would make it try to
+    # open "--sweep".
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    flags = {a for a in sys.argv[1:] if a.startswith('--')}
+    unknown = flags - {'--sweep'}
+    if unknown:
+        print(f"ERROR: unknown option(s): {' '.join(sorted(unknown))}")
+        print(__doc__)
+        sys.exit(2)
+    if not args:
         print(__doc__)
         sys.exit(1)
 
-    target = sys.argv[1]
+    target = args[0]
+    # Callers that iterate every discovered target declare it, either with the
+    # flag or with COWORK_PATCH_SWEEP=1 for a caller that cannot easily add an
+    # argument. Either way it means "a miss in this file is expected".
+    sweeping = '--sweep' in flags or os.environ.get('COWORK_PATCH_SWEEP') == '1'
 
     # The platform gate lives in exactly one file, but the IPC origin guards,
     # getHostPlatform() throw, and return-style gates are spread across many
@@ -377,6 +545,17 @@ if __name__ == "__main__":
     # surface it. Warn on stderr instead: install.sh lets it through, and
     # PKGBUILD captures 2>&1 and prints it for any file it patched.
     _warn_if_unparseable(target)
+
+    # A miss is only worth explaining when nobody else is going to patch the
+    # gate. Printed last so it is the final thing in the build log, after the
+    # per-pass notes that otherwise read as five separate failures.
+    #
+    # Deliberately does NOT change the exit code, for the same reason as
+    # _warn_if_unparseable: both callers treat non-zero as "no platform gate in
+    # this file", and install.sh's apply_patches counts on that to decide
+    # whether ANY target was patched.
+    if not gate_patched and not sweeping:
+        _report_stale_recipe(target)
 
     # Exit code still reports only the platform gate: install.sh uses it to
     # decide whether Cowork was actually enabled across the whole bundle.

@@ -902,7 +902,12 @@ apply_patches() {
     log_info "Applying cowork patch to ${#targets[@]} file(s)..."
     local t any_patched=""
     for t in "${targets[@]}"; do
-        if python3 "$patch_script" "$t"; then
+        # --sweep: this loop is the sweep, so a file without the platform gate is
+        # an expected miss. Unflagged, enable-cowork.py reads such a miss as the
+        # stale-recipe error of #189, which would fire on index.js on every
+        # healthy split-entry install. Trailing the path on purpose -- see the
+        # note in enable-cowork.py's __main__.
+        if python3 "$patch_script" "$t" --sweep; then
             any_patched=1
         fi
     done

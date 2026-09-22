@@ -17,6 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Record what AUR actually serves BEFORE any step can abort the job.
+      # The key check below exits 1 on a bad secret, which skips every later
+      # step -- so for five months each failed run said "bad key" and nothing
+      # at all about the package having frozen at pkgrel 10 (#189). Running the
+      # comparison first means every failed publish now also states the cost:
+      # which version users are still building, and how far behind it is.
+      - name: Report what the AUR currently serves
+        run: bash check-aur-sync.sh
+
       # Every run since 2026-04-23 failed inside the deploy action with
       #   Load key "/home/builder/.ssh/aur": invalid format
       # which surfaces only in the container log, so the package silently
