@@ -1,7 +1,7 @@
 # Maintainer: Zack Fitch <zack@internetuniverse.org>
 pkgname=claude-cowork-linux
 pkgver=1.1.4010
-pkgrel=13
+pkgrel=14
 pkgdesc="Anthropic Claude Desktop with Cowork (local agent) support for Linux"
 arch=('x86_64')
 url="https://github.com/johnzfitch/claude-cowork-linux"
@@ -254,10 +254,17 @@ JSEOF
     # successful build log stays clean. Require at least one target to patch;
     # otherwise fail the build loudly — surfacing the stashed output to diagnose
     # a bundle-layout change — rather than ship a package with Cowork disabled.
+    #
+    # --sweep declares that this loop covers every discovered target, which tells
+    # enable-cowork.py its per-file misses are expected. Without it the script
+    # reports a miss as the stale-recipe error of #189 -- correct for a recipe
+    # that patches index.js alone, wrong and alarming here. Passed AFTER the
+    # path: an older copy of the script reads argv[1] as the target and ignores
+    # the rest, so the argument degrades instead of breaking.
     echo "Applying cowork patch to ${#INDEX_TARGETS[@]} file(s)..."
     local _t _out _any_patched="" _miss_log=""
     for _t in "${INDEX_TARGETS[@]}"; do
-        if _out="$(python "${_repo}/enable-cowork.py" "$_t" 2>&1)"; then
+        if _out="$(python "${_repo}/enable-cowork.py" "$_t" --sweep 2>&1)"; then
             _any_patched=1
             [ -n "$_out" ] && printf '%s\n' "$_out"
         else

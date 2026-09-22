@@ -603,5 +603,276 @@ if [[ -f "$SHARED" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+section "7. stale-recipe diagnosis (issue #189)"
+# ---------------------------------------------------------------------------
+# #189 was a stale AUR recipe reported, twice, as a per-version pattern
+# mismatch. The recipe froze at pkgrel 10 (last successful publish 2026-03-26)
+# while chunk sweeping landed in 12, so build() handed enable-cowork.py the
+# index.js shim alone and the script said "Platform-gate function not found",
+# which reads exactly like #166 and #185. The script can tell the two apart --
+# a shim next to unpatched chunks is a caller problem, not a pattern problem --
+# and it is the piece of the toolchain that reaches AUR users while the recipe
+# is stale, because source= clones master unpinned.
+
+STALE_DIR="$TMP/stale-split"
+mkdir -p "$STALE_DIR"
+# The gate in the shape kris-1 reported on #189: EIn(), backticks, `let`, in a
+# chunk rather than in index.js.
+write_stale_fixture() {
+  printf '"use strict";\nrequire("./index.chunk-CDE6UiKb.js");\n' > "$1/index.js"
+  cat > "$1/index.chunk-CDE6UiKb.js" <<'EOF'
+function EIn(){let t=process.platform;if(t!==`darwin`&&t!==`win32`)return{status:`unsupported`,reason:`Darwin only`};return{status:`supported`}}
+EOF
+}
+write_stale_fixture "$STALE_DIR"
+
+# A stale caller: one file, no --sweep. Must name the recipe.
+STALE_OUT="$(python3 "$REPO_ROOT/enable-cowork.py" "$STALE_DIR/index.js" 2>&1 || true)"
+if grep -q 'STALE PACKAGING RECIPE' <<<"$STALE_OUT"; then
+  pass "shim + unpatched chunks, no --sweep: names the stale recipe"
+else
+  fail "shim + unpatched chunks, no --sweep: should name the stale recipe"
+fi
+if grep -q 'issues/189' <<<"$STALE_OUT"; then
+  pass "stale-recipe note links the tracking issue"
+else
+  fail "stale-recipe note should link the tracking issue"
+fi
+if grep -qE 'makepkg -si|install\.sh' <<<"$STALE_OUT"; then
+  pass "stale-recipe note gives a build-from-repo remedy"
+else
+  fail "stale-recipe note should give a build-from-repo remedy"
+fi
+# Exit code is unchanged: install.sh's apply_patches and PKGBUILD's loop both
+# read non-zero as "no gate in this file", and the note must not disturb that.
+if python3 "$REPO_ROOT/enable-cowork.py" "$STALE_DIR/index.js" >/dev/null 2>&1; then
+  fail "stale-recipe note must not change the exit code (still non-zero)"
+else
+  pass "stale-recipe note leaves the exit code non-zero"
+fi
+
+# A sweeping caller hits the same shim on every healthy split-entry build, so
+# the note must stay silent for it or it becomes noise on every install.
+SWEEP_OUT="$(python3 "$REPO_ROOT/enable-cowork.py" "$STALE_DIR/index.js" --sweep 2>&1 || true)"
+if grep -q 'STALE PACKAGING RECIPE' <<<"$SWEEP_OUT"; then
+  fail "--sweep must suppress the stale-recipe note (expected miss)"
+else
+  pass "--sweep suppresses the stale-recipe note"
+fi
+ENVSWEEP_OUT="$(COWORK_PATCH_SWEEP=1 python3 "$REPO_ROOT/enable-cowork.py" "$STALE_DIR/index.js" 2>&1 || true)"
+if grep -q 'STALE PACKAGING RECIPE' <<<"$ENVSWEEP_OUT"; then
+  fail "COWORK_PATCH_SWEEP=1 must suppress the stale-recipe note"
+else
+  pass "COWORK_PATCH_SWEEP=1 suppresses the stale-recipe note"
+fi
+
+# --sweep trails the path on purpose: install.sh can pair a current caller with
+# an $INSTALL_DIR copy of the script that predates the flag, and argv[1] must
+# still be the target there. Assert the flag is positional-agnostic here, so the
+# ordering stays a compatibility choice rather than a parser requirement.
+if python3 "$REPO_ROOT/enable-cowork.py" --sweep "$STALE_DIR/index.chunk-CDE6UiKb.js" >/dev/null 2>&1; then
+  pass "--sweep accepted before the path too"
+else
+  fail "--sweep should be accepted in any position"
+fi
+
+# A genuine single-file bundle with no gate is a real pattern miss. The note
+# must not fire there, or it would misdirect the next #166.
+mkdir -p "$TMP/stale-single"
+printf '"use strict";\nconsole.log("no gate anywhere");\n' > "$TMP/stale-single/index.js"
+SINGLE_OUT="$(python3 "$REPO_ROOT/enable-cowork.py" "$TMP/stale-single/index.js" 2>&1 || true)"
+if grep -q 'STALE PACKAGING RECIPE' <<<"$SINGLE_OUT"; then
+  fail "no sibling chunks: must NOT blame the recipe (real pattern miss)"
+else
+  pass "no sibling chunks: keeps the pattern-mismatch message"
+fi
+if grep -q 'Platform-gate function not found' <<<"$SINGLE_OUT"; then
+  pass "no sibling chunks: still reports the pattern miss"
+else
+  fail "no sibling chunks: should still report the pattern miss"
+fi
+
+# A sweep by a caller too old to pass --sweep: once any sibling carries the
+# marker, the gate is handled and the shim's miss is expected again.
+mkdir -p "$TMP/stale-done"
+write_stale_fixture "$TMP/stale-done"
+python3 "$REPO_ROOT/enable-cowork.py" "$TMP/stale-done/index.chunk-CDE6UiKb.js" --sweep >/dev/null 2>&1
+DONE_OUT="$(python3 "$REPO_ROOT/enable-cowork.py" "$TMP/stale-done/index.js" 2>&1 || true)"
+if grep -q 'STALE PACKAGING RECIPE' <<<"$DONE_OUT"; then
+  fail "a patched sibling means the gate is handled: note must stay silent"
+else
+  pass "a patched sibling suppresses the note (unflagged legacy sweep)"
+fi
+
+# The fixture also pins the regression itself: handed the CHUNK, the current
+# script finds EIn() by regex fallback. That is the whole of #189 -- the script
+# was never the problem, the file it was handed was.
+assert_grep "$TMP/stale-done/index.chunk-CDE6UiKb.js" \
+  'function EIn\(\)\{return\{status:"supported"\}\}' \
+  "#189 gate shape (EIn/let/backticks) patches when the chunk is the target"
+
+# A real chunk that merely lacks the gate must NOT draw the note. On a split
+# bundle that describes every chunk but one, and a caller too old to pass
+# --sweep still walks all of them -- so without this guard the note would print
+# hundreds of times per install, and each print would re-scan every sibling for
+# the patch marker.
+mkdir -p "$TMP/stale-bigchunk"
+printf '"use strict";\nrequire("./index.chunk-AAAAAAAA.js");\n' > "$TMP/stale-bigchunk/index.js"
+# Two gate-less chunks, one of them too big to be mistaken for an entry shim.
+{ printf 'var pad="'; head -c 300000 /dev/zero | tr '\0' 'x'; printf '";\nrequire("./index.chunk-BBBBBBBB.js");\n'; } \
+  > "$TMP/stale-bigchunk/index.chunk-AAAAAAAA.js"
+printf 'var other=1;\n' > "$TMP/stale-bigchunk/index.chunk-BBBBBBBB.js"
+BIG_OUT="$(python3 "$REPO_ROOT/enable-cowork.py" "$TMP/stale-bigchunk/index.chunk-AAAAAAAA.js" 2>&1 || true)"
+if grep -q 'STALE PACKAGING RECIPE' <<<"$BIG_OUT"; then
+  fail "a large chunk without the gate must not draw the stale-recipe note"
+else
+  pass "a large chunk without the gate draws no note (keeps a legacy sweep quiet)"
+fi
+# The shim in that same tree still does, so the guard narrowed the trigger
+# rather than disabling it.
+BIGSHIM_OUT="$(python3 "$REPO_ROOT/enable-cowork.py" "$TMP/stale-bigchunk/index.js" 2>&1 || true)"
+if grep -q 'STALE PACKAGING RECIPE' <<<"$BIGSHIM_OUT"; then
+  pass "the shim in the same tree still draws the note"
+else
+  fail "the shim should still draw the note"
+fi
+
+# Source guards: both in-repo callers must declare the sweep, or the note fires
+# on every healthy split-entry build and the signal is worth nothing.
+if grep -q 'enable-cowork.py" "$_t" --sweep' "$REPO_ROOT/PKGBUILD"; then
+  pass "PKGBUILD: declares --sweep on the per-target run"
+else
+  fail "PKGBUILD: per-target run must pass --sweep"
+fi
+if grep -q '"\$patch_script" "\$t" --sweep' "$REPO_ROOT/install.sh"; then
+  pass "install.sh: declares --sweep on the per-target run"
+else
+  fail "install.sh: per-target run must pass --sweep"
+fi
+
+# ---------------------------------------------------------------------------
+section "8. AUR sync check (issue #189)"
+# ---------------------------------------------------------------------------
+# Nothing in this repo compared the published AUR package against this tree, so
+# a publish pipeline that had been failing since 2026-04-23 cost users five
+# months of a recipe that could not build. check-aur-sync.sh closes that.
+AURCHK="$REPO_ROOT/check-aur-sync.sh"
+if [[ -f "$AURCHK" ]]; then
+  pass "check-aur-sync.sh present"
+  if bash -n "$AURCHK" 2>/dev/null; then pass "check-aur-sync.sh syntax"; else fail "check-aur-sync.sh syntax"; fi
+  if [[ -x "$AURCHK" ]]; then pass "check-aur-sync.sh executable"; else fail "check-aur-sync.sh executable"; fi
+
+  # It reads the version pair out of the PKGBUILD by grep. Assert the shape it
+  # greps for is the shape the PKGBUILD has -- a pkgver moved into the function
+  # or quoted differently would leave the check silently comparing an empty
+  # string, which is the class of bug this whole section exists to catch.
+  _pv="$(grep -m1 '^pkgver=' "$REPO_ROOT/PKGBUILD" | cut -d= -f2- | tr -d "\"'")"
+  _pr="$(grep -m1 '^pkgrel=' "$REPO_ROOT/PKGBUILD" | cut -d= -f2- | tr -d "\"'")"
+  if [[ -n "$_pv" && -n "$_pr" ]]; then
+    pass "check-aur-sync.sh can read pkgver/pkgrel ($_pv-$_pr)"
+  else
+    fail "check-aur-sync.sh cannot read pkgver/pkgrel from PKGBUILD"
+  fi
+
+  # Drift must be reported, and must NOT fail the run by default: the only
+  # remedy is a repo secret a contributor cannot touch, and a permanently red
+  # check is one people stop reading (see #170).
+  _stub="$TMP/aurstub"; mkdir -p "$_stub"
+  printf '#!/bin/bash\nprintf "%%s" "$FAKE_AUR_JSON"\n' > "$_stub/curl"
+  chmod +x "$_stub/curl"
+  _drift_json='{"resultcount":1,"results":[{"Name":"claude-cowork-linux","Version":"0.0.1-1","LastModified":1774490000}]}'
+  _out="$(PATH="$_stub:$PATH" FAKE_AUR_JSON="$_drift_json" bash "$AURCHK" 2>&1)"; _rc=$?
+  if [[ "$_rc" -eq 0 ]]; then
+    pass "drift does not fail the run by default"
+  else
+    fail "drift must not fail the run by default (exit $_rc)"
+  fi
+  if grep -q 'DRIFT' <<<"$_out"; then
+    pass "drift is reported"
+  else
+    fail "drift should be reported"
+  fi
+  if grep -q 'AUR_SSH_KEY' <<<"$_out"; then
+    pass "drift report names the secret that blocks publishing"
+  else
+    fail "drift report should name the blocking secret"
+  fi
+  _out="$(PATH="$_stub:$PATH" FAKE_AUR_JSON="$_drift_json" bash "$AURCHK" --strict 2>&1)"; _rc=$?
+  if [[ "$_rc" -ne 0 ]]; then
+    pass "--strict fails on drift"
+  else
+    fail "--strict should fail on drift"
+  fi
+  _sync_json="{\"resultcount\":1,\"results\":[{\"Name\":\"claude-cowork-linux\",\"Version\":\"$_pv-$_pr\",\"LastModified\":1790000000}]}"
+  _out="$(PATH="$_stub:$PATH" FAKE_AUR_JSON="$_sync_json" bash "$AURCHK" --strict 2>&1)"; _rc=$?
+  if [[ "$_rc" -eq 0 ]] && grep -q 'IN SYNC' <<<"$_out"; then
+    pass "a matching published version reports IN SYNC (even --strict)"
+  else
+    fail "a matching published version should report IN SYNC (exit $_rc)"
+  fi
+  # An unreachable third party is not a defect in this repo.
+  _out="$(PATH="$_stub:$PATH" FAKE_AUR_JSON="" bash "$AURCHK" --strict 2>&1)"; _rc=$?
+  if [[ "$_rc" -eq 0 ]]; then
+    pass "an unreachable AUR does not fail the check"
+  else
+    fail "an unreachable AUR must not fail the check (exit $_rc)"
+  fi
+else
+  fail "check-aur-sync.sh present"
+fi
+
+# The signing key must be checked on every CI run, not only when the publish
+# workflow happens to fire. That trigger (PKGBUILD/.SRCINFO paths) is why a key
+# broken in April went unnoticed into September.
+_ci="$REPO_ROOT/.github/workflows/ci.yml"
+if grep -q 'secrets.AUR_SSH_KEY' "$_ci"; then
+  pass "ci.yml checks the AUR signing key"
+else
+  fail "ci.yml must check the AUR signing key"
+fi
+# It must never print the secret. Guard the shapes that would: echoing the env
+# var, or cat-ing the file it is written to.
+if grep -nE '(echo|printf|cat)[^|]*\$(AUR_SSH_KEY|\{AUR_SSH_KEY)' "$_ci" \
+     | grep -vqE "printf '%s\\\\n' \"\\\$AUR_SSH_KEY\" >"; then
+  fail "ci.yml must not echo AUR_SSH_KEY"
+else
+  pass "ci.yml never echoes AUR_SSH_KEY"
+fi
+if grep -qE 'cat /tmp/aur_key' "$_ci"; then
+  fail "ci.yml must not cat the key file"
+else
+  pass "ci.yml never cats the key file"
+fi
+# An absent secret (fork PR) must read as "not checked", never as broken.
+if grep -q 'not available to this run' "$_ci"; then
+  pass "ci.yml treats an unavailable secret as unchecked, not failed"
+else
+  fail "ci.yml must distinguish an unavailable secret from a broken one"
+fi
+
+# Both workflows must actually run it, or it is a script nobody calls.
+if grep -q 'check-aur-sync.sh' "$REPO_ROOT/.github/workflows/ci.yml"; then
+  pass "ci.yml runs the AUR sync check"
+else
+  fail "ci.yml must run the AUR sync check"
+fi
+if grep -q 'check-aur-sync.sh' "$REPO_ROOT/.github/workflows/aur-publish.yml"; then
+  pass "aur-publish.yml reports what the AUR serves"
+else
+  fail "aur-publish.yml must report what the AUR serves"
+fi
+# It has to run BEFORE the key check, which exits 1 and skips every later step.
+# That ordering is the whole point: a failed publish should still say which
+# version users are stuck on.
+_ap="$REPO_ROOT/.github/workflows/aur-publish.yml"
+_sync_line="$(grep -n 'check-aur-sync.sh' "$_ap" | head -1 | cut -d: -f1)"
+_key_line="$(grep -n 'AUR_SSH_KEY is unset or empty' "$_ap" | head -1 | cut -d: -f1)"
+if [[ -n "$_sync_line" && -n "$_key_line" && "$_sync_line" -lt "$_key_line" ]]; then
+  pass "aur-publish.yml reports drift before the key check can abort the job"
+else
+  fail "aur-publish.yml must report drift before the key check aborts the job"
+fi
+
+# ---------------------------------------------------------------------------
 echo -e "\n${BOLD}Summary:${NC} ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC}, ${YELLOW}${SKIP} skipped${NC}"
 [[ "$FAIL" -eq 0 ]]

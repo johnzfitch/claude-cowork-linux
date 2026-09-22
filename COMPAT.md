@@ -24,6 +24,7 @@ machine-readable lines below; the table further down is for humans.
 | 1.28929.0 | [PARTIAL]  | 2026-08-14 | Contributor-reported in #171 against an **independent** fix for the same three 1.26832.0 breakages, not against the code in this tree. The patching landed here is a superset of what that report needed — quote-agnostic gate matching, the `index2.chunk-*` series, and auxiliary passes that no longer key off the gate's own chunk — so it is expected to apply, but nobody has run this tree against this build. Reported working on Fedora 44 + GNOME Wayland, Electron 43.2.0: update/extract/repack, Cowork session start, and tool permission prompts. **One known gap:** internal MCP Apps (Visualize) need host `Read` to reach SDK-spooled results under `.claude/projects/*/tool-results/*`, which Linux's safe-path resolver rejects before the allowed-root check runs. That fix was not carried over — it rewrites security-sensitive path resolution and is tracked separately in #172. |
 | 1.30096.5 | [PARTIAL]  | 2026-09-02 | Contributor-reported in #187 (Ubuntu 24.04, Electron 42.1.0, Node 24 for `install.sh`), with the app running and signed in. What the report establishes is the **Claude-in-Chrome bridge**: the bundle picks between Electron's `net.WebSocket` and the bundled `ws` package behind a remote feature flag, and Electron 42.1.0 has no `net.WebSocket` at all, so with the flag on every connect attempt threw `o.net.WebSocket is not a constructor` 21 ms in and the bridge gave up after 100 retries. Easy to misread as an extension sign-in problem; it is neither auth nor network. Two `patch-index.sh` passes (#187) gate that choice on `typeof require("electron").net.WebSocket` and fall through to the `ws` transport the code already uses when the flag is off. With them applied the extension pairs and tool calls complete end to end. Both sites verified against the real chunk (rewrite, idempotent, `PATCH_INDEX_STRICT_SYNTAX=1` clean) and live by the contributor; not exercised by a maintainer. The 1.40609.0 `--` separator below was not part of this report. No pinning row -- see below. |
 | 1.40609.0 | [PARTIAL]  | 2026-09-01 | Contributor-reported in #185/#186 (CachyOS + KDE Plasma/Wayland, Electron 42.1.0, Node 26.7.0; `install.sh --doctor` 20 passed, 1 warning). **Argv-shape change:** the bundle now invokes the disclaimer wrapper as `disclaimer -- <cmd> [args...]`, and the CLI it hands over lives at `claude-code/<ver>/claude.app/Contents/MacOS/claude`. `resolveDisclaimerCommand()` read the command from `args[0]`, saw `--`, could not resolve it (`[exec-capability] BLOCKED (unresolvable): --`), and fell through to the fail-closed disclaimer stub, so every Cowork session died on spawn with exit 127 and the "Claude Code crashed" banner. #186 skips a leading separator before the command is read; admission is unchanged, and a path refused before is still refused behind the separator. `launch.sh`'s Code-tab Mach-O replacement is not the lever on this build: it only matches the flat `claude-code/<ver>/claude` layout, and the bundle re-downloads the macOS binary at session start anyway. Contributor confirms sessions spawn after the fix; not exercised by a maintainer. No pinning row -- see below. |
+| 1.46388.3 | [UNTESTED] | 2026-09-05 | Reported failing in #189 via the **AUR** package, and the failure was not this version's fault: `makepkg` aborted with `Platform-gate function not found in .../.vite/build/index.js`, which is what a recipe that patches `index.js` alone prints on any split-entry bundle. The AUR listing was pinned at `pkgrel` 10 (its last successful publish, 2026-03-26) while chunk sweeping landed in `pkgrel` 12 -- the publish workflow had been failing on a malformed `AUR_SSH_KEY` since 2026-04-23. Because `source=` clones this repo unpinned, the reporter ran a current `enable-cowork.py` from an old `build()`. A second reporter on the same issue puts the gate at `EIn()` in `index.chunk-CDE6UiKb.js` on the asar bundled with Claude Desktop 2.110.0, which `enable-cowork.py`'s regex fallback matches (covered by `tests/test-cowork-patch.sh` section 7). **Still `[UNTESTED]`:** nobody has reported a successful build on this version, and the fix for #189 makes the failure legible rather than proving the bundle works. Do not read this row as a green light. No pinning row -- see below. |
 
 Status legend:
 
@@ -148,6 +149,28 @@ they will not see it again for the same installed asar.
 
 To re-trigger the warning manually, delete
 `$XDG_STATE_HOME/claude-cowork/logs/.last-warned-asar-version`.
+
+## A row here is about this repo, not about the AUR
+
+Every status above describes the recipe and scripts **in this tree**. The AUR
+package is a separate artifact, pushed by a workflow that can fail, and when it
+fails it keeps serving an older recipe silently. #189 is what that costs: a
+version whose patching this tree handled correctly was unbuildable for anyone
+installing with `yay -S`, for five months, and was twice diagnosed as a
+per-version pattern mismatch before anyone compared the two version numbers.
+
+So when a report of bundle-version breakage arrives, establish which artifact
+the reporter built before reading it as a compatibility problem:
+
+```bash
+./check-aur-sync.sh     # published AUR version vs. this tree's pkgver-pkgrel
+```
+
+If they differ, an AUR reporter's build ran an old `build()` against current
+helper scripts — `source=` clones `master` with no tag or commit pinned — so
+the failure may be entirely the drift and tell you nothing about the asar
+version. `[OK]` on a row means `install.sh` or a clone's `makepkg`, never
+`yay -S`.
 
 ## See also
 

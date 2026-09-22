@@ -81,6 +81,77 @@ jobs:
       - name: Byte-compile the patcher
         run: python -m py_compile enable-cowork.py
 
+  aur-sync:
+    name: AUR publish health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The publish workflow already validates this secret -- but only when it
+      # runs, and it only runs when PKGBUILD or .SRCINFO changes. So a signing
+      # key that went bad in April 2026 went unnoticed until someone read a
+      # failed run five months later (#189). Checking it here puts the answer in
+      # every CI run instead, which is the difference between days and months.
+      #
+      # Secrets are available to same-repo pull_request runs but not to fork
+      # runs, so an empty value means "cannot check from here", not "broken".
+      #
+      # The key is never echoed: it goes to a 0600 file, ssh-keygen's output is
+      # discarded, and the file is removed. ssh-keygen -y reads it exactly as
+      # the deploy action does, so a key that passes here will not fail there
+      # with "invalid format". -P '' plus </dev/null makes an encrypted key fail
+      # rather than hang waiting for a passphrase.
+      #
+      # Reports, never fails, for the same reason as the drift check below: only
+      # a repo admin can replace a secret, so a red check would block every
+      # contributor's PR on something none of them can fix.
+      - name: Check the AUR signing key is usable
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "AUR_SSH_KEY: not available to this run (fork PR, or the secret is unset)."
+            echo "::notice::AUR_SSH_KEY was not readable here, so it was not checked."
+            echo "### AUR signing key: not checked" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          printf '%s\n' "$AUR_SSH_KEY" > /tmp/aur_key_probe
+          chmod 600 /tmp/aur_key_probe
+          if ssh-keygen -y -P '' -f /tmp/aur_key_probe > /dev/null 2>&1 < /dev/null; then
+            rm -f /tmp/aur_key_probe
+            echo "AUR_SSH_KEY: parses as a usable unencrypted OpenSSH private key."
+            echo "### AUR signing key: usable" >> "$GITHUB_STEP_SUMMARY"
+            echo "The publish workflow will not fail on the key." >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -f /tmp/aur_key_probe
+            echo "AUR_SSH_KEY is set but does not parse as an unencrypted OpenSSH private key."
+            echo "Common causes: the secret holds the PUBLIC key, it is passphrase-protected,"
+            echo "the PEM line breaks were lost on paste, or the trailing newline is missing."
+            echo "Regenerate with: ssh-keygen -t ed25519 -N '' -f aur_key  (paste ALL of aur_key)"
+            echo "::warning::AUR_SSH_KEY is set but unusable, so publishing to the AUR will fail."
+            {
+              echo "### AUR signing key: UNUSABLE"
+              echo
+              echo "The secret is set but is not an unencrypted OpenSSH private key, so"
+              echo "\`Publish to AUR\` cannot push. Most often the public key was pasted"
+              echo "instead of the private one."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The srcinfo job below proves .SRCINFO matches the PKGBUILD in this tree.
+      # It says nothing about whether the AUR ever received either one. #189 is
+      # what that gap costs: the publish workflow had been failing on a
+      # malformed AUR_SSH_KEY since 2026-04-23, so `yay -S` kept building
+      # pkgrel 10's recipe while this tree moved to 13 -- and the fix those
+      # users needed (split-entry chunk sweeping) landed in 12.
+      #
+      # Reports only, never fails the build: the drift it finds is clearable
+      # solely by a repo admin re-adding a secret, and a red check no
+      # contributor can act on is a check people learn to route around.
+      - name: Compare with the published AUR package
+        run: bash check-aur-sync.sh
+
   srcinfo:
     name: .SRCINFO matches PKGBUILD
     runs-on: ubuntu-latest
