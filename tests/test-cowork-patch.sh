@@ -821,6 +821,35 @@ else
   fail "check-aur-sync.sh present"
 fi
 
+# The signing key must be checked on every CI run, not only when the publish
+# workflow happens to fire. That trigger (PKGBUILD/.SRCINFO paths) is why a key
+# broken in April went unnoticed into September.
+_ci="$REPO_ROOT/.github/workflows/ci.yml"
+if grep -q 'secrets.AUR_SSH_KEY' "$_ci"; then
+  pass "ci.yml checks the AUR signing key"
+else
+  fail "ci.yml must check the AUR signing key"
+fi
+# It must never print the secret. Guard the shapes that would: echoing the env
+# var, or cat-ing the file it is written to.
+if grep -nE '(echo|printf|cat)[^|]*\$(AUR_SSH_KEY|\{AUR_SSH_KEY)' "$_ci" \
+     | grep -vqE "printf '%s\\\\n' \"\\\$AUR_SSH_KEY\" >"; then
+  fail "ci.yml must not echo AUR_SSH_KEY"
+else
+  pass "ci.yml never echoes AUR_SSH_KEY"
+fi
+if grep -qE 'cat /tmp/aur_key' "$_ci"; then
+  fail "ci.yml must not cat the key file"
+else
+  pass "ci.yml never cats the key file"
+fi
+# An absent secret (fork PR) must read as "not checked", never as broken.
+if grep -q 'not available to this run' "$_ci"; then
+  pass "ci.yml treats an unavailable secret as unchecked, not failed"
+else
+  fail "ci.yml must distinguish an unavailable secret from a broken one"
+fi
+
 # Both workflows must actually run it, or it is a script nobody calls.
 if grep -q 'check-aur-sync.sh' "$REPO_ROOT/.github/workflows/ci.yml"; then
   pass "ci.yml runs the AUR sync check"
