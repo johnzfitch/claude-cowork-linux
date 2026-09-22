@@ -35,6 +35,11 @@ if (typeof systemPreferences.promptTouchID !== 'function') {
     return Promise.reject(new Error('Touch ID unavailable on Linux'));
   };
 }
+if (typeof systemPreferences.registerDefaults !== 'function') {
+  systemPreferences.registerDefaults = function(defaults) {
+    // no-op on Linux
+  };
+}
 
 // Patch macOS-only Electron app methods (NSUserActivity / Handoff APIs).
 // We spoof process.platform === "darwin" so the asar's darwin-gated callsites
