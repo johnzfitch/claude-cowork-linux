@@ -2,8 +2,8 @@
 
 // Coverage for the Linux @ant/claude-native "safe-fs containment" API added
 // for asar 1.22209.x (openRootDir + *Beneath). Verifies the round-trip works
-// (delegating byte I/O to Node FileHandles) and that containment is fail-closed
-// against separator / '..' / symlink escapes.
+// (openBeneath hands back a raw numeric fd, as the macOS native module does)
+// and that containment is fail-closed against separator / '..' / symlink escapes.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -32,7 +32,6 @@ test('openRootDir returns a canonical handle; rejects missing dir and files', as
   await assert.rejects(() => safeFs.openRootDir(f), /not a directory/);
   await assert.rejects(() => safeFs.openRootDir('relative/path'));
 });
-
 test('mkdir/open/write/read/rename/unlink round-trip beneath the root', async (t) => {
   const root = tmpRoot(t);
   const h = await safeFs.openRootDir(root);
@@ -40,16 +39,15 @@ test('mkdir/open/write/read/rename/unlink round-trip beneath the root', async (t
   await safeFs.mkdirBeneath(h, ['sub'], { recursive: true });
   assert.ok(fs.statSync(path.join(root, 'sub')).isDirectory());
 
-  // openBeneath returns a Node FileHandle: write then read with the exact
-  // (buffer, offset, length, position) signature the caller uses.
-  const fh = await safeFs.openBeneath(h, ['sub', 'a.txt'], 'w+', 0o600);
-  await fh.write(Buffer.from('hello world'), 0, 11, 0);
+  // openBeneath returns a raw numeric fd: write then read it back through the
+  // node:fs descriptor API, the way the caller does.
+  const fd = await safeFs.openBeneath(h, ['sub', 'a.txt'], 'w+', 0o600);
+  fs.writeSync(fd, Buffer.from('hello world'), 0, 11, 0);
   const buf = Buffer.alloc(11);
-  await fh.read(buf, 0, 11, 0);
+  fs.readSync(fd, buf, 0, 11, 0);
   assert.equal(buf.toString('utf8'), 'hello world');
-  const st = await fh.stat();
-  assert.equal(st.size, 11);
-  await fh.close();
+  assert.equal(fs.fstatSync(fd).size, 11);
+  fs.closeSync(fd);
 
   await safeFs.renameBeneath(h, ['sub', 'a.txt'], ['sub', 'b.txt']);
   assert.ok(fs.existsSync(path.join(root, 'sub', 'b.txt')));
@@ -58,7 +56,6 @@ test('mkdir/open/write/read/rename/unlink round-trip beneath the root', async (t
   await safeFs.unlinkBeneath(h, ['sub', 'b.txt']);
   assert.ok(!fs.existsSync(path.join(root, 'sub', 'b.txt')));
 });
-
 test('containment is fail-closed: separators, dotdot, and symlink escape are denied', async (t) => {
   const root = tmpRoot(t);
   const h = await safeFs.openRootDir(root);
@@ -80,7 +77,6 @@ test('containment is fail-closed: separators, dotdot, and symlink escape are den
   await denied(() => safeFs.openBeneath(h, ['link', 'pwned'], 'w'));
   assert.ok(!fs.existsSync(path.join(outside, 'pwned')), 'nothing may be written outside the root');
 });
-
 // Regression: a DANGLING symlink at the final component escaped the root.
 // existsSync() is false for a broken link, so the nearest-existing-ancestor
 // realpath walk skipped past it to the legitimate parent and the check passed —
@@ -104,7 +100,6 @@ test('a dangling symlink at the final component cannot escape the root', async (
   }
   assert.ok(!fs.existsSync(path.join(outside, 'pwned')), 'still nothing outside the root');
 });
-
 // Native RESOLVE_BENEATH permits symlinks that stay inside the root, so a
 // link to a sibling file beneath the root must keep working.
 test('a symlink that stays inside the root is still usable', async (t) => {
@@ -114,19 +109,213 @@ test('a symlink that stays inside the root is still usable', async (t) => {
   fs.writeFileSync(path.join(root, 'real.txt'), 'inside');
   fs.symlinkSync(path.join(root, 'real.txt'), path.join(root, 'alias.txt'));
 
-  const fh = await safeFs.openBeneath(h, ['alias.txt'], 'r');
+  const fd = await safeFs.openBeneath(h, ['alias.txt'], 'r');
   const buf = Buffer.alloc(6);
-  await fh.read(buf, 0, 6, 0);
-  await fh.close();
+  fs.readSync(fd, buf, 0, 6, 0);
+  fs.closeSync(fd);
   assert.equal(buf.toString('utf8'), 'inside');
 });
-
 test('unsupported open flags are rejected rather than opened without O_NOFOLLOW', async (t) => {
   const root = tmpRoot(t);
   const h = await safeFs.openRootDir(root);
   await assert.rejects(() => safeFs.openBeneath(h, ['x.txt'], 'bogus'), (e) => e.code === 'EACCES');
   // Numeric flags pass through (the caller may hand us raw O_* bits).
-  const fh = await safeFs.openBeneath(h, ['n.txt'], fs.constants.O_CREAT | fs.constants.O_RDWR);
-  await fh.close();
+  const fd = await safeFs.openBeneath(h, ['n.txt'], fs.constants.O_CREAT | fs.constants.O_RDWR);
+  fs.closeSync(fd);
   assert.ok(fs.existsSync(path.join(root, 'n.txt')));
+});
+// Regression: Claude Desktop's main bundle treats openBeneath's return value as
+// a NUMERIC file descriptor. Its file wrapper hands that value straight to the
+// node:fs *callback* APIs — fs.write(fd, buf, off, len, pos, cb), fs.read,
+// fs.fstat, fs.fsync, fs.ftruncate, fs.fchmod — all of which validate fd as an
+// int32. Returning an fs.promises FileHandle there throws
+//   TypeError [ERR_INVALID_ARG_TYPE]: The "fd" argument must be of type number.
+// Observed 2026-09-05: every bridge file transfer failed with
+//   [remote-file] commit: file failed (errno=ERR_INVALID_ARG_TYPE)
+//   [remote-file] committed 0 files, 1 rejected
+// while bash execution (which does not go through this path) kept working.
+// The macOS native module returns a raw fd; the Linux stub must match it.
+test('openBeneath returns a numeric fd usable with the node:fs callback API', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+
+  const fd = await safeFs.openBeneath(h, ['app.txt'], 'w+', 0o600);
+  assert.equal(typeof fd, 'number', 'callers hand this straight to fs.write(fd, ...)');
+
+  try {
+    const payload = Buffer.from('hello world');
+    const written = await new Promise((res, rej) =>
+      fs.write(fd, payload, 0, payload.byteLength, null, (e, n) => (e ? rej(e) : res(n))));
+    assert.equal(written, 11);
+
+    const buf = Buffer.alloc(11);
+    await new Promise((res, rej) =>
+      fs.read(fd, buf, 0, 11, 0, (e, n) => (e ? rej(e) : res(n))));
+    assert.equal(buf.toString('utf8'), 'hello world');
+
+    const st = await new Promise((res, rej) =>
+      fs.fstat(fd, (e, s) => (e ? rej(e) : res(s))));
+    assert.equal(st.size, 11);
+
+    await new Promise((res, rej) => fs.fsync(fd, (e) => (e ? rej(e) : res())));
+  } finally {
+    fs.closeSync(fd);
+  }
+});
+// The ELOOP retry branch (a symlink that legitimately stays inside the root)
+// re-opens the realpath and must return a raw fd on that path too.
+test('the in-root symlink retry branch also returns a numeric fd', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+
+  fs.writeFileSync(path.join(root, 'real.txt'), 'inside');
+  fs.symlinkSync(path.join(root, 'real.txt'), path.join(root, 'alias.txt'));
+
+  const fd = await safeFs.openBeneath(h, ['alias.txt'], 'r');
+  assert.equal(typeof fd, 'number');
+  try {
+    const buf = Buffer.alloc(6);
+    await new Promise((res, rej) =>
+      fs.read(fd, buf, 0, 6, 0, (e, n) => (e ? rej(e) : res(n))));
+    assert.equal(buf.toString('utf8'), 'inside');
+  } finally {
+    fs.closeSync(fd);
+  }
+});
+test('an explicit mode argument still wins over the derived default', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['explicit.txt'], 'w', 0o640);
+  fs.closeSync(fd);
+  assert.equal((fs.statSync(path.join(root, 'explicit.txt')).mode & 0o777).toString(8), '640');
+});
+test('overwriting an existing file leaves its permissions alone', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o700);
+  const target = path.join(root, 'keep.txt');
+  fs.writeFileSync(target, 'old');
+  fs.chmodSync(target, 0o664);
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['keep.txt'], 'w');
+  fs.closeSync(fd);
+  assert.equal((fs.statSync(target).mode & 0o777).toString(8), '664');
+});
+// --- Option A: atomic replace must not drop the replaced file's permissions ---
+// The app writes files atomically: it creates a hidden temp file next to the
+// target, fills it, then renames it over the target. rename() swaps the inode,
+// so without this the replacement carries the temp file's mode and the user's
+// 0664 file silently came back as 0600 (owner report 2026-09-05).
+test('renaming onto an existing file inherits the replaced permissions', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const h = await safeFs.openRootDir(root);
+
+  const target = path.join(root, 'notes.md');
+  fs.writeFileSync(target, 'alt');
+  fs.chmodSync(target, 0o664);
+
+  const tmp = path.join(root, '.notes.md.1234.abc.tmp');
+  fs.writeFileSync(tmp, 'neu');
+  fs.chmodSync(tmp, 0o600);
+
+  await safeFs.renameBeneath(h, ['.notes.md.1234.abc.tmp'], ['notes.md']);
+
+  assert.equal(fs.readFileSync(target, 'utf8'), 'neu');
+  assert.equal((fs.statSync(target).mode & 0o777).toString(8), '664',
+    'the file kept its place, so it keeps its permissions');
+});
+test('renaming onto a free name keeps the source permissions', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const h = await safeFs.openRootDir(root);
+
+  const src = path.join(root, 'quelle.txt');
+  fs.writeFileSync(src, 'x');
+  fs.chmodSync(src, 0o640);
+
+  await safeFs.renameBeneath(h, ['quelle.txt'], ['ziel.txt']);
+  assert.equal((fs.statSync(path.join(root, 'ziel.txt')).mode & 0o777).toString(8), '640');
+});
+// Regression: newly created files came out 0600 regardless of where they were
+// written, because the stub hardcoded the native module's `?? 384` default.
+// In a normal work folder (0775, neighbours 0664) a bridge-written file landed
+// as 0600 and stood out from every file around it (owner report 2026-09-05);
+// the same app writing through bash produced 0664, so one app produced two
+// permission regimes. Files must not be more accessible than the directory
+// holding them, and no less accessible either: a private root (0700, e.g. the
+// app's own data dir) still gets 0600.
+test('a new file in a group-readable root follows the umask, not a hardcoded 0600', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['written.txt'], 'w');
+  fs.closeSync(fd);
+
+  const mode = fs.statSync(path.join(root, 'written.txt')).mode & 0o777;
+  assert.equal(mode.toString(8), '664', 'should match 0666 & ~umask, like its neighbours');
+});
+test('a new file in a private root (0700) stays 0600', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o700);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['secret.json'], 'w');
+  fs.closeSync(fd);
+
+  const mode = fs.statSync(path.join(root, 'secret.json')).mode & 0o777;
+  assert.equal(mode.toString(8), '600', 'app-private data must not be loosened');
+});
+// --- Option B: the app's own 0600 default must not win in a shared folder ---
+// writeFileAtomic() resolves `n?.mode ?? 384` and hd() resolves `r ?? 384`
+// again, so 0600 reaches us as an explicit argument and is indistinguishable
+// from "the caller expressed no preference". In a group-accessible root that is
+// almost certainly not a deliberate choice; in a private root it is kept.
+test('the app default 0600 is relaxed to the umask default in a shared root', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o775);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['neu.md'], 'w', 0o600);
+  fs.closeSync(fd);
+  assert.equal((fs.statSync(path.join(root, 'neu.md')).mode & 0o777).toString(8), '664');
+});
+test('the app default 0600 is kept in a private root', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o700);
+  const prev = process.umask(0o002);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['state.json'], 'w', 0o600);
+  fs.closeSync(fd);
+  assert.equal((fs.statSync(path.join(root, 'state.json')).mode & 0o777).toString(8), '600',
+    'app-private data stays private');
+});
+
+// A permissive umask is the one case where the derived default could hand out
+// world-write: 0666 & ~0000 is 0666. That is what every ordinary program does
+// too, but this path writes files on behalf of a remote peer, so the bit is
+// cheap to withhold. Raised in review of the upstream PR (2026-09-05).
+test('a new file never becomes world-writable, whatever the umask', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o777);
+  const prev = process.umask(0o000);
+  t.after(() => process.umask(prev));
+
+  const h = await safeFs.openRootDir(root);
+  const fd = await safeFs.openBeneath(h, ['loose.txt'], 'w', 0o600);
+  fs.closeSync(fd);
+
+  const mode = fs.statSync(path.join(root, 'loose.txt')).mode & 0o777;
+  assert.equal(mode & 0o002, 0, 'world-write must never be granted');
+  assert.equal(mode.toString(8), '664');
 });
