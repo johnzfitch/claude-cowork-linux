@@ -37,7 +37,23 @@ MIN_ARCHIVE_SIZE=100000000
 
 # Temp directory (cleaned up on exit)
 WORK_DIR=$(mktemp -d)
-cleanup() { rm -rf "$WORK_DIR" 2>/dev/null || true; }
+# extract_archive() stages the new tree beside the live one and swaps at the
+# end; these track the two transient dirs so a die() anywhere in between
+# cannot strand them -- or worse, exit with the app moved aside and nothing
+# in its place.
+STAGING_DIR=""
+OLD_TREE_DIR=""
+cleanup() {
+    rm -rf "$WORK_DIR" 2>/dev/null || true
+    if [[ -n "$STAGING_DIR" ]]; then
+        rm -rf "$STAGING_DIR" 2>/dev/null || true
+    fi
+    # A failure between the two mvs of the swap leaves the app at *.old.$$
+    # with nothing at the live path -- put it back.
+    if [[ -n "$OLD_TREE_DIR" && -d "$OLD_TREE_DIR" && ! -d "$INSTALL_DIR/linux-app-extracted" ]]; then
+        mv "$OLD_TREE_DIR" "$INSTALL_DIR/linux-app-extracted" 2>/dev/null || true
+    fi
+}
 trap cleanup EXIT INT TERM
 
 # Colors
@@ -665,9 +681,24 @@ extract_archive() {
     local asar_file="$claude_app/Contents/Resources/app.asar"
     [[ -f "$asar_file" ]] || die "app.asar not found at: $asar_file"
 
-    # Extract on top of existing tree (overwrites stale files, preserves extras)
+    # Stage into a fresh tree beside the live one, swap at the end. Extracting
+    # on top of the existing tree accumulated every chunk of every asar version
+    # ever installed: chunk names are content-hashed, so an upgrade never
+    # overwrites the old bundle's files, it only adds new ones. Nothing loads
+    # the leftovers, but the doctor's cowork-patched grep and apply_patches'
+    # any_patched test both match on them -- so a bundle whose platform gate no
+    # longer matches our patterns (#189) still reports success on any machine
+    # that upgraded in place, with Cowork silently disabled. A fresh tree makes
+    # that failure loud everywhere, not just on fresh installs.
+    #
+    # The staging dir sits beside target_dir, not in $WORK_DIR: mktemp -d may
+    # be another filesystem, where the final mv degrades to a copy.
+    # Orphans from a previous interrupted run are ours to sweep.
+    rm -rf "$target_dir".staging.* "$target_dir".old.* 2>/dev/null || true
+    STAGING_DIR="$target_dir.staging.$$"
     log_info "Extracting app.asar..."
-    asar extract "$asar_file" "$target_dir" || die "Failed to extract app.asar"
+    asar extract "$asar_file" "$STAGING_DIR" || die "Failed to extract app.asar"
+    local target_dir="$STAGING_DIR"
 
     # Copy unpacked native modules if present
     local unpacked="$claude_app/Contents/Resources/app.asar.unpacked"
@@ -698,6 +729,20 @@ extract_archive() {
     if ! ls "$target_dir/resources/i18n"/*.json >/dev/null 2>&1; then
         log_warn "No i18n JSON files found in resources/i18n/ — the app may fail to start"
         log_warn "Try re-running the installer with a fresh download"
+    fi
+
+    # Swap. The live tree survives any failure above unchanged; from here,
+    # cleanup() restores it if the second mv never happens.
+    local live_dir="$INSTALL_DIR/linux-app-extracted"
+    if [[ -d "$live_dir" ]]; then
+        OLD_TREE_DIR="$live_dir.old.$$"
+        mv "$live_dir" "$OLD_TREE_DIR" || die "Failed to move the old tree aside"
+    fi
+    mv "$STAGING_DIR" "$live_dir" || die "Failed to move the staged tree into place"
+    STAGING_DIR=""
+    if [[ -n "$OLD_TREE_DIR" ]]; then
+        rm -rf "$OLD_TREE_DIR"
+        OLD_TREE_DIR=""
     fi
 
     log_success "Extracted app to linux-app-extracted/"
@@ -1662,4 +1707,10 @@ main() {
     echo ""
 }
 
-main "$@"
+# Run main only when executed. `return` succeeds only in a sourced file, and
+# unlike a BASH_SOURCE comparison it stays true for `curl ... | bash`, where
+# BASH_SOURCE is unset. Sourcing is for tests (tests/test-extract-swap.sh
+# drives extract_archive against a fixture tree).
+if ! (return 0 2>/dev/null); then
+    main "$@"
+fi

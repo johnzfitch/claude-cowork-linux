@@ -59,6 +59,8 @@ jobs:
       # @ant/claude-native without the safe_fs.js its index.js require()s.
       - name: Launcher stub sync
         run: bash tests/test-launcher-sync.sh
+      - name: Extract staging/swap tests
+        run: bash tests/test-extract-swap.sh
 
       # Stage 1 of the install harness is pure static analysis -- no network, no
       # Docker, no Arch -- so it can run here even though stages 2-8 cannot.
