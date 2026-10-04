@@ -2,6 +2,11 @@
 import struct, os, sys
 
 icns_path, icon_root = sys.argv[1], sys.argv[2]
+# Optional icon name: the Nix package and install.sh use 'claude', the PKGBUILD's
+# desktop entry names 'claude-cowork'.
+icon_name = sys.argv[3] if len(sys.argv) > 3 else 'claude'
+if not icon_name or '/' in icon_name or icon_name.startswith('.'):
+    raise SystemExit('invalid icon name: %r' % icon_name)
 with open(icns_path, 'rb') as f:
     data = f.read()
 
@@ -18,7 +23,7 @@ while offset < len(data) - 8:
     if px and chunk_data[:8] == b'\x89PNG\r\n\x1a\n':
         d = os.path.join(icon_root, f'{px}x{px}', 'apps')
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, 'claude.png'), 'wb') as out:
+        with open(os.path.join(d, icon_name + '.png'), 'wb') as out:
             out.write(chunk_data)
         installed.append(px)
     offset += chunk_size

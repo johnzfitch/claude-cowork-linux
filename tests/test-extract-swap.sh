@@ -104,6 +104,9 @@ export PATH="$FAKE_BIN:$PATH"
 # shellcheck source=../install.sh
 source "$REPO_ROOT/install.sh"
 set +e   # install.sh turns on -e; assertions below must not abort the harness
+# install.sh installs its own EXIT trap (cleanup of its WORK_DIR and staging
+# dirs), replacing ours -- so $TMP leaked on every run. Chain both.
+trap 'cleanup; rm -rf "$TMP"' EXIT
 
 LIVE="$INSTALL_DIR/linux-app-extracted"
 
