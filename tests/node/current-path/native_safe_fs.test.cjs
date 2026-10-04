@@ -536,3 +536,28 @@ test('unlink and mkdir report EACCES when their directory is moved out mid-op', 
   moveOnReadlinkCall(t, 1, path.join(root, 'b'), path.join(outside, 'b'));
   await assert.rejects(() => safeFs.mkdirBeneath(h, ['b', 'd']), { code: 'EACCES' });
 });
+
+// Review on #196: the pinned parent was opened O_RDONLY, which needs read
+// permission, so every op under a write+search-only directory (0733, a drop
+// box) failed EACCES although the filesystem allows creating, renaming and
+// unlinking a known child there. The parent is now pinned with O_PATH. The
+// test makes the directory 0333 so its owner -- whoever runs this -- has
+// write+search but no read. Root bypasses the check, so this proves nothing
+// when run as root; CI runs it unprivileged.
+test('ops under a write+search-only directory still work', async (t) => {
+  const root = tmpRoot(t);
+  const drop = path.join(root, 'drop');
+  fs.mkdirSync(drop);
+  fs.chmodSync(drop, 0o333);
+  t.after(() => { try { fs.chmodSync(drop, 0o755); } catch (_) {} });
+  const h = await safeFs.openRootDir(root);
+
+  const fd = await safeFs.openBeneath(h, ['drop', 'f'], 'w');
+  fs.writeSync(fd, 'x');
+  fs.closeSync(fd);
+  await safeFs.renameBeneath(h, ['drop', 'f'], ['drop', 'g']);
+  await safeFs.mkdirBeneath(h, ['drop', 'd']);
+  await safeFs.unlinkBeneath(h, ['drop', 'g']);
+  fs.chmodSync(drop, 0o755);
+  assert.deepEqual(fs.readdirSync(drop).sort(), ['d']);
+});

@@ -333,7 +333,9 @@ package() {
 #   disclaimer -- <cmd> [args...]
 #   disclaimer <cmd> [args...]                  (older)
 # Leading flags are consumed only when every one is flag-shaped AND a `--`
-# follows them; anything else is left as-is and refused below. Flags are
+# follows them; anything else is left as-is and refused below. "Flag-shaped"
+# is exactly the in-process registry's isWrapperFlag(): -name or --name, the
+# name a letter then letters/digits/_/-, optionally =value. Flags are
 # ignored: the CLI runs in this process, as it always has.
 
 case "${1-}" in
@@ -341,10 +343,16 @@ case "${1-}" in
     n=0
     for a in "$@"; do
       n=$((n + 1))
+      [ "$a" = "--" ] && { shift "$n"; break; }
       case "$a" in
-        --) shift "$n"; break ;;
-        -[A-Za-z]*|--[A-Za-z]*) ;;
+        -*) ;;
         *) break ;;
+      esac
+      name=${a#-}
+      name=${name#-}
+      name=${name%%=*}
+      case "$name" in
+        ''|[!A-Za-z]*|*[!A-Za-z0-9_-]*) break ;;
       esac
     done
     ;;

@@ -89,6 +89,11 @@ out="$(run --pgroup -- "$MAC_CLI" --output-format stream-json)"; rc=$?
     && pass "--pgroup -- <cli> args (2.7032.0 shape)" \
     || fail "--pgroup shape: rc=$rc out=$out err=$(cat "$TMP/err")"
 
+out="$(run --pgroup --mode=a/b:c -q -- "$MAC_CLI" -p)"; rc=$?
+[[ $rc -eq 0 && "$out" == $'CLI-RAN\n[-p]' ]] \
+    && pass "flags with =values (any characters after =), as isWrapperFlag allows" \
+    || fail "flag=value shape: rc=$rc out=$out"
+
 out="$(run -- "$MAC_CLI" -p hi)"; rc=$?
 [[ $rc -eq 0 && "$out" == $'CLI-RAN\n[-p]\n[hi]' ]] \
     && pass "-- <cli> args (1.40609.0 shape)" \
@@ -118,6 +123,11 @@ for argv in \
     "--pgroup $MAC_CLI" \
     "--cwd /tmp -- /bin/echo PWNED" \
     "--cwd /tmp -- $MAC_CLI" \
+    "--bad/value -- $MAC_CLI" \
+    "---x -- $MAC_CLI" \
+    "- -- $MAC_CLI" \
+    "-9 -- $MAC_CLI" \
+    "--a.b -- $MAC_CLI" \
     "--" \
     "--pgroup --"; do
     # shellcheck disable=SC2086

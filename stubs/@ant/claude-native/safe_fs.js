@@ -112,11 +112,26 @@ function closeQuietly(fd) {
   fs.close(fd, () => {});
 }
 
+// O_PATH: a directory fd that pins the inode without needing read permission
+// on it, so a write+search-only directory (0733, a drop box) still works -- a
+// plain O_RDONLY open of it fails EACCES although creating, renaming or
+// unlinking a known child there is allowed. Node does not export the
+// constant; 010000000 is its value on every Linux architecture Node supports.
+const O_PATH = fs.constants.O_PATH !== undefined ? fs.constants.O_PATH : 0o10000000;
+
 // Open a directory and prove, from the fd itself, that it lies beneath base.
 // Returns { fd, real }; the caller owns the fd.
 async function openDirBeneath(base, dirPath) {
   const c = fs.constants;
-  const fd = await fdCall(fs.open, dirPath, c.O_RDONLY | c.O_DIRECTORY);
+  let fd;
+  try {
+    fd = await fdCall(fs.open, dirPath, O_PATH | c.O_DIRECTORY);
+  } catch (e) {
+    // A kernel without O_PATH (pre-2.6.39) rejects it as EINVAL; fall back to
+    // a read open, which works everywhere except write-only directories.
+    if (!e || e.code !== 'EINVAL') throw e;
+    fd = await fdCall(fs.open, dirPath, c.O_RDONLY | c.O_DIRECTORY);
+  }
   try {
     let real;
     try {
