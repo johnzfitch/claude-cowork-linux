@@ -244,14 +244,33 @@ function createExecCapabilityRegistry({
   // the bundle routes through it", which grows between builds, so no allowlist
   // maintained at this callsite can stay ahead of it. The test asserting this
   // agrees with resolve() for every class is what keeps that true.
+  function isWrapperFlag(a) {
+    return typeof a === 'string' && /^--?[A-Za-z][A-Za-z0-9_-]*(=[^\0]*)?$/.test(a);
+  }
+
   function resolveDisclaimerCommand(args) {
     if (!Array.isArray(args) || args.length === 0) return null;
-    // Newer bundles (asar >= ~1.40609.0) invoke the wrapper as
-    // `disclaimer -- <cmd> [args...]`; older ones passed `<cmd> [args...]`.
-    // Without this, cmd is "--", realpath fails, and the caller falls through
-    // to the exit-127 disclaimer stub: #132's failure mode, new arg shape.
+    // Three argv shapes seen from the bundle:
+    //   <cmd> [args...]                       (older builds)
+    //   -- <cmd> [args...]                    (asar >= ~1.40609.0)
+    //   --pgroup [--flag...] -- <cmd> [args...]  (2.7032.0, #195)
+    // Reading args[0] blindly makes cmd "--" or "--pgroup", realpath fails,
+    // and the caller falls through to the exit-127 disclaimer stub: #132's
+    // failure mode, once per new shape.
+    //
+    // A leading run is taken as wrapper flags only when EVERY element before
+    // the first `--` is flag-shaped. The old shape starts with a path, so a
+    // `--` among the command's own arguments is never mistaken for ours; and
+    // a flag followed by a separate value (`--cwd /x --`) does not match, so
+    // an unknown shape stays unparsed and fails closed below rather than being
+    // guessed at. The flags themselves are dropped: the command is spawned
+    // directly, in this process's group, as the shell wrapper always did.
     // Parsing only -- admission stays delegated to resolveClaudeCli()/resolve().
-    var argv = (args[0] === '--') ? args.slice(1) : args;
+    var argv = args;
+    var sep = args.indexOf('--');
+    if (sep !== -1 && args.slice(0, sep).every(isWrapperFlag)) {
+      argv = args.slice(sep + 1);
+    }
     if (argv.length === 0) return null;
     var cmd = argv[0];
     var rest = argv.slice(1);
