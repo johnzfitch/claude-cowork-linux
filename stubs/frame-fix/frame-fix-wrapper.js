@@ -30,15 +30,60 @@ if (typeof systemPreferences.getUserDefault !== 'function') {
     return undefined;
   };
 }
+if (typeof systemPreferences.registerDefaults !== 'function') {
+  systemPreferences.registerDefaults = function(defaults) {
+    // no-op on Linux — NSUserDefaults registration domain has no equivalent.
+    // Kept consistent with getUserDefault() above, which returns undefined.
+  };
+}
 if (typeof systemPreferences.promptTouchID !== 'function') {
   systemPreferences.promptTouchID = function(reason) {
     return Promise.reject(new Error('Touch ID unavailable on Linux'));
   };
 }
-if (typeof systemPreferences.registerDefaults !== 'function') {
-  systemPreferences.registerDefaults = function(defaults) {
-    // no-op on Linux
+// The rest of the macOS-only systemPreferences surface, in one pass rather than
+// one method per release (#191, #195): each of these is @platform darwin in
+// Electron's typings, so a darwin-gated callsite reached under the platform
+// spoof throws "is not a function" -- and at module load that kills launch.
+// Every answer to a capability or trust question is the refusing one: no
+// Touch ID, no accessibility trust, no media access. Notification
+// subscriptions hand back a distinct positive id so a caller that stores it
+// and later unsubscribes (or tests it for truthiness) behaves, but nothing is
+// ever delivered.
+{
+  let _nextSubscriptionId = 1;
+  const _subscribe = function(event, callback) { return _nextSubscriptionId++; };
+  const _noop = function() { /* no-op on Linux */ };
+  const _macOnlySystemPreferences = {
+    removeUserDefault: _noop,
+    postNotification: _noop,
+    postLocalNotification: _noop,
+    postWorkspaceNotification: _noop,
+    subscribeNotification: _subscribe,
+    subscribeLocalNotification: _subscribe,
+    subscribeWorkspaceNotification: _subscribe,
+    unsubscribeNotification: _noop,
+    unsubscribeLocalNotification: _noop,
+    unsubscribeWorkspaceNotification: _noop,
+    canPromptTouchID: function() { return false; },
+    isTrustedAccessibilityClient: function(prompt) { return false; },
+    getMediaAccessStatus: function(mediaType) { return 'denied'; },
+    askForMediaAccess: function(mediaType) { return Promise.resolve(false); },
+    isSwipeTrackingFromScrollEventsEnabled: function() { return false; },
+    getEffectiveAppearance: function() {
+      // Report what Linux actually resolved rather than inventing a value.
+      try {
+        const { nativeTheme } = require('electron');
+        if (nativeTheme) return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+      } catch (_) {}
+      return 'unknown';
+    },
   };
+  for (const _name of Object.keys(_macOnlySystemPreferences)) {
+    if (typeof systemPreferences[_name] !== 'function') {
+      systemPreferences[_name] = _macOnlySystemPreferences[_name];
+    }
+  }
 }
 
 // Patch macOS-only Electron app methods (NSUserActivity / Handoff APIs).
@@ -57,6 +102,12 @@ if (_earlyApp) {
     // WebAuthn (passkey/security-key) setup is macOS-only; absent on Linux
     // Electron, so the darwin-gated callsite throws and crashes launch. See #128.
     'configureWebAuthn',
+    // App-wide hide/show is an NSApplication concept: @platform darwin in
+    // Electron's typings, absent on Linux. Linux has per-window minimize, not
+    // an application-level hidden state, so these are no-ops and isHidden()
+    // below reports "not hidden" to match.
+    'hide',
+    'show',
   ];
   for (const _m of _macOnlyAppMethods) {
     if (typeof _earlyApp[_m] !== 'function') {
@@ -67,6 +118,14 @@ if (_earlyApp) {
   // by a confirm dialog but stub it defensively so a stray call can't crash.
   if (typeof _earlyApp.moveToApplicationsFolder !== 'function') {
     _earlyApp.moveToApplicationsFolder = function() { return false; };
+  }
+
+  // isHidden() is the reader for the hide/show pair stubbed above. It returns a
+  // boolean rather than nothing, so it cannot go in the no-op list: a caller
+  // that branches on it would read undefined. Seen 2026-09-05 as
+  // "TypeError: o.app.isHidden is not a function" from a BrowserWindow handler.
+  if (typeof _earlyApp.isHidden !== 'function') {
+    _earlyApp.isHidden = function() { return false; };
   }
 }
 
@@ -1673,6 +1732,14 @@ Module.prototype.require = function(id) {
         console.log('[Frame Fix] Stubbed systemPreferences.getUserDefault:', key);
         return undefined;
       };
+      // Guarded, unlike the overrides above (which deliberately force a
+      // Linux answer): this one only exists to fill a gap, so an Electron
+      // that implements registerDefaults keeps its own.
+      if (typeof module.systemPreferences.registerDefaults !== 'function') {
+        module.systemPreferences.registerDefaults = function(defaults) {
+          console.log('[Frame Fix] Stubbed systemPreferences.registerDefaults');
+        };
+      }
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
 

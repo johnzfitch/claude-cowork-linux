@@ -520,3 +520,96 @@ test('a non-object payload is never broadcast', () => {
   for (const bad of [null, undefined, 'x', 42]) ctx.emitCoworkSpaceEvent(bad);
   assert.equal(sent.length, 0);
 });
+
+// The port spoofs process.platform === "darwin", so the asar reaches callsites
+// gated on macOS. app.hide/show/isHidden are all @platform darwin in Electron's
+// own typings and simply absent on Linux, so such a call throws. Observed
+// 2026-09-05 after a restart: "TypeError: o.app.isHidden is not a function",
+// caught by Sentry from a BrowserWindow handler. Same class as the
+// NSUserActivity stubs above (#104, #106).
+test('the wrapper stubs the macOS-only app visibility methods Linux Electron lacks', () => {
+  const wrapperPath = path.join(__dirname, '../../../stubs/frame-fix/frame-fix-wrapper.js');
+  const src = fs.readFileSync(wrapperPath, 'utf8');
+  const start = src.indexOf("const { systemPreferences, app: _earlyApp } = require('electron');");
+  const end = src.indexOf('// Inject frame fix and Cowork support before main app loads');
+  assert.ok(start !== -1 && end > start, 'early stub block not found — did the wrapper header move?');
+
+  // A Linux Electron app object: none of the darwin-only methods exist.
+  const app = {};
+  const systemPreferences = {};
+  const ctx = {
+    require: (id) => (id === 'electron' ? { systemPreferences, app } : require(id)),
+    process,
+    console,
+  };
+  vm.runInNewContext(src.slice(start, end), ctx);
+
+  assert.equal(typeof app.isHidden, 'function', 'isHidden must exist');
+  assert.equal(app.isHidden(), false, 'nothing is hidden app-wide on Linux');
+  assert.equal(typeof app.hide, 'function', 'hide must exist');
+  assert.equal(typeof app.show, 'function', 'show must exist');
+  assert.equal(app.hide(), undefined);
+  assert.equal(app.show(), undefined);
+});
+
+// #191/#195: darwin-only systemPreferences methods are absent on Linux
+// Electron, and the platform spoof routes the bundle into them -- at module
+// load, registerDefaults() killed launch. The rest of that surface is stubbed
+// in one pass, and every capability or trust question gets the refusing answer.
+test('the wrapper stubs the darwin-only systemPreferences surface with refusing answers', async () => {
+  const wrapperPath = path.join(__dirname, '../../../stubs/frame-fix/frame-fix-wrapper.js');
+  const src = fs.readFileSync(wrapperPath, 'utf8');
+  const start = src.indexOf("const { systemPreferences, app: _earlyApp } = require('electron');");
+  const end = src.indexOf('// Inject frame fix and Cowork support before main app loads');
+  assert.ok(start !== -1 && end > start, 'early stub block not found');
+
+  const run = (systemPreferences, extra = {}) => {
+    const ctx = {
+      require: (id) => (id === 'electron' ? { systemPreferences, app: {}, ...extra } : require(id)),
+      process, console, Promise,
+    };
+    vm.runInNewContext(src.slice(start, end), ctx);
+    return systemPreferences;
+  };
+
+  const sp = run({});
+  for (const name of ['registerDefaults', 'setUserDefault', 'getUserDefault', 'removeUserDefault',
+    'postNotification', 'postLocalNotification', 'postWorkspaceNotification',
+    'subscribeNotification', 'subscribeLocalNotification', 'subscribeWorkspaceNotification',
+    'unsubscribeNotification', 'unsubscribeLocalNotification', 'unsubscribeWorkspaceNotification',
+    'canPromptTouchID', 'promptTouchID', 'isTrustedAccessibilityClient',
+    'getMediaAccessStatus', 'askForMediaAccess', 'isSwipeTrackingFromScrollEventsEnabled',
+    'getEffectiveAppearance']) {
+    assert.equal(typeof sp[name], 'function', name + ' must be stubbed');
+  }
+  assert.doesNotThrow(() => sp.registerDefaults({ NSMenuEnableActionImages: false }));
+  assert.equal(sp.canPromptTouchID(), false);
+  await assert.rejects(() => sp.promptTouchID('x'));
+  assert.equal(sp.isTrustedAccessibilityClient(true), false);
+  assert.equal(sp.getMediaAccessStatus('microphone'), 'denied');
+  assert.equal(await sp.askForMediaAccess('camera'), false);
+  const a = sp.subscribeNotification('e', () => {});
+  const b = sp.subscribeWorkspaceNotification('e', () => {});
+  assert.ok(a > 0 && b > 0 && a !== b, 'subscription ids are distinct and truthy');
+  assert.equal(sp.getEffectiveAppearance(), 'unknown');
+  assert.equal(run({}, { nativeTheme: { shouldUseDarkColors: true } }).getEffectiveAppearance(), 'dark');
+
+  // A method Electron does provide is never replaced.
+  const real = () => 'real';
+  assert.equal(run({ getMediaAccessStatus: real }).getMediaAccessStatus, real);
+});
+
+// The require() hook overrides some systemPreferences methods on purpose (to
+// force a Linux answer: media access denied). registerDefaults is only a
+// gap-filler, so there it must be guarded like the early block, or an Electron
+// that implements it would lose its own (review on #196).
+test('the require hook does not replace an existing systemPreferences.registerDefaults', () => {
+  const wrapperPath = path.join(__dirname, '../../../stubs/frame-fix/frame-fix-wrapper.js');
+  const src = fs.readFileSync(wrapperPath, 'utf8');
+  const hook = src.slice(src.indexOf('Module.prototype.require = function'));
+  const assigns = hook.match(/module\.systemPreferences\.registerDefaults\s*=/g) || [];
+  assert.equal(assigns.length, 1, 'expected exactly one registerDefaults assignment in the hook');
+  assert.match(hook,
+    /if \(typeof module\.systemPreferences\.registerDefaults !== 'function'\) \{\s*module\.systemPreferences\.registerDefaults\s*=/,
+    'the hook assignment must be guarded by a typeof check');
+});

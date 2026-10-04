@@ -106,7 +106,7 @@ cd claude-cowork-linux
 ### Running Tests
 
 ```bash
-# All tests (571 tests across 36 files)
+# All tests (599 tests across 36 files)
 node --test tests/node/current-path/*.test.cjs
 
 # Single module
@@ -167,5 +167,8 @@ Changes to these files require extra care and a note in your PR explaining the s
 - `stubs/cowork/sessions_api.js` -- CRLF guards, FD bounds checking
 - `stubs/cowork/asar_adapter.js` -- path traversal protection
 - `stubs/cowork/process_manager.js` -- process spawning
+- `stubs/@ant/claude-native/safe_fs.js` -- `*Beneath` containment (pinned-parent anchoring, `O_NOFOLLOW`)
+- `stubs/cowork/exec_capability_registry.js` -- `resolveDisclaimerCommand()`, the only exec admission point
+- `PKGBUILD` -- the root-owned `Helpers/disclaimer` script, which must stay fail-closed
 
 If your change affects credential handling, verify it against [OAUTH-COMPLIANCE.md](docs/OAUTH-COMPLIANCE.md).

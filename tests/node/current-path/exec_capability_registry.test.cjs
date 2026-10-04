@@ -278,6 +278,53 @@ describe('exec_capability_registry', () => {
         assert.strictEqual(reg.resolveDisclaimerCommand(['--']), null);
       });
 
+      // #195: 2.7032.0 puts wrapper flags before the separator,
+      // `disclaimer --pgroup -- <cmd> [args...]`. Only cmd was read from args[0],
+      // so it was "--pgroup", unresolvable, and every Cowork prompt died on the
+      // fall-through to the stub.
+      it('unwraps wrapper flags before the separator without widening admission', () => {
+        const reg = createExecCapabilityRegistry({
+          homedir: os.homedir(),
+          resolveClaudeBinaryPath: () => '/usr/local/bin/claude',
+        });
+        const cli = '/home/u/.config/Claude/claude-code/2.1.280/claude.app/Contents/MacOS/claude';
+
+        for (const flags of [['--pgroup'], ['--pgroup', '--future-flag'], ['-q', '--mode=x']]) {
+          const result = reg.resolveDisclaimerCommand([...flags, '--', cli, '--output-format', 'stream-json']);
+          assert.ok(result, 'flags ' + flags.join(' ') + ' must unwrap');
+          assert.strictEqual(result.cmd, '/usr/local/bin/claude');
+          assert.deepStrictEqual(result.rest, ['--output-format', 'stream-json'],
+            'wrapper flags and the separator are consumed, not forwarded');
+        }
+
+        // Admission is unchanged behind the flags.
+        assert.strictEqual(
+          reg.resolveDisclaimerCommand(['--pgroup', '--', '/opt/evil/hack']), null);
+        assert.strictEqual(reg.resolveDisclaimerCommand(['--pgroup', '--']), null);
+        // No separator: nothing to unwrap, and "--pgroup" is not a command.
+        assert.strictEqual(reg.resolveDisclaimerCommand(['--pgroup', cli]), null);
+        // A non-flag before the separator (a flag with a separate value, or a
+        // path) means an unknown shape: left unparsed, so it fails closed.
+        assert.strictEqual(
+          reg.resolveDisclaimerCommand(['--cwd', '/tmp', '--', '/opt/evil/hack']), null);
+        assert.strictEqual(
+          reg.resolveDisclaimerCommand(['--cwd', '/tmp', '--', cli]), null);
+      });
+
+      // The old shape must not be reinterpreted: a `--` among the COMMAND's own
+      // arguments is the command's, not ours.
+      it('leaves a `--` inside the old shape\'s own arguments alone', () => {
+        const reg = createExecCapabilityRegistry({
+          homedir: os.homedir(),
+          resolveClaudeBinaryPath: () => '/usr/local/bin/claude',
+        });
+        const result = reg.resolveDisclaimerCommand(
+          ['/home/u/.local/bin/claude', '-p', '--', 'literal']);
+        assert.ok(result);
+        assert.strictEqual(result.cmd, '/usr/local/bin/claude');
+        assert.deepStrictEqual(result.rest, ['-p', '--', 'literal']);
+      });
+
       it('resolves system binary commands', (t) => {
         const git = ['/usr/bin/git', '/usr/local/bin/git'].find(p => fs.existsSync(p));
         if (!git) return t.skip('no git at any SYSTEM_PATHS location');

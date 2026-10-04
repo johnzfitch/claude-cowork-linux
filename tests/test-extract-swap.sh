@@ -73,6 +73,10 @@ if [[ "${FAKE_ASAR_FAIL:-}" == "1" ]]; then
     exit 1
 fi
 cp -r "$src"/. "$3/"
+# FAKE_ASAR_INT=1: Ctrl-C lands on the installer just as extraction finishes.
+if [[ "${FAKE_ASAR_INT:-}" == "1" ]]; then
+    kill -INT "$PPID"
+fi
 EOF
 chmod +x "$FAKE_BIN/7z" "$FAKE_BIN/asar"
 
@@ -104,6 +108,9 @@ export PATH="$FAKE_BIN:$PATH"
 # shellcheck source=../install.sh
 source "$REPO_ROOT/install.sh"
 set +e   # install.sh turns on -e; assertions below must not abort the harness
+# install.sh installs its own EXIT trap (cleanup of its WORK_DIR and staging
+# dirs), replacing ours -- so $TMP leaked on every run. Chain both.
+trap 'cleanup; rm -rf "$TMP"' EXIT
 
 LIVE="$INSTALL_DIR/linux-app-extracted"
 
@@ -137,6 +144,24 @@ rc=$?
 [[ ! -e "$LIVE/.vite/build/partial.js" ]] \
     && pass "no partial output reached the live tree" \
     || fail "partial output reached the live tree"
+
+section "An interrupt after extraction aborts instead of installing an empty tree"
+# install.sh's INT trap used to run cleanup and then RETURN to the script:
+# cleanup deleted the staging dir, the next mkdir -p recreated it empty, and
+# the swap installed that over the working tree and reported success. Run in
+# its own bash so install.sh's real traps are the ones that fire.
+out="$(FAKE_ASAR_INT=1 bash -c 'source "$1"; set +e; extract_archive "$2"; echo "RETURNED $?"' \
+    _ "$REPO_ROOT/install.sh" "$TMP/archive-v1" 2>&1)"
+rc=$?
+[[ $rc -eq 130 && "$out" != *RETURNED* ]] \
+    && pass "the installer exits 130 on SIGINT" \
+    || fail "the installer carried on after SIGINT (rc=$rc): $(echo "$out" | tail -2)"
+[[ -f "$LIVE/.vite/build/index.chunk-NEWHASH.js" && -f "$LIVE/.vite/build/index.js" ]] \
+    && pass "live tree still the v2 bundle after the interrupt" \
+    || fail "live tree replaced after the interrupt: $(cd "$LIVE" 2>/dev/null && find . | head -5 | tr '\n' ' ')"
+[[ -z "$(find "$INSTALL_DIR" -maxdepth 1 -name 'linux-app-extracted.*' 2>/dev/null)" ]] \
+    && pass "no staging/old orphans after the interrupt" \
+    || fail "staging/old orphans left after the interrupt"
 
 # ============================================================
 echo ""
