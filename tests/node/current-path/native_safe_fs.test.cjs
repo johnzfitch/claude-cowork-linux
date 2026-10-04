@@ -182,7 +182,7 @@ test('the in-root symlink retry branch also returns a numeric fd', async (t) => 
     fs.closeSync(fd);
   }
 });
-test('an explicit mode argument still wins over the derived default', async (t) => {
+test('an explicit mode argument is honoured', async (t) => {
   const root = tmpRoot(t);
   fs.chmodSync(root, 0o775);
   const h = await safeFs.openRootDir(root);
@@ -237,4 +237,240 @@ test('renaming onto a free name keeps the source permissions', async (t) => {
 
   await safeFs.renameBeneath(h, ['quelle.txt'], ['ziel.txt']);
   assert.equal((fs.statSync(path.join(root, 'ziel.txt')).mode & 0o777).toString(8), '640');
+});
+
+// --- Default mode stays 0600 regardless of the root ---
+// #190 proposed relaxing the native module's `?? 384` default to 0664 in a
+// group/other-accessible root. Not adopted: this path writes files on behalf of
+// a remote peer, the macOS native module creates them 0600, and a user who
+// wants them shared can chmod. Pin it so the relaxation does not come back by
+// accident.
+test('with no mode, a new file is 0600 even in a shared root', async (t) => {
+  const root = tmpRoot(t);
+  fs.chmodSync(root, 0o777);
+  const h = await safeFs.openRootDir(root);
+  for (const [name, mode] of [['unset.txt', undefined], ['app-default.txt', 0o600]]) {
+    const fd = await safeFs.openBeneath(h, [name], 'w', mode);
+    fs.closeSync(fd);
+    assert.equal((fs.statSync(path.join(root, name)).mode & 0o777).toString(8), '600', name);
+  }
+});
+
+// --- inheritReplacedMode must never chmod anything outside the root ---
+// renameBeneath checks containment, then copies the target's mode onto the
+// source, then renames. The connected folder is writable by the agent, so the
+// source can be swapped between the check and the chmod. A path-based chmod()
+// follows the swapped-in symlink and applies an attacker-chosen mode to any
+// file the user owns. These tests open that window deterministically by
+// swapping at the lstat() of the target, which sits inside it.
+const REAL_LSTAT = fs.promises.lstat;
+const REAL_REALPATH_SYNC = fs.realpathSync;
+
+function swapAtTargetLstat(t, targetPath, swap) {
+  const orig = REAL_LSTAT;
+  let fired = false;
+  fs.promises.lstat = async function (p, ...rest) {
+    if (!fired && (p === targetPath || String(p).endsWith('/' + path.basename(targetPath)))) { fired = true; swap(); }
+    return orig.call(this, p, ...rest);
+  };
+  t.after(() => { fs.promises.lstat = orig; });
+}
+
+test('a source swapped for an out-of-root symlink mid-rename is never chmodded through', async (t) => {
+  const root = tmpRoot(t);
+  const outside = tmpRoot(t);
+  const victim = path.join(outside, 'authorized_keys');
+  fs.writeFileSync(victim, 'ssh-ed25519 AAAA');
+  fs.chmodSync(victim, 0o600);
+
+  const h = await safeFs.openRootDir(root);
+  const target = path.join(root, 'notes.md');
+  fs.writeFileSync(target, 'old');
+  fs.chmodSync(target, 0o777);
+  const tmp = path.join(root, '.notes.md.tmp');
+  fs.writeFileSync(tmp, 'new');
+
+  swapAtTargetLstat(t, target, () => {
+    fs.unlinkSync(tmp);
+    fs.symlinkSync(victim, tmp);
+  });
+  await safeFs.renameBeneath(h, ['.notes.md.tmp'], ['notes.md']).catch(() => {});
+
+  assert.equal((fs.statSync(victim).mode & 0o7777).toString(8), '600',
+    'a file outside the root had its mode changed through the swapped link');
+});
+
+test('a source whose parent is swapped for an out-of-root symlink is never chmodded', async (t) => {
+  const root = tmpRoot(t);
+  const outside = tmpRoot(t);
+  const victim = path.join(outside, '.notes.md.tmp');
+  fs.writeFileSync(victim, 'secret');
+  fs.chmodSync(victim, 0o600);
+
+  const h = await safeFs.openRootDir(root);
+  fs.mkdirSync(path.join(root, 'sub'));
+  const target = path.join(root, 'sub', 'notes.md');
+  fs.writeFileSync(target, 'old');
+  fs.chmodSync(target, 0o666);
+  fs.writeFileSync(path.join(root, 'sub', '.notes.md.tmp'), 'new');
+
+  swapAtTargetLstat(t, target, () => {
+    fs.renameSync(path.join(root, 'sub'), path.join(root, 'sub.real'));
+    fs.symlinkSync(outside, path.join(root, 'sub'));
+  });
+  await safeFs.renameBeneath(h, ['sub', '.notes.md.tmp'], ['sub', 'notes.md']).catch(() => {});
+
+  assert.equal((fs.statSync(victim).mode & 0o7777).toString(8), '600',
+    'a file outside the root had its mode changed through a swapped ancestor');
+});
+
+test('a source hard-linked elsewhere does not have the shared inode chmodded', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+  const other = path.join(root, 'other-name');
+  fs.writeFileSync(other, 'x');
+  fs.chmodSync(other, 0o600);
+  fs.linkSync(other, path.join(root, '.tmp'));
+  const target = path.join(root, 'dst');
+  fs.writeFileSync(target, 'old');
+  fs.chmodSync(target, 0o666);
+
+  await safeFs.renameBeneath(h, ['.tmp'], ['dst']);
+  assert.equal((fs.statSync(other).mode & 0o777).toString(8), '600',
+    'a second name for the same inode had its mode changed');
+});
+
+test('setuid, setgid and sticky bits are never carried onto the replacement', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+  const target = path.join(root, 'tool');
+  fs.writeFileSync(target, '#!/bin/sh\n');
+  fs.chmodSync(target, 0o6755);
+  const tmp = path.join(root, '.tool.tmp');
+  fs.writeFileSync(tmp, 'replacement');
+  fs.chmodSync(tmp, 0o600);
+
+  await safeFs.renameBeneath(h, ['.tool.tmp'], ['tool']);
+  const mode = fs.statSync(target).mode;
+  assert.equal((mode & 0o7000), 0, 'special bits survived: ' + (mode & 0o7777).toString(8));
+  assert.equal((mode & 0o777).toString(8), '755');
+});
+
+// --- Every *Beneath op is anchored on a pinned, verified parent fd ---
+// resolveBeneath() is a check; the syscall that follows is a use. Swapping an
+// ancestor directory for an out-of-root symlink in between used to send the
+// op outside the root: open('w') created/truncated, unlink deleted, mkdir
+// created there. These swap right after resolveBeneath's realpath walk.
+function swapAfterResolve(t, swap) {
+  const orig = REAL_REALPATH_SYNC;
+  let fired = false;
+  fs.realpathSync = function (...args) {
+    const r = orig.apply(this, args);
+    if (!fired) { fired = true; swap(); }
+    return r;
+  };
+  t.after(() => { fs.realpathSync = orig; });
+}
+
+function setupSwap(t) {
+  const root = tmpRoot(t);
+  const outside = tmpRoot(t);
+  fs.mkdirSync(path.join(root, 'sub'));
+  const swap = () => {
+    fs.renameSync(path.join(root, 'sub'), path.join(root, 'sub.real'));
+    fs.symlinkSync(outside, path.join(root, 'sub'));
+  };
+  return { root, outside, swap };
+}
+
+test('open("w") through a swapped ancestor neither truncates nor creates outside the root', async (t) => {
+  const { root, outside, swap } = setupSwap(t);
+  fs.writeFileSync(path.join(outside, 'existing'), 'precious');
+  const h = await safeFs.openRootDir(root);
+
+  swapAfterResolve(t, swap);
+  await assert.rejects(() => safeFs.openBeneath(h, ['sub', 'existing'], 'w'), { code: 'EACCES' });
+  assert.equal(fs.readFileSync(path.join(outside, 'existing'), 'utf8'), 'precious');
+
+  // Re-arm for a create of a fresh name.
+  fs.rmSync(path.join(root, 'sub'));
+  fs.renameSync(path.join(root, 'sub.real'), path.join(root, 'sub'));
+  swapAfterResolve(t, swap);
+  await assert.rejects(() => safeFs.openBeneath(h, ['sub', 'planted'], 'w'), { code: 'EACCES' });
+  assert.equal(fs.existsSync(path.join(outside, 'planted')), false);
+});
+
+test('unlink through a swapped ancestor does not delete outside the root', async (t) => {
+  const { root, outside, swap } = setupSwap(t);
+  fs.writeFileSync(path.join(outside, 'keep'), 'x');
+  const h = await safeFs.openRootDir(root);
+  swapAfterResolve(t, swap);
+  await assert.rejects(() => safeFs.unlinkBeneath(h, ['sub', 'keep']), { code: 'EACCES' });
+  assert.ok(fs.existsSync(path.join(outside, 'keep')));
+});
+
+test('mkdir (plain and recursive) through a swapped ancestor creates nothing outside the root', async (t) => {
+  const { root, outside, swap } = setupSwap(t);
+  const h = await safeFs.openRootDir(root);
+  swapAfterResolve(t, swap);
+  await assert.rejects(() => safeFs.mkdirBeneath(h, ['sub', 'd1']), { code: 'EACCES' });
+  assert.equal(fs.existsSync(path.join(outside, 'd1')), false);
+
+  fs.rmSync(path.join(root, 'sub'));
+  fs.renameSync(path.join(root, 'sub.real'), path.join(root, 'sub'));
+  swapAfterResolve(t, swap);
+  await assert.rejects(() => safeFs.mkdirBeneath(h, ['sub', 'd2', 'd3'], { recursive: true }), { code: 'EACCES' });
+  assert.equal(fs.existsSync(path.join(outside, 'd2')), false);
+});
+
+test('an ancestor symlink that stays inside the root still works for every op', async (t) => {
+  const root = tmpRoot(t);
+  fs.mkdirSync(path.join(root, 'real'));
+  fs.symlinkSync(path.join(root, 'real'), path.join(root, 'link'));
+  const h = await safeFs.openRootDir(root);
+
+  await safeFs.mkdirBeneath(h, ['link', 'd']);
+  await safeFs.mkdirBeneath(h, ['link', 'p', 'q'], { recursive: true });
+  const fd = await safeFs.openBeneath(h, ['link', 'f'], 'w');
+  fs.writeSync(fd, 'ok');
+  fs.closeSync(fd);
+  await safeFs.renameBeneath(h, ['link', 'f'], ['link', 'g']);
+  assert.equal(fs.readFileSync(path.join(root, 'real', 'g'), 'utf8'), 'ok');
+  await safeFs.unlinkBeneath(h, ['link', 'g']);
+  assert.ok(fs.statSync(path.join(root, 'real', 'd')).isDirectory());
+  assert.ok(fs.statSync(path.join(root, 'real', 'p', 'q')).isDirectory());
+  assert.equal(fs.existsSync(path.join(root, 'real', 'g')), false);
+});
+
+test('recursive mkdir keeps fs.mkdir\'s return contract and applies the mode', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+  const first = await safeFs.mkdirBeneath(h, ['a', 'b', 'c'], { recursive: true, mode: 0o700 });
+  assert.equal(first, path.join(root, 'a'));
+  assert.equal((fs.statSync(path.join(root, 'a', 'b', 'c')).mode & 0o077), 0);
+  assert.equal(await safeFs.mkdirBeneath(h, ['a', 'b', 'c'], { recursive: true }), undefined);
+  await assert.rejects(() => safeFs.mkdirBeneath(h, ['a']), { code: 'EEXIST' });
+  fs.writeFileSync(path.join(root, 'file'), 'x');
+  await assert.rejects(() => safeFs.mkdirBeneath(h, ['file', 'x'], { recursive: true }));
+});
+
+test('no directory fd is leaked on success or failure', async (t) => {
+  const root = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+  const count = () => fs.readdirSync('/proc/self/fd').length;
+  // Let any lazily-opened runtime fds settle first.
+  await safeFs.mkdirBeneath(h, ['warm']);
+  await new Promise((r) => setTimeout(r, 20));
+  const before = count();
+  for (let i = 0; i < 20; i++) {
+    await safeFs.mkdirBeneath(h, ['x' + i, 'y'], { recursive: true });
+    const fd = await safeFs.openBeneath(h, ['x' + i, 'f'], 'w');
+    fs.closeSync(fd);
+    await safeFs.renameBeneath(h, ['x' + i, 'f'], ['x' + i, 'g']);
+    await safeFs.unlinkBeneath(h, ['x' + i, 'g']);
+    await safeFs.unlinkBeneath(h, ['x' + i, 'missing']).catch(() => {});
+    await safeFs.openBeneath(h, ['nope', 'f'], 'r').catch(() => {});
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(count(), before);
 });
