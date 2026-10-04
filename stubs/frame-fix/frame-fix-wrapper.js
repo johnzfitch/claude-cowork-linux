@@ -1732,9 +1732,14 @@ Module.prototype.require = function(id) {
         console.log('[Frame Fix] Stubbed systemPreferences.getUserDefault:', key);
         return undefined;
       };
-      module.systemPreferences.registerDefaults = function(defaults) {
-        console.log('[Frame Fix] Stubbed systemPreferences.registerDefaults');
-      };
+      // Guarded, unlike the overrides above (which deliberately force a
+      // Linux answer): this one only exists to fill a gap, so an Electron
+      // that implements registerDefaults keeps its own.
+      if (typeof module.systemPreferences.registerDefaults !== 'function') {
+        module.systemPreferences.registerDefaults = function(defaults) {
+          console.log('[Frame Fix] Stubbed systemPreferences.registerDefaults');
+        };
+      }
       console.log('[Frame Fix] systemPreferences patched for Linux');
     }
 

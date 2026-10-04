@@ -15,12 +15,22 @@
 // So every *Beneath op is then anchored: the parent directory is opened, the
 // kernel's own path for that fd (/proc/self/fd/N) is proven to sit beneath the
 // root, and the operation runs on "/proc/self/fd/N/<name>". Lookup through
-// that magic link lands on the pinned directory inode, so a later swap of any
-// ancestor cannot redirect it, and the final component is never followed
-// (O_NOFOLLOW / unlink / rename / mkdir don't follow it). Symlinks that stay
-// inside the root still work, as they do under the native RESOLVE_BENEATH.
-// Everything fails closed with EACCES -- including a missing /proc, since
-// Electron on Linux cannot run without one anyway.
+// that magic link lands on the pinned directory inode, so a later symlink
+// swap of any ancestor cannot redirect it, and the final component is never
+// followed (O_NOFOLLOW / unlink / rename / mkdir don't follow it). Symlinks
+// that stay inside the root still work, as they do under the native
+// RESOLVE_BENEATH. Everything fails closed with EACCES -- including a missing
+// /proc, since Electron on Linux cannot run without one anyway.
+//
+// What this cannot close without openat2(RESOLVE_BENEATH), which Node does not
+// expose: the pinned directory itself can be RENAMED out of the root between
+// the check and the op, and the op then lands in it at its new location. That
+// is a much smaller hole than a symlink swap -- rename() only moves the
+// directory somewhere the mover can already write, and the op still touches
+// only that directory's own entries, never an arbitrary path such as ~/.ssh.
+// It is narrowed further by checking again after the op: openBeneath refuses
+// (closes, EACCES) an fd whose file is not beneath the root, so no remote
+// content is ever written through it, and the other ops report EACCES.
 // openBeneath hands back a raw numeric fd, matching the native module: the
 // caller stores that value and drives it through the node:fs callback API
 // (write / read / fstat / fsync / ftruncate / fchmod), which requires an int32.
@@ -125,13 +135,50 @@ async function openDirBeneath(base, dirPath) {
 // Run fn on an anchored path for absPath's final component: its parent is
 // pinned by fd and verified, so nothing above the final component can be
 // swapped out from under the operation.
-async function inPinnedParent(base, absPath, fn) {
+// release(result) undoes a result the caller will never see (closes an fd).
+async function inPinnedParent(base, absPath, fn, release) {
   const dir = await openDirBeneath(base, path.dirname(absPath));
   try {
-    return await fn(PROC_FD + dir.fd + '/' + path.basename(absPath), dir);
+    const result = await fn(PROC_FD + dir.fd + '/' + path.basename(absPath), dir);
+    // The pinned directory can be renamed out of the root while fn runs (see
+    // the header). The op has happened, but its caller must not believe it
+    // happened beneath the root.
+    try {
+      await assertFdBeneath(base, dir.fd);
+    } catch (e) {
+      if (release) release(result);
+      throw e;
+    }
+    return result;
   } finally {
     closeQuietly(dir.fd);
   }
+}
+
+// Prove an open fd (file or directory) is still beneath base, by the kernel's
+// own path for it.
+async function assertFdBeneath(base, fd) {
+  let real;
+  try {
+    real = await fs.promises.readlink(PROC_FD + fd);
+  } catch (_) {
+    throw denied('safe-fs: cannot verify the path (is /proc mounted?)');
+  }
+  if (!isWithin(base, real)) throw denied('safe-fs: path left the root during the operation');
+}
+
+// openFd, then refuse the fd unless its file is beneath base. Closing it here
+// means nothing the caller writes can reach a file whose directory was moved
+// out of the root mid-open.
+async function openFdBeneath(base, p, nflags, fmode) {
+  const fd = await openFd(p, nflags, fmode);
+  try {
+    await assertFdBeneath(base, fd);
+  } catch (e) {
+    closeQuietly(fd);
+    throw e;
+  }
+  return fd;
 }
 
 async function mkdirBeneath(root, segments, opts) {
@@ -311,9 +358,9 @@ async function openBeneath(root, segments, flags, mode) {
   const target = resolveBeneath(root, segments);
   const nflags = numericFlags(flags) | fs.constants.O_NOFOLLOW;
   const fmode = mode == null ? 0o600 : mode;
-  if (target === base) return openFd(base, nflags, fmode);
+  if (target === base) return openFdBeneath(base, base, nflags, fmode);
   try {
-    return await inPinnedParent(base, target, (p) => openFd(p, nflags, fmode));
+    return await inPinnedParent(base, target, (p) => openFdBeneath(base, p, nflags, fmode), closeQuietly);
   } catch (e) {
     if (!e || e.code !== 'ELOOP') throw e;
     // The final component IS a symlink. Native RESOLVE_BENEATH permits links
@@ -330,7 +377,7 @@ async function openBeneath(root, segments, flags, mode) {
     if (real === base || !isWithin(base, real)) {
       throw denied('safe-fs: symlinked path escapes root');
     }
-    return inPinnedParent(base, real, (p) => openFd(p, nflags, fmode));
+    return inPinnedParent(base, real, (p) => openFdBeneath(base, p, nflags, fmode), closeQuietly);
   }
 }
 

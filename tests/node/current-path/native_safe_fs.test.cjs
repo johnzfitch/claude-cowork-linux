@@ -474,3 +474,65 @@ test('no directory fd is leaked on success or failure', async (t) => {
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(count(), before);
 });
+
+// --- A pinned directory renamed OUT of the root mid-op ---
+// The parent fd pins the directory inode, so a symlink swap cannot redirect
+// the op -- but the directory itself can be renamed elsewhere between the
+// check and the syscall (review on #196). Without openat2(RESOLVE_BENEATH)
+// that op still lands in the moved directory; what must hold is that the
+// caller is told, and that openBeneath never hands back an fd to a file
+// outside the root, so no remote content is written through it.
+function moveOnReadlinkCall(t, n, from, to) {
+  const orig = REAL_READLINK;
+  let calls = 0;
+  fs.promises.readlink = async function (p, ...rest) {
+    const v = await orig.call(this, p, ...rest);
+    if (++calls === n) fs.renameSync(from, to);
+    return v;
+  };
+  t.after(() => { fs.promises.readlink = orig; });
+}
+const REAL_READLINK = fs.promises.readlink;
+
+test('openBeneath refuses the fd when its directory is moved out after the parent check', async (t) => {
+  const root = tmpRoot(t);
+  const outside = tmpRoot(t);
+  fs.mkdirSync(path.join(root, 'sub'));
+  const h = await safeFs.openRootDir(root);
+  const before = fs.readdirSync('/proc/self/fd').length;
+  // call 1 = parent verification; move right after it.
+  moveOnReadlinkCall(t, 1, path.join(root, 'sub'), path.join(outside, 'sub'));
+  await assert.rejects(() => safeFs.openBeneath(h, ['sub', 'f'], 'w'), { code: 'EACCES' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(fs.readdirSync('/proc/self/fd').length, before, 'refused fd was not closed');
+});
+
+test('openBeneath refuses and closes the fd when the directory moves after the file check', async (t) => {
+  const root = tmpRoot(t);
+  const outside = tmpRoot(t);
+  fs.mkdirSync(path.join(root, 'sub'));
+  const h = await safeFs.openRootDir(root);
+  const before = fs.readdirSync('/proc/self/fd').length;
+  // call 1 = parent check, call 2 = opened-file check; move after call 2 so
+  // only the directory re-check (call 3) can catch it.
+  moveOnReadlinkCall(t, 2, path.join(root, 'sub'), path.join(outside, 'sub'));
+  await assert.rejects(() => safeFs.openBeneath(h, ['sub', 'f'], 'w'), { code: 'EACCES' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(fs.readdirSync('/proc/self/fd').length, before, 'fd from the abandoned open leaked');
+});
+
+test('unlink and mkdir report EACCES when their directory is moved out mid-op', async (t) => {
+  const root = tmpRoot(t);
+  const outside = tmpRoot(t);
+  const h = await safeFs.openRootDir(root);
+
+  fs.mkdirSync(path.join(root, 'a'));
+  fs.writeFileSync(path.join(root, 'a', 'x'), '');
+  moveOnReadlinkCall(t, 1, path.join(root, 'a'), path.join(outside, 'a'));
+  await assert.rejects(() => safeFs.unlinkBeneath(h, ['a', 'x']), { code: 'EACCES' });
+
+  fs.promises.readlink = REAL_READLINK;
+  fs.mkdirSync(path.join(root, 'b'));
+  moveOnReadlinkCall(t, 1, path.join(root, 'b'), path.join(outside, 'b'));
+  await assert.rejects(() => safeFs.mkdirBeneath(h, ['b', 'd']), { code: 'EACCES' });
+});

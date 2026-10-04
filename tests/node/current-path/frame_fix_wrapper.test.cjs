@@ -598,3 +598,18 @@ test('the wrapper stubs the darwin-only systemPreferences surface with refusing 
   const real = () => 'real';
   assert.equal(run({ getMediaAccessStatus: real }).getMediaAccessStatus, real);
 });
+
+// The require() hook overrides some systemPreferences methods on purpose (to
+// force a Linux answer: media access denied). registerDefaults is only a
+// gap-filler, so there it must be guarded like the early block, or an Electron
+// that implements it would lose its own (review on #196).
+test('the require hook does not replace an existing systemPreferences.registerDefaults', () => {
+  const wrapperPath = path.join(__dirname, '../../../stubs/frame-fix/frame-fix-wrapper.js');
+  const src = fs.readFileSync(wrapperPath, 'utf8');
+  const hook = src.slice(src.indexOf('Module.prototype.require = function'));
+  const assigns = hook.match(/module\.systemPreferences\.registerDefaults\s*=/g) || [];
+  assert.equal(assigns.length, 1, 'expected exactly one registerDefaults assignment in the hook');
+  assert.match(hook,
+    /if \(typeof module\.systemPreferences\.registerDefaults !== 'function'\) \{\s*module\.systemPreferences\.registerDefaults\s*=/,
+    'the hook assignment must be guarded by a typeof check');
+});
