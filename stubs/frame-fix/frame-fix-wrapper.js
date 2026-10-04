@@ -41,10 +41,49 @@ if (typeof systemPreferences.promptTouchID !== 'function') {
     return Promise.reject(new Error('Touch ID unavailable on Linux'));
   };
 }
-if (typeof systemPreferences.registerDefaults !== 'function') {
-  systemPreferences.registerDefaults = function(defaults) {
-    // no-op on Linux
+// The rest of the macOS-only systemPreferences surface, in one pass rather than
+// one method per release (#191, #195): each of these is @platform darwin in
+// Electron's typings, so a darwin-gated callsite reached under the platform
+// spoof throws "is not a function" -- and at module load that kills launch.
+// Every answer to a capability or trust question is the refusing one: no
+// Touch ID, no accessibility trust, no media access. Notification
+// subscriptions hand back a distinct positive id so a caller that stores it
+// and later unsubscribes (or tests it for truthiness) behaves, but nothing is
+// ever delivered.
+{
+  let _nextSubscriptionId = 1;
+  const _subscribe = function(event, callback) { return _nextSubscriptionId++; };
+  const _noop = function() { /* no-op on Linux */ };
+  const _macOnlySystemPreferences = {
+    removeUserDefault: _noop,
+    postNotification: _noop,
+    postLocalNotification: _noop,
+    postWorkspaceNotification: _noop,
+    subscribeNotification: _subscribe,
+    subscribeLocalNotification: _subscribe,
+    subscribeWorkspaceNotification: _subscribe,
+    unsubscribeNotification: _noop,
+    unsubscribeLocalNotification: _noop,
+    unsubscribeWorkspaceNotification: _noop,
+    canPromptTouchID: function() { return false; },
+    isTrustedAccessibilityClient: function(prompt) { return false; },
+    getMediaAccessStatus: function(mediaType) { return 'denied'; },
+    askForMediaAccess: function(mediaType) { return Promise.resolve(false); },
+    isSwipeTrackingFromScrollEventsEnabled: function() { return false; },
+    getEffectiveAppearance: function() {
+      // Report what Linux actually resolved rather than inventing a value.
+      try {
+        const { nativeTheme } = require('electron');
+        if (nativeTheme) return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+      } catch (_) {}
+      return 'unknown';
+    },
   };
+  for (const _name of Object.keys(_macOnlySystemPreferences)) {
+    if (typeof systemPreferences[_name] !== 'function') {
+      systemPreferences[_name] = _macOnlySystemPreferences[_name];
+    }
+  }
 }
 
 // Patch macOS-only Electron app methods (NSUserActivity / Handoff APIs).
