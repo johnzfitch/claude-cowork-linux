@@ -451,7 +451,10 @@ test('recursive mkdir keeps fs.mkdir\'s return contract and applies the mode', a
   assert.equal(await safeFs.mkdirBeneath(h, ['a', 'b', 'c'], { recursive: true }), undefined);
   await assert.rejects(() => safeFs.mkdirBeneath(h, ['a']), { code: 'EEXIST' });
   fs.writeFileSync(path.join(root, 'file'), 'x');
-  await assert.rejects(() => safeFs.mkdirBeneath(h, ['file', 'x'], { recursive: true }));
+  // Same codes fs.mkdir({recursive}) gives: a file at the final component is
+  // EEXIST, one in the middle is ENOTDIR.
+  await assert.rejects(() => safeFs.mkdirBeneath(h, ['file'], { recursive: true }), { code: 'EEXIST' });
+  await assert.rejects(() => safeFs.mkdirBeneath(h, ['file', 'x'], { recursive: true }), { code: 'ENOTDIR' });
 });
 
 test('no directory fd is leaked on success or failure', async (t) => {
@@ -560,4 +563,45 @@ test('ops under a write+search-only directory still work', async (t) => {
   await safeFs.unlinkBeneath(h, ['drop', 'g']);
   fs.chmodSync(drop, 0o755);
   assert.deepEqual(fs.readdirSync(drop).sort(), ['d']);
+});
+
+// Independent review: renameBeneath(root, [], [...]) was a plain path-based
+// rename of the ROOT. Swapping an ancestor of the destination for a symlink
+// after resolveBeneath moved the whole connected folder out of itself, to
+// wherever the link pointed. Renaming the root is never a *Beneath op.
+test('renaming the root itself, or onto it, is refused', async (t) => {
+  const root = tmpRoot(t);
+  fs.mkdirSync(path.join(root, 'x'));
+  fs.writeFileSync(path.join(root, 'f'), 'x');
+  const h = await safeFs.openRootDir(root);
+  await assert.rejects(() => safeFs.renameBeneath(h, [], ['x', 'y']), { code: 'EACCES' });
+  await assert.rejects(() => safeFs.renameBeneath(h, ['f'], []), { code: 'EACCES' });
+  assert.ok(fs.statSync(root).isDirectory());
+  assert.equal(fs.readFileSync(path.join(root, 'f'), 'utf8'), 'x');
+});
+
+// Independent review: a FIFO planted where the app opens a file blocked
+// open() forever, pinning a libuv threadpool thread; four wedged every fs call
+// in the main process. Opens are non-blocking and only a regular file or a
+// directory is handed back.
+test('a FIFO in place of a file is refused at once, for readers and writers', async (t) => {
+  const root = tmpRoot(t);
+  const { execFileSync } = require('child_process');
+  for (let i = 0; i < 6; i++) execFileSync('mkfifo', [path.join(root, 'p' + i)]);
+  const h = await safeFs.openRootDir(root);
+  const before = fs.readdirSync('/proc/self/fd').length;
+  const results = await Promise.race([
+    Promise.allSettled([0, 1, 2, 3, 4, 5].map((i) =>
+      safeFs.openBeneath(h, ['p' + i], i % 2 ? 'r' : 'w'))),
+    new Promise((r) => setTimeout(() => r('TIMEOUT'), 3000)),
+  ]);
+  assert.notEqual(results, 'TIMEOUT', 'open() on a FIFO blocked');
+  for (const r of results) {
+    assert.equal(r.status, 'rejected');
+    assert.ok(['EACCES', 'ENXIO'].includes(r.reason.code), r.reason.code);
+  }
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(fs.readdirSync('/proc/self/fd').length, before, 'refused FIFO fds leaked');
+  // The threadpool is still free.
+  await fs.promises.readFile(__filename);
 });

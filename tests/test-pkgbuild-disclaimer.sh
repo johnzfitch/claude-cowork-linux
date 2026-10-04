@@ -46,6 +46,16 @@ awk '
 ' "$REPO_ROOT/PKGBUILD" > "$DISCLAIMER"
 chmod +x "$DISCLAIMER"
 
+# The script takes home from the password database, not $HOME. The cases
+# below need a fake home, so they run a copy with only that line swapped for
+# $HOME; the unswapped script is checked separately further down.
+HOME_LINE='home=$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)'
+REAL_DISCLAIMER="$TMP/disclaimer.real"
+cp "$DISCLAIMER" "$REAL_DISCLAIMER"
+awk -v line="$HOME_LINE" '$0 == line { print "home=$HOME"; next } { print }' \
+    "$REAL_DISCLAIMER" > "$DISCLAIMER"
+chmod +x "$DISCLAIMER" "$REAL_DISCLAIMER"
+
 section "Extraction"
 if head -1 "$DISCLAIMER" | grep -q '^#!/bin/sh'; then
     pass "disclaimer script extracted from PKGBUILD"
@@ -157,6 +167,35 @@ else
     [[ $rc -eq 127 ]] && grep -q 'no Linux Claude Code CLI' "$TMP/err" \
         && pass "executable Mach-O candidate skipped; exits 127 with a reason" \
         || fail "Mach-O handling: rc=$rc err=$(cat "$TMP/err")"
+fi
+
+section "The caller's environment does not choose what runs"
+if grep -qxF "$HOME_LINE" "$REAL_DISCLAIMER" && ! grep -q '^home=\$HOME$' "$REAL_DISCLAIMER"; then
+    pass "home comes from getent passwd, not \$HOME"
+else
+    fail "the script does not derive home from the password database"
+fi
+real_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+if [[ -e "$real_home/.local/bin/claude" || -e "$real_home/.local/share/mise/shims/claude" \
+      || -e "$real_home/.asdf/shims/claude" || -e /usr/local/bin/claude || -e /usr/bin/claude ]]; then
+    skip "a real claude CLI exists for this user; not running the unswapped script"
+else
+    out="$(HOME="$H" "$REAL_DISCLAIMER" -- "$MAC_CLI" 2>/dev/null)"; rc=$?
+    [[ $rc -eq 127 && "$out" != *CLI-RAN* ]] \
+        && pass "a claude planted under an overridden \$HOME is not run" \
+        || fail "overridden HOME chose the binary: rc=$rc out=$out"
+fi
+mkdir -p "$TMP/hostile-bin"
+for tool in od tr cut id getent; do
+    printf '#!/bin/sh\ntouch "%s/HIJACKED-%s"\n' "$TMP" "$tool" > "$TMP/hostile-bin/$tool"
+    chmod +x "$TMP/hostile-bin/$tool"
+done
+PATH="$TMP/hostile-bin:$PATH" HOME="$H" "$DISCLAIMER" -- "$MAC_CLI" >/dev/null 2>&1
+PATH="$TMP/hostile-bin:$PATH" HOME="$H" "$REAL_DISCLAIMER" -- "$MAC_CLI" >/dev/null 2>&1
+if compgen -G "$TMP/HIJACKED-*" >/dev/null; then
+    fail "a helper was taken from the caller's PATH: $(cd "$TMP" && ls HIJACKED-*)"
+else
+    pass "od/tr/cut/id/getent are never looked up on the caller's PATH"
 fi
 
 section "Icon: package() installs what the desktop entry names"

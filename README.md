@@ -39,7 +39,7 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 - **Unofficial research preview**: This is reverse-engineered and may break when Claude Desktop updates.
 - **Linux support**: Currently targets **Linux x86_64**. Wayland: auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Ozone backend).
 - **Access**: Requires a Claude account. The installer auto-downloads the Claude Desktop DMG; no macOS machine needed.
-- **Tests**: 597 test cases across 36 test files validating IPC, path translation, security, and session persistence, plus six shell suites covering the patch passes, compat pins, launcher stub sync, install-script static analysis, the installer's staged extract-and-swap, and the AUR package's disclaimer wrapper and icon. All run in CI on every push and pull request.
+- **Tests**: 599 test cases across 36 test files validating IPC, path translation, security, and session persistence, plus six shell suites covering the patch passes, compat pins, launcher stub sync, install-script static analysis, the installer's staged extract-and-swap, and the AUR package's disclaimer wrapper and icon. All run in CI on every push and pull request.
 
 ---
 
@@ -301,7 +301,7 @@ The `stubs/cowork/` orchestration layer provides 15 modules that handle session 
 - **transcript_store.js** persists conversation history to `~/.config/Claude/local-agent-mode-sessions/`
 - **file_watch_manager.js** detects file changes in the working directory
 
-All modules follow XDG Base Directory conventions and are tested with 597 test cases.
+All modules follow XDG Base Directory conventions and are tested with 599 test cases.
 
 </details>
 
@@ -357,7 +357,7 @@ claude-cowork-linux/
 │       ├── frame-fix-wrapper.js        # Early bootstrap: TMPDIR fix, platform spoofing, graceful shutdown
 │       └── frame-fix-entry.js          # Entry point: loads frame-fix-wrapper then main index.js
 ├── tests/
-│   ├── node/current-path/             # 36 test files, 597 node:test cases
+│   ├── node/current-path/             # 36 test files, 599 node:test cases
 │   │   ├── asar_adapter.test.cjs
 │   │   ├── credential_classifier.test.cjs
 │   │   ├── dirs.test.cjs

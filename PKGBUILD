@@ -361,11 +361,21 @@ esac
 CMD="${1-}"
 [ $# -gt 0 ] && shift
 
+# Helpers by absolute path, and home from the password database: the caller's
+# PATH and HOME are not trusted to choose what runs (the registry uses the
+# passwd homedir for the same reason). PATH itself is left alone, since the
+# CLI exec'd below needs the user's.
+home=$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)
+if [ -z "$home" ]; then
+  printf 'disclaimer: cannot determine the home directory\n' >&2
+  exit 127
+fi
+
 # The exec bit is not enough: the bundle hands over macOS paths whose Mach-O
 # binaries are marked executable but cannot run here. Check the magic.
 runs_on_linux() {
   [ -f "$1" ] && [ -x "$1" ] || return 1
-  case "$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')" in
+  case "$(/usr/bin/od -An -tx1 -N4 "$1" 2>/dev/null | /usr/bin/tr -d ' \n')" in
     7f454c46|2321*) return 0 ;;
   esac
   return 1
@@ -380,9 +390,9 @@ case "$CMD" in
 esac
 
 for c in \
-  "$HOME/.local/bin/claude" \
-  "$HOME/.local/share/mise/shims/claude" \
-  "$HOME/.asdf/shims/claude" \
+  "$home/.local/bin/claude" \
+  "$home/.local/share/mise/shims/claude" \
+  "$home/.asdf/shims/claude" \
   "/usr/local/bin/claude" \
   "/usr/bin/claude"; do
   runs_on_linux "$c" && exec "$c" "$@"

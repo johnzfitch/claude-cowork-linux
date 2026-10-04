@@ -54,7 +54,13 @@ cleanup() {
         mv "$OLD_TREE_DIR" "$INSTALL_DIR/linux-app-extracted" 2>/dev/null || true
     fi
 }
-trap cleanup EXIT INT TERM
+# INT/TERM must exit after cleaning up. A bare `trap cleanup INT` returns to
+# the script: an interrupt after `asar extract` deleted the staging dir, the
+# next mkdir -p recreated it empty, and the swap installed that empty tree
+# over the working one and reported success.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Colors
 RED='\033[0;31m'

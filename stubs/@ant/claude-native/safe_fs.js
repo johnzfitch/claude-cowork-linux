@@ -185,9 +185,20 @@ async function assertFdBeneath(base, fd) {
 // openFd, then refuse the fd unless its file is beneath base. Closing it here
 // means nothing the caller writes can reach a file whose directory was moved
 // out of the root mid-open.
+//
+// O_NONBLOCK, then only a regular file or directory is handed back. A FIFO
+// planted where the app expects a file would otherwise block open() forever,
+// and each such open pins a libuv threadpool thread: four of them wedge every
+// fs call in the main process (and its exit). O_NONBLOCK makes that open
+// return at once (or fail ENXIO for a writer), and the fstat refuses it; on a
+// regular file the flag has no effect.
 async function openFdBeneath(base, p, nflags, fmode) {
-  const fd = await openFd(p, nflags, fmode);
+  const fd = await openFd(p, nflags | fs.constants.O_NONBLOCK, fmode);
   try {
+    const st = await fdCall(fs.fstat, fd);
+    if (!st.isFile() && !st.isDirectory()) {
+      throw denied('safe-fs: not a regular file or directory');
+    }
     await assertFdBeneath(base, fd);
   } catch (e) {
     closeQuietly(fd);
@@ -212,15 +223,29 @@ async function mkdirBeneath(root, segments, opts) {
   let dir = await openDirBeneath(base, base);
   let first;
   try {
-    for (const seg of rel) {
+    for (let i = 0; i < rel.length; i++) {
+      const seg = rel[i];
       const p = PROC_FD + dir.fd + '/' + seg;
+      let existed = false;
       try {
         await fs.promises.mkdir(p, mode === undefined ? {} : { mode });
         if (first === undefined) first = path.join(dir.real, seg);
       } catch (e) {
         if (!e || e.code !== 'EEXIST') throw e;
+        existed = true;
       }
-      const next = await openDirBeneath(base, p);
+      let next;
+      try {
+        next = await openDirBeneath(base, p);
+      } catch (e) {
+        // fs.mkdir's contract: a non-directory at the FINAL component is
+        // EEXIST (one in the middle stays ENOTDIR).
+        if (existed && e && e.code === 'ENOTDIR' && i === rel.length - 1) {
+          throw Object.assign(new Error('EEXIST: file already exists, mkdir \'' + target + '\''),
+            { code: 'EEXIST', errno: -17, syscall: 'mkdir', path: target });
+        }
+        throw e;
+      }
       closeQuietly(dir.fd);
       dir = next;
     }
@@ -295,9 +320,12 @@ async function renameBeneath(root, fromSegments, toSegments) {
   const from = resolveBeneath(root, fromSegments);
   const to = resolveBeneath(root, toSegments);
   if (from === base || to === base) {
-    // Renaming the root itself, or onto it: no parent of ours to pin, and the
-    // kernel refuses both anyway (EBUSY / EINVAL / ENOTEMPTY). Let it say so.
-    return fs.promises.rename(from, to);
+    // Renaming the root itself, or onto it, is never a *Beneath operation, and
+    // there is no parent of ours to pin. Refuse it outright: renaming the root
+    // INTO one of its own subdirectories is not something the kernel rejects
+    // when an ancestor of the destination was just swapped for a symlink --
+    // the whole connected folder would move out to wherever the link points.
+    throw denied('safe-fs: cannot rename the root itself');
   }
   return inPinnedParent(base, from, (fromP) =>
     inPinnedParent(base, to, async (toP) => {
