@@ -551,3 +551,50 @@ test('the wrapper stubs the macOS-only app visibility methods Linux Electron lac
   assert.equal(app.hide(), undefined);
   assert.equal(app.show(), undefined);
 });
+
+// #191/#195: darwin-only systemPreferences methods are absent on Linux
+// Electron, and the platform spoof routes the bundle into them -- at module
+// load, registerDefaults() killed launch. The rest of that surface is stubbed
+// in one pass, and every capability or trust question gets the refusing answer.
+test('the wrapper stubs the darwin-only systemPreferences surface with refusing answers', async () => {
+  const wrapperPath = path.join(__dirname, '../../../stubs/frame-fix/frame-fix-wrapper.js');
+  const src = fs.readFileSync(wrapperPath, 'utf8');
+  const start = src.indexOf("const { systemPreferences, app: _earlyApp } = require('electron');");
+  const end = src.indexOf('// Inject frame fix and Cowork support before main app loads');
+  assert.ok(start !== -1 && end > start, 'early stub block not found');
+
+  const run = (systemPreferences, extra = {}) => {
+    const ctx = {
+      require: (id) => (id === 'electron' ? { systemPreferences, app: {}, ...extra } : require(id)),
+      process, console, Promise,
+    };
+    vm.runInNewContext(src.slice(start, end), ctx);
+    return systemPreferences;
+  };
+
+  const sp = run({});
+  for (const name of ['registerDefaults', 'setUserDefault', 'getUserDefault', 'removeUserDefault',
+    'postNotification', 'postLocalNotification', 'postWorkspaceNotification',
+    'subscribeNotification', 'subscribeLocalNotification', 'subscribeWorkspaceNotification',
+    'unsubscribeNotification', 'unsubscribeLocalNotification', 'unsubscribeWorkspaceNotification',
+    'canPromptTouchID', 'promptTouchID', 'isTrustedAccessibilityClient',
+    'getMediaAccessStatus', 'askForMediaAccess', 'isSwipeTrackingFromScrollEventsEnabled',
+    'getEffectiveAppearance']) {
+    assert.equal(typeof sp[name], 'function', name + ' must be stubbed');
+  }
+  assert.doesNotThrow(() => sp.registerDefaults({ NSMenuEnableActionImages: false }));
+  assert.equal(sp.canPromptTouchID(), false);
+  await assert.rejects(() => sp.promptTouchID('x'));
+  assert.equal(sp.isTrustedAccessibilityClient(true), false);
+  assert.equal(sp.getMediaAccessStatus('microphone'), 'denied');
+  assert.equal(await sp.askForMediaAccess('camera'), false);
+  const a = sp.subscribeNotification('e', () => {});
+  const b = sp.subscribeWorkspaceNotification('e', () => {});
+  assert.ok(a > 0 && b > 0 && a !== b, 'subscription ids are distinct and truthy');
+  assert.equal(sp.getEffectiveAppearance(), 'unknown');
+  assert.equal(run({}, { nativeTheme: { shouldUseDarkColors: true } }).getEffectiveAppearance(), 'dark');
+
+  // A method Electron does provide is never replaced.
+  const real = () => 'real';
+  assert.equal(run({ getMediaAccessStatus: real }).getMediaAccessStatus, real);
+});
