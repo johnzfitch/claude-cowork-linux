@@ -32,7 +32,7 @@ const { redactHomeDir } = require('./credential_classifier.js');
 //   - Replaces VM paths (/sessions/...) with real host paths
 //   - Filters out temporary desktop runtime paths
 //
-// Used by ipc-handler-setup.js to maintain session state.
+// Used by the claude-swift stub (createSessionStore) to maintain session state.
 
 function computeMetadataChecksum(data) {
   if (!data || typeof data !== 'object') return null;

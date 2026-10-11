@@ -282,7 +282,8 @@ function get_app_info_for_file(filePath) {
 // Module initialization
 // ============================================================
 
-// NOTE: IPC handlers are registered in ipc-handler-setup.js (baked into app.asar)
+// NOTE: this module registers no IPC handlers. Linux overrides are installed
+// by frame-fix-wrapper.js from cowork/ipc_overrides.js.
 
 log('claude-native stub loaded successfully');
 

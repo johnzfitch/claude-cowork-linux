@@ -184,7 +184,8 @@ All path references in code and docs should use XDG paths.
 
 Changes to these files require extra care and a note in your PR explaining the security impact:
 
-- `stubs/@ant/claude-swift/js/index.js` -- `filterEnv()`, `spawn()`, `isPathSafe()`
+- `stubs/@ant/claude-swift/js/index.js` -- `spawn()`, mount symlinks, `isPathSafe()` (from `dirs.js`)
+- `stubs/cowork/env_filter.js` -- `filterEnv()`, the allowlist for the CLI's environment
 - `stubs/@ant/claude-native/index.js` -- `AuthRequest.start()`, `ALLOWED_AUTH_ORIGINS`
 - `stubs/cowork/credential_classifier.js` -- credential detection patterns
 - `stubs/cowork/sessions_api.js` -- CRLF guards, FD bounds checking
