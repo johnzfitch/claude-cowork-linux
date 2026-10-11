@@ -128,7 +128,9 @@ node --test tests/node/current-path/session_orchestrator.test.cjs
 
 # Shell suites -- hermetic, no network. CI runs test-install-paths.sh stage 1
 # only; later stages download Claude Desktop or need Docker.
-for t in tests/test-compat-pins.sh tests/test-cowork-patch.sh tests/test-extract-swap.sh          tests/test-launcher-sync.sh tests/test-pkgbuild-disclaimer.sh; do bash "$t"; done
+for t in tests/test-compat-pins.sh tests/test-cowork-patch.sh tests/test-extract-swap.sh \
+         tests/test-launcher-sync.sh tests/test-launcher-flags.sh \
+         tests/test-pkgbuild-disclaimer.sh; do bash "$t"; done
 bash tests/test-install-paths.sh 1
 ```
 

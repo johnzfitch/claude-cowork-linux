@@ -47,7 +47,7 @@ Claude Cowork is the Claude Desktop mode that works inside a folder you point it
 - **Unofficial research preview.** Reverse-engineered; a Claude Desktop update can break it. [COMPAT.md][compat] records which Desktop builds are known good.
 - **Linux x86_64.** Wayland is auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Electron Ozone backend).
 - **Access.** Requires a Claude account with Cowork access. No macOS machine is needed &mdash; the installer fetches the macOS build and unpacks it.
-- **Tests.** 599 `node:test` cases across 36 files (IPC, path translation, containment, credential handling, session persistence), plus six shell suites covering the patch passes, compat pins, launcher stub sync, installer static checks, the installer's staged extract-and-swap, and the AUR package's disclaimer wrapper and icon. CI runs all of them on every push and pull request.
+- **Tests.** 599 `node:test` cases across 36 files (IPC, path translation, containment, credential handling, session persistence), plus seven shell suites covering the patch passes, compat pins, launcher stub sync, launcher flags, installer static checks, the installer's staged extract-and-swap, and the AUR package's disclaimer wrapper and icon. CI runs all of them on every push and pull request.
 
 ---
 
@@ -154,8 +154,12 @@ This pulls the latest scripts and stubs into the install directory, then re-fetc
 <dl>
 <dt><code>claude-desktop</code></dt>
 <dd>Start detached; output goes to <code>~/.local/state/claude-cowork/logs/startup.log</code>.</dd>
+<dt><code>claude-desktop --debug</code></dt>
+<dd>Stay in the foreground with verbose IPC logging and CLI I/O tracing (<code>CLAUDE_COWORK_VERBOSE=1</code>, <code>CLAUDE_COWORK_TRACE_IO=1</code>). The trace log is redacted but still sensitive.</dd>
 <dt><code>claude-desktop --devtools</code></dt>
-<dd>Open DevTools and dump webapp assets to <code>~/.local/state/claude-cowork/logs/webapp-assets/</code>. Runs detached like a plain launch; use <code>./launch.sh --devtools</code> in the install directory to keep it in the foreground.</dd>
+<dd>Stay in the foreground, open DevTools, and dump webapp assets to <code>~/.local/state/claude-cowork/logs/webapp-assets/</code>.</dd>
+<dt><code>claude-desktop --inspect</code> / <code>--perf</code> / <code>--dev</code></dt>
+<dd>Passed to <code>launch.sh</code> unchanged &mdash; see <a href="#-development">Development</a>.</dd>
 <dt><code>claude-desktop --doctor</code></dt>
 <dd>Preflight diagnostics: binaries, Node, the Claude CLI, <code>/sessions</code>, secret service, patch markers, and installed-vs-tested asar version.</dd>
 <dt><code>claude-desktop --update</code></dt>
@@ -317,7 +321,7 @@ claude-cowork-linux/
 │   └── frame-fix/                      # entry, wrapper (spoofing, API stubs), OAuth forwarder
 ├── tests/
 │   ├── node/current-path/              # 36 node:test files, 599 cases
-│   ├── test-*.sh                       # six shell suites (patches, pins, sync, install, swap, PKGBUILD)
+│   ├── test-*.sh                       # seven shell suites (patches, pins, sync, flags, install, swap, PKGBUILD)
 │   └── Dockerfile.test                 # Arch container for full install runs
 ├── config/hyprland/claude.conf         # optional Hyprland window rules
 ├── docs/                               # FAQ, extensions, safeStorage tokens, OAuth compliance audit
