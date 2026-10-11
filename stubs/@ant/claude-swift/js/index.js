@@ -48,7 +48,8 @@ const { isMountRootTooBroad } = require('../../../../cowork/mount_root_bound.js'
 const { createSessionStore } = require('../../../../cowork/session_store.js');
 const { createSessionsApi } = require('../../../../cowork/sessions_api.js');
 const { createSessionOrchestrator } = require('../../../../cowork/session_orchestrator.js');
-const { redactCredentials } = require('../../../../cowork/credential_classifier.js');
+const { redactCredentials, redactHomeDir } = require('../../../../cowork/credential_classifier.js');
+const { wrapWithBwrap } = require('../../../../cowork/process_manager.js');
 const {
   extractCliSessionId,
   getIgnoredSdkMessageType,
@@ -1694,20 +1695,35 @@ class SwiftAddonStub extends EventEmitter {
     processState.deferredResultLine = null;
     processState.stdoutSeq = 0;
 
-    // Optional bwrap sandbox (CLAUDE_COWORK_SANDBOX=1). Off by default;
-    // when enabled and bwrap is installed, wraps the spawn with a
-    // conservative sandbox profile defined in process_manager.wrapWithBwrap.
-    var spawnCmd = processState.command;
-    var spawnArgs = processState.args || [];
+    // Optional bwrap sandbox (CLAUDE_COWORK_SANDBOX=1), profile in
+    // cowork/process_manager.js. It used to be required here with one `../`
+    // too few, from inside a try/catch that swallowed the MODULE_NOT_FOUND,
+    // so setting the variable silently did nothing. Required at the same
+    // depth as every other cowork module now, and fail-closed: a requested
+    // sandbox that cannot be built refuses the spawn instead of skipping it.
+    let spawnCmd = processState.command;
+    let spawnArgs = processState.args || [];
+    let wrapped = null;
     try {
-      var { wrapWithBwrap: _wrapBwrap } = require('../../../cowork/process_manager.js');
-      var wrapped = _wrapBwrap ? _wrapBwrap(spawnCmd, spawnArgs, spawnContext.spawnOptions && spawnContext.spawnOptions.cwd) : null;
-      if (wrapped) {
-        trace('[sandbox] wrapping spawn with bwrap: ' + wrapped.command);
-        spawnCmd = wrapped.command;
-        spawnArgs = wrapped.args;
-      }
-    } catch (_) {}
+      wrapped = wrapWithBwrap(spawnCmd, spawnArgs, {
+        cwd: spawnContext.spawnOptions && spawnContext.spawnOptions.cwd,
+        env: spawnContext.spawnOptions && spawnContext.spawnOptions.env,
+        additionalMounts: processState.additionalMounts,
+      });
+    } catch (sandboxErr) {
+      console.error('[sandbox] ' + sandboxErr.message);
+      trace('[sandbox] refused spawn: ' + sandboxErr.message);
+      if (this._onError) this._onError(processState.id, sandboxErr.message, '');
+      return { success: false, error: sandboxErr.message };
+    }
+    if (wrapped) {
+      const s = wrapped.summary;
+      const show = (list) => list.map((p) => redactHomeDir(p)).join(', ') || '(none)';
+      console.log('[sandbox] bwrap: writable ' + show(s.writable) + '; read-only ' + show(s.readOnly) + '; hidden ' + show(s.hidden));
+      trace('[sandbox] bwrap argv: ' + JSON.stringify(wrapped.args.map((a) => redactHomeDir(String(a)))));
+      spawnCmd = wrapped.command;
+      spawnArgs = wrapped.args;
+    }
     const proc = nodeSpawn(spawnCmd, spawnArgs, spawnContext.spawnOptions);
     this._processes.set(processState.id, proc);
     this._attachProcessListeners(processState, proc);

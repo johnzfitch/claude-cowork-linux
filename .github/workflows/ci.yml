@@ -28,6 +28,15 @@ jobs:
         with:
           node-version: '22'
 
+      # bwrap_sandbox.test.cjs runs a probe under real bubblewrap. Ubuntu
+      # 24.04 restricts unprivileged user namespaces through AppArmor; lift
+      # that for this throwaway VM so the end-to-end test runs instead of
+      # skipping. The test still skips itself if bwrap cannot start.
+      - name: Install bubblewrap for the sandbox test
+        run: |
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Run stub/IPC test suite
         run: node --test tests/node/current-path/*.test.cjs
 
