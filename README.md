@@ -461,7 +461,7 @@ claude-desktop
 <details>
 <summary><strong>Global shortcuts don't work on Wayland</strong></summary>
 
-Electron's own `globalShortcut` relies on X11 `XGrabKey`, which Wayland doesn't expose, so the app registers shortcuts through the `org.freedesktop.portal.GlobalShortcuts` portal instead. That works on **KDE Plasma**, **Hyprland**, **COSMIC**, and **GNOME 48+** (`xdg-desktop-portal-gnome` 48 and later); the shortcut appears under Settings &rsaquo; Keyboard and may ask for confirmation the first time.
+Electron's own `globalShortcut` relies on X11 `XGrabKey`, which Wayland doesn't expose, so the app registers shortcuts through the `org.freedesktop.portal.GlobalShortcuts` portal instead. That works on **KDE Plasma**, **Hyprland**, **COSMIC**, and **GNOME 48+** (`xdg-desktop-portal-gnome` 48 and later); the shortcut appears under Settings &rsaquo; Keyboard and may ask for confirmation the first time. (In v5.3.0 and earlier this path never bound anything &mdash; see the [FAQ][faq].)
 
 On GNOME before 48 and compositors without the portal, bind `claude-desktop` to a custom shortcut under Settings &rsaquo; Keyboard &rsaquo; Custom Shortcuts.
 
