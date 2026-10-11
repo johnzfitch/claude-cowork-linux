@@ -254,27 +254,20 @@ function createIpcTap(options) {
   // Tap the _invokeHandlers Map directly — this is where EIPC handlers
   // are registered. The asar uses _invokeHandlers.set(channel, handler)
   // instead of ipcMain.handle(), so wrapHandle() alone misses them.
+  //
+  // Only .set() is wrapped. Electron dispatches invokes from C++ and never
+  // calls _invokeHandlers.get() from JavaScript (see the note above the
+  // ipcMain patch in frame-fix-wrapper.js), so a .get() wrapper never ran;
+  // and had anything called it, it re-wrapped the handler on every call,
+  // counting each invocation as a fresh one.
   function wrapInvokeHandlers(invokeHandlers) {
     if (!invokeHandlers || typeof invokeHandlers.set !== 'function') return invokeHandlers;
 
     const originalSet = invokeHandlers.set.bind(invokeHandlers);
-    const originalGet = invokeHandlers.get.bind(invokeHandlers);
 
     invokeHandlers.set = function(channel, handler) {
       recordRegistration(channel);
       return originalSet(channel, wrapHandlerFn(channel, handler));
-    };
-
-    invokeHandlers.get = function(channel) {
-      const handler = originalGet(channel);
-      // Don't double-wrap on get — the handler was already wrapped on set.
-      // But if it's a handler we haven't seen (injected externally), wrap it.
-      if (handler && !handler.__ipcTapWrapped) {
-        const wrapped = wrapHandlerFn(channel, handler);
-        wrapped.__ipcTapWrapped = true;
-        return wrapped;
-      }
-      return handler;
     };
 
     return invokeHandlers;

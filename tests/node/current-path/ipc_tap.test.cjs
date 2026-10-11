@@ -182,6 +182,19 @@ describe('createIpcTap enabled', () => {
     assert.strictEqual(chStats.shape, 'status');
   });
 
+  it('wraps only _invokeHandlers.set, leaving .get untouched', () => {
+    // Electron's C++ dispatch never calls .get() from JS; a wrapper there was
+    // dead code that re-wrapped the handler on every call if anything did.
+    const tap = createIpcTap({ enabled: true });
+    const map = new Map();
+    const originalGet = (ch) => map.get(ch);
+    const mockInvokeHandlers = { set: (ch, h) => map.set(ch, h), get: originalGet };
+    tap.wrapInvokeHandlers(mockInvokeHandlers);
+    assert.strictEqual(mockInvokeHandlers.get, originalGet);
+    mockInvokeHandlers.set('$eipc$_uuid_$_ns_$_Cat_$_getStatus', async () => 'ok');
+    assert.strictEqual(mockInvokeHandlers.get('$eipc$_uuid_$_ns_$_Cat_$_getStatus'), map.get('$eipc$_uuid_$_ns_$_Cat_$_getStatus'));
+  });
+
   it('parses EIPC channels and classifies methods', async () => {
     const tap = createIpcTap({ enabled: true });
     const handlers = new Map();
