@@ -25,7 +25,19 @@ function log(msg) {
   try { fs.appendFileSync(logFile, line); } catch (_) {}
 }
 
-log(`started, argv: ${process.argv.slice(2).join(' ')}`);
+// A claude:// callback carries the OAuth authorization code and state in its
+// query string, and startup.log routinely ends up pasted into bug reports, so
+// URLs are only ever logged in redacted form. cowork/ sits next to this file
+// in every deployed tree; if it somehow doesn't, log no part of the URL.
+let redactUrl;
+try {
+  ({ redactUrl } = require('./cowork/credential_classifier.js'));
+} catch (_) {
+  redactUrl = (u) => (typeof u === 'string' && u ? '[claude:// URL withheld]' : '');
+}
+const logArg = (a) => (typeof a === 'string' && a.startsWith('claude://') ? redactUrl(a) : a);
+
+log(`started, argv: ${process.argv.slice(2).map(logArg).join(' ')}`);
 
 // Validate the claude:// URL before forwarding.
 // Allowlist approach: protocol must be claude:, and URL must contain only
@@ -87,7 +99,7 @@ if (!gotLock) {
     path.join(_pfHome, '.local', 'share', 'claude-desktop');
   const launchSh = path.join(coworkDir, 'launch.sh');
 
-  log(`launching: bash ${launchSh} ${url}`);
+  log(`launching: bash ${launchSh} ${redactUrl(url)}`);
   execFile('bash', [launchSh, url], {
     detached: true,
     stdio: 'ignore',

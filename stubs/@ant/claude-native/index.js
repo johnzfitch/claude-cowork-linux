@@ -35,7 +35,14 @@ function log(...args) {
 
 function trace(category, msg, data = null) {
   const safeMsg = typeof msg === 'string' ? redactCredentials(msg) : msg;
-  const safeData = data != null ? JSON.parse(redactCredentials(JSON.stringify(data))) : null;
+  // trace() runs before the real work of showNotification, revealInFinder and
+  // the rest, so it must never throw: if redaction ever leaves text that is
+  // not JSON, keep the redacted string instead.
+  let safeData = null;
+  if (data != null) {
+    const redacted = redactCredentials(JSON.stringify(data));
+    try { safeData = JSON.parse(redacted); } catch (_) { safeData = redacted; }
+  }
   const entry = {
     ts: new Date().toISOString(),
     cat: category,

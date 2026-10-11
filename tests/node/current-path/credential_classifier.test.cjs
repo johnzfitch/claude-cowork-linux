@@ -9,6 +9,7 @@ const {
   isLikelyCredentialValue,
   redactCredentials,
   redactHomeDir,
+  redactUrl,
   shannonEntropy,
 } = require('../../../stubs/cowork/credential_classifier.js');
 
@@ -239,5 +240,73 @@ describe('redactHomeDir', () => {
     withHome('', () => {
       assert.equal(redactHomeDir('/usr/bin/claude'), '/usr/bin/claude');
     });
+  });
+});
+
+describe('redactUrl', () => {
+  it('keeps scheme, host, path and parameter names; drops every value', () => {
+    assert.equal(
+      redactUrl('claude://claude.ai/login/callback?code=AbCdEf123456&state=xyz#frag'),
+      'claude://claude.ai/login/callback?code=[REDACTED]&state=[REDACTED]#[REDACTED]',
+    );
+  });
+
+  it('leaves a URL with no query or fragment as it was', () => {
+    assert.equal(redactUrl('claude://open'), 'claude://open');
+  });
+
+  it('redacts a query that has no name=value pairs', () => {
+    assert.equal(redactUrl('claude://x/cb?AbCdEf123456'), 'claude://x/cb?[REDACTED]');
+  });
+
+  it('withholds anything that does not parse, rather than logging it', () => {
+    assert.equal(redactUrl('claude:// %%%?code=secret'), '[unparseable URL withheld]');
+    assert.equal(redactUrl(''), '');
+    assert.equal(redactUrl(undefined), '');
+  });
+});
+
+describe('redactCredentials URL parameters', () => {
+  it('redacts an OAuth code and state embedded in a log line', () => {
+    const out = redactCredentials('[SingleInstance] forwarding claude://x/cb?code=AbCdEf123456&state=xyz done');
+    assert.ok(!out.includes('AbCdEf123456'));
+    assert.ok(!out.includes('state=xyz'));
+    assert.ok(out.includes('code=[REDACTED]'));
+  });
+
+  it('redacts credential-named parameters in ordinary URLs and keeps the rest', () => {
+    const out = redactCredentials('see https://example.com/docs?page=2&key=abc123');
+    assert.equal(out, 'see https://example.com/docs?page=2&key=[REDACTED]');
+  });
+
+  it('leaves prose that merely contains name=value alone', () => {
+    assert.equal(redactCredentials('the code=foo in prose stays'), 'the code=foo in prose stays');
+  });
+});
+
+describe('redactCredentials on JSON text', () => {
+  // claude-native's trace() redacts JSON.stringify(data) and parses the
+  // result back; a redaction that eats the backslash of an escaped quote
+  // leaves text that no longer parses.
+  const cases = [
+    { u: 'https://x/cb?code=abc"q' },
+    { t: 'see a?code=x"y and more words' },
+    { title: 'Done', body: 'Open https://example.com/p?sig=ab"c' },
+    { path: '/home/u/a?state=1"2' },
+    { b: 'x?token=ab"c' },
+    { u: 'claude://login/callback?code=AbCd1234&state=xyz' },
+    { api_key: 'sk-ant-api03-"quoted\back' },
+  ];
+  for (const data of cases) {
+    it('stays parseable: ' + JSON.stringify(data), () => {
+      const out = redactCredentials(JSON.stringify(data));
+      assert.doesNotThrow(() => JSON.parse(out), out);
+    });
+  }
+
+  it('still redacts the values', () => {
+    const out = redactCredentials(JSON.stringify({ u: 'claude://login/callback?code=AbCd1234&state=xyz' }));
+    assert.ok(!out.includes('AbCd1234'), out);
+    assert.ok(!out.includes('xyz'), out);
   });
 });

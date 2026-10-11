@@ -245,14 +245,16 @@ URL unchanged as Electron's `open-url` event, which Claude Desktop's own handler
 The AUR `claude-cowork` launcher passes the URL straight to Electron; when Claude Desktop is
 already running, that also ends in the same `second-instance` handler.
 
-This layer does not parse the URL's query string, extract a code or token from it, or keep
-it. **It does log it**: `protocol-forwarder.js` writes its full argv (`started, argv: ...`)
-to `startup.log`, and the `second-instance` handler prints
-`forwarding URL via open-url: <url>`, which `launch.sh` sends to `startup.log` (the AUR
-launcher sends it to wherever its stdout goes). Neither line passes through
-`redactCredentials`; even if it did, its passes leave a lowercase `code=` query parameter alone
-unless the value is a 32+ character high-entropy run. Whatever the callback URL carries is
-therefore written to `startup.log` unredacted, inside the `0700` log directory.
+This layer does not extract a code or token from the URL, or keep it. It logs the URL only
+in redacted form: `protocol-forwarder.js` (its `started, argv: ...` and `launching: ...` lines)
+and the `second-instance` handler (`forwarding URL via open-url: ...`) pass it through
+`redactUrl` from `credential_classifier.js`, which keeps the scheme, host, path and parameter
+names and replaces every query and fragment value, e.g.
+`claude://claude.ai/login/callback?code=[REDACTED]&state=[REDACTED]`. If the forwarder cannot
+load the classifier, it logs `[claude:// URL withheld]` instead. In v5.3.0 and earlier both lines wrote
+the full callback URL, authorization code included, to `startup.log`.
+`tests/node/current-path/protocol_forwarder_logging.test.cjs` runs the real forwarder and checks
+that neither the code nor the state reaches the log.
 
 ---
 
@@ -264,13 +266,14 @@ Provides the pattern-based credential detection that the log paths use:
 - `isLikelyCredentialValue`: a known token prefix (`sk-ant-sid`, `sk-ant-`, `clt-`, `eyJ`, `ghp_`, `ghs_`, `gho_`, `xoxb-`, `xoxp-`, `AKIA`, `sk-proj-`) on a value of 16+ characters, or Shannon entropy of at least 3.5 on a value of 20+ characters
 - `isLikelyCredentialKey`: a key name matching `token|secret|key|credential|auth|password|cookie` (case-insensitive), except `PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, `NODE_ENV`
 - `classifyEnvEntry`: `credential`, `suspect` (credential-like key with a value longer than 8 characters) or `safe`
-- `redactCredentials`: the four replacement passes described in §7
+- `redactCredentials`: the five replacement passes described in §7
 - `redactHomeDir`: replaces the home directory prefix with `~` in log text
+- `redactUrl`: display form of a URL with every query and fragment value replaced (§5)
 
 Consumers: `redactForLogs` in the VM stub; `trace()` in `stubs/@ant/claude-native/index.js`;
 the IPC tap (`stubs/cowork/ipc_tap.js`); `classifyEnvEntry` for the env-path translation trace
 lines in `stubs/cowork/process_manager.js`; `redactHomeDir` in `frame-fix-wrapper.js` and
-`session_store.js`. `filterEnv` does **not** use it: forwarding decisions are made by the
+`session_store.js`; `redactUrl` in `frame-fix-wrapper.js` and `protocol-forwarder.js`. `filterEnv` does **not** use it: forwarding decisions are made by the
 allowlists in §2, not by classification.
 
 ---
@@ -290,13 +293,14 @@ or appended to `claude-swift-trace.log`. That includes CLI stdin/stdout when
 | `Authorization: Bearer <token>` / `Authorization: Basic <token>` | HTTP headers | `Authorization: Bearer [REDACTED]` |
 | `Cookie: <value>` (any case) | Session cookies | `Cookie: [REDACTED]` |
 | Bare run of 32+ `[A-Za-z0-9_-]` characters that looks like a credential | Tokens in free text | `[REDACTED]` |
+| `?`/`&`/`#` followed by a credential-named parameter (`code`, `state`, `token`, `access_token`, `refresh_token`, `id_token`, `code_verifier`, `client_secret`, `session`, `key`, `secret`, `password`, `signature`, …) | `claude://…/callback?code=AbCd&state=xyz` | `?code=[REDACTED]&state=[REDACTED]` |
 
 **How this meets expectations**:
 - A subprocess that prints a token in one of these shapes has it stripped before the trace line is written
 - `claude-swift-trace.log` is created with mode `0o600`, in a log directory created `0o700` (`launch.sh` also runs `chmod 700` on it)
 
 **Limits**:
-- The redaction covers `trace()` in the VM stub, `trace()` in the native stub (written only when `CLAUDE_NATIVE_TRACE` is set) and the IPC tap. Plain `console.log` output from the stubs and Electron, which the launchers append to `startup.log`, is not redacted. That includes the `claude://` callback URL (§5).
+- The redaction covers `trace()` in the VM stub, `trace()` in the native stub (written only when `CLAUDE_NATIVE_TRACE` is set) and the IPC tap. Plain `console.log` output from the stubs and Electron, which the launchers append to `startup.log`, is not redacted in general; the `claude://` callback URL is the exception, logged through `redactUrl` (§5).
 - `startup.log` is created by shell redirection, so its file mode follows your umask; it is protected by the `0700` directory.
 - Detection is heuristic. A value that is short, low-entropy and not in a recognised shape can pass through.
 
@@ -323,7 +327,7 @@ These do not handle credentials directly, but an audit should know about them:
 | Forward Electron's own environment | **Only `ENV_ALLOWLIST` keys** | Includes `ANTHROPIC_API_KEY`; excludes `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` |
 | Register the `claude://` scheme | **Yes** | Installers and launchers (§5) |
 | Parse or extract data from OAuth callbacks | **Never** | The URL is shape-checked and re-emitted unchanged as `open-url`; `AuthRequest.isAvailable()` returns `false` |
-| Log token values | **Not in redacted trace logs** | `redactForLogs` on `trace()` lines; the `claude://` callback URL is logged unredacted to `startup.log` (§5, §7) |
+| Log token values | **Not in redacted trace logs** | `redactForLogs` on `trace()` lines; the `claude://` callback URL is logged only through `redactUrl` (§5, §7) |
 | Open non-Anthropic auth URLs | **Never** | `ALLOWED_AUTH_ORIGINS` checked in `AuthRequest.start()` |
 | Use OAuth tokens to call Anthropic's API | **No call path today** | The Sessions API client can, but none of its request methods has a non-test caller (§3) |
 

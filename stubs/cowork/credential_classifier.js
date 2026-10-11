@@ -105,7 +105,9 @@ function classifyEnvEntry(key, value) {
 // cannot contain credentials and we can skip all 4 replacement passes.
 // This covers: known token prefixes, sensitive env var key names,
 // Authorization/Cookie headers, and long alphanumeric runs (potential tokens).
-const _FAST_CREDENTIAL_CHECK = /sk-ant-|clt-|eyJ|ghp_|ghs_|gho_|xox[bp]-|AKIA|sk-proj-|token|secret|key|credential|auth|password|cookie|Authorization|Cookie/i;
+// The trailing alternative lets Pattern 5 see URL parameters (code=, state=,
+// sig=, ...) whose names contain none of the words before it.
+const _FAST_CREDENTIAL_CHECK = /sk-ant-|clt-|eyJ|ghp_|ghs_|gho_|xox[bp]-|AKIA|sk-proj-|token|secret|key|credential|auth|password|cookie|Authorization|Cookie|[?&#](?:code|state|session|sig|signature)=/i;
 
 function redactCredentials(text) {
   // PRIVACY PROTECTION: Redact credentials from any text before logging.
@@ -128,8 +130,10 @@ function redactCredentials(text) {
     return match;
   });
 
-  // Pattern 2: JSON style ("key": "value")
-  out = out.replace(/("[^"]*"\s*:\s*")([^"]+)(")/g, (match, pre, value, post) => {
+  // Pattern 2: JSON style ("key": "value"). The value runs to the closing
+  // quote, stepping over \" and \\ -- stopping at an escaped quote would
+  // redact its backslash and leave JSON that no longer parses.
+  out = out.replace(/("[^"]*"\s*:\s*")((?:[^"\\]|\\.)+)(")/g, (match, pre, value, post) => {
     const key = pre.match(/"([^"]*)"/)?.[1] || '';
     if (classifyEnvEntry(key, value) !== 'safe') return pre + '[REDACTED]' + post;
     return match;
@@ -145,7 +149,48 @@ function redactCredentials(text) {
     return match;
   });
 
+  // Pattern 5: credential-bearing URL parameters. An OAuth callback such as
+  // claude://.../callback?code=AbCd1234&state=xyz carries a short-lived
+  // authorization code that Patterns 1-4 all miss: the key is lowercase, the
+  // value is short, and its entropy is unremarkable.
+  out = out.replace(_URL_CREDENTIAL_PARAM, '$1[REDACTED]');
+
   return out;
+}
+
+// Query/fragment parameters whose values are credentials in OAuth and
+// session flows. Matched only after ? & or #, so prose like "code=foo" is
+// left alone. The value stops at a backslash too, so inside JSON text the
+// escape of a following \" survives and the result still parses.
+const _URL_CREDENTIAL_PARAM = /([?&#](?:code|state|token|access_token|refresh_token|id_token|code_verifier|client_secret|session|session_key|sessionKey|auth|key|secret|password|signature|sig)=)([^&#\s"'`<>\\]+)/gi;
+
+function redactUrl(url) {
+  // Display form of a URL for logs: scheme, host and path survive; every
+  // query and fragment VALUE is replaced, and parameter names are kept so a
+  // log still says which callback arrived. Used for claude:// deep links,
+  // whose query string is the OAuth authorization code and state. Anything
+  // that does not parse as a URL is withheld rather than logged raw.
+  if (typeof url !== 'string' || url.length === 0) return '';
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_) {
+    return '[unparseable URL withheld]';
+  }
+  let shown = parsed.protocol + '//' + parsed.host + parsed.pathname;
+  if (parsed.search.length > 1) {
+    // A parameter name is kept only when it has a value and looks like an
+    // ordinary identifier. A bare "?AbCd1234" parses as a NAME with an empty
+    // value, so trusting searchParams.keys() would log the secret as a name.
+    const parts = parsed.search.slice(1).split('&').map((part) => {
+      const eq = part.indexOf('=');
+      const name = eq > 0 ? part.slice(0, eq) : '';
+      return /^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/.test(name) ? name + '=[REDACTED]' : '[REDACTED]';
+    });
+    shown += '?' + parts.join('&');
+  }
+  if (parsed.hash) shown += '#[REDACTED]';
+  return shown;
 }
 
 function redactHomeDir(text) {
@@ -180,5 +225,6 @@ module.exports = {
   isLikelyCredentialValue,
   redactCredentials,
   redactHomeDir,
+  redactUrl,
   shannonEntropy,
 };
