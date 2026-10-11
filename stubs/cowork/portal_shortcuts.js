@@ -389,6 +389,7 @@ function createPortalShortcuts() {
     if (starting) return starting;
 
     starting = (async () => {
+      let responseTimer = null;
       try {
         const thisConn = createConnection(() => {
           if (dbus === thisConn) { dbus = null; sessionHandle = null; }
@@ -421,12 +422,18 @@ function createPortalShortcuts() {
 
         // Response promise — match ANY Response signal (path may differ from expected)
         const responseP = new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error('CreateSession response timeout')), 10000);
+          responseTimer = setTimeout(() => reject(new Error('CreateSession response timeout')), 10000);
           dbus.onSignal(
             m => m.iface === REQUEST_IFACE && m.member === 'Response',
-            m => { clearTimeout(timer); resolve(parseResponseBody(m.body)); }
+            m => { clearTimeout(responseTimer); resolve(parseResponseBody(m.body)); }
           );
         });
+        // If CreateSession itself fails we never await responseP, and its
+        // timer would reject it 10 s later with nobody listening -- an
+        // unhandled rejection, which takes down the Electron main process
+        // on any Wayland desktop without the GlobalShortcuts portal. The
+        // catch block also clears the timer.
+        responseP.catch(() => {});
 
         // CreateSession call body: a{sv}
         const body = Buffer.alloc(512);
@@ -449,6 +456,7 @@ function createPortalShortcuts() {
         console.log('[portal-shortcuts] Session created:', sessionHandle);
         return sessionHandle;
       } catch (e) {
+        clearTimeout(responseTimer);
         console.error('[portal-shortcuts] Session failed:', e.message);
         sessionHandle = null;
         if (dbus) { dbus.destroy(); dbus = null; }

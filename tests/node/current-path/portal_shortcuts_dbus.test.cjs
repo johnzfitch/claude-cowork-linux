@@ -120,12 +120,20 @@ test('removing one of two shortcuts re-binds the rest; removing the last closes 
   assert.deepEqual(r.destroyed.sessions, {});
 });
 
-test('with no portal on the bus, register() resolves false so the wrapper can fall back', { skip }, (t) => {
+test('with no portal on the bus, register() resolves false and nothing fires later', { skip }, (t) => {
+  // The wait outlasts the 10 s CreateSession response timer. A timer left
+  // armed after the failure rejected a promise nobody awaited, and Node's
+  // default turns that into a crash -- in the app, the Electron main process
+  // on every Wayland desktop without the GlobalShortcuts portal.
   const r = onPrivateBus(t, `
+    let late = null;
+    process.on('unhandledRejection', (e) => { late = String(e && e.message); });
     const p = createPortalShortcuts();
     const ok = await p.register('Ctrl+Alt+Space', () => {});
-    return { ok, registered: p.isRegistered('Ctrl+Alt+Space') };
+    await sleep(11000);
+    return { ok, registered: p.isRegistered('Ctrl+Alt+Space'), late };
   `, { startPortal: false });
   assert.equal(r.ok, false);
   assert.equal(r.registered, false, 'a failed shortcut must not be reported as registered');
+  assert.equal(r.late, null, 'unhandled rejection after a failed register: ' + r.late);
 });
