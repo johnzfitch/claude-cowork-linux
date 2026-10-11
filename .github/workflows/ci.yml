@@ -29,7 +29,11 @@ jobs:
           node-version: '22'
 
       - name: Run stub/IPC test suite
-        run: node --test tests/node/current-path/*.test.cjs
+        # dbus + python3-gi: portal_shortcuts_dbus.test.cjs runs the portal
+        # client against a fake xdg-desktop-portal on a private session bus.
+        run: |
+          sudo apt-get install -y --no-install-recommends dbus python3-gi gir1.2-glib-2.0
+          node --test tests/node/current-path/*.test.cjs
 
   shell:
     name: Patch + compat tests
