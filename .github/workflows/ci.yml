@@ -68,6 +68,10 @@ jobs:
       # @ant/claude-native without the safe_fs.js its index.js require()s.
       - name: Launcher stub sync
         run: bash tests/test-launcher-sync.sh
+      # Generates the real ~/.local/bin/claude-desktop and checks what each
+      # flag hands to launch.sh (--debug used to set a variable nothing read).
+      - name: Launcher flags
+        run: bash tests/test-launcher-flags.sh
       - name: Extract staging/swap tests
         run: bash tests/test-extract-swap.sh
 

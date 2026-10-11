@@ -646,7 +646,7 @@ webapp's JS/CSS/JSON/HTML assets (from `claude.ai` and `*.anthropic.com`) to dis
 
 ```bash
 ./launch.sh --devtools        # foreground
-claude-desktop --devtools     # detached; output goes to startup.log
+claude-desktop --devtools     # foreground too
 ```
 
 Assets are saved to `~/.local/state/claude-cowork/logs/webapp-assets/`.

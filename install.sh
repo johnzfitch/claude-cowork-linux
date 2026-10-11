@@ -1015,8 +1015,19 @@ _warn_if_untested_asar() {
 }
 
 case "${1:-}" in
-    --devtools) shift; export CLAUDE_DEVTOOLS=1; _warn_if_untested_asar; exec ./launch.sh "$@" ;;
-    --debug)    shift; export CLAUDE_TRACE=1; _warn_if_untested_asar; exec ./launch.sh "$@" ;;
+    # Debug modes run in the foreground: their output is the point, and
+    # launch.sh only stays attached when it is given a foreground flag.
+    --debug)
+        shift
+        export CLAUDE_COWORK_VERBOSE=1 CLAUDE_COWORK_TRACE_IO=1
+        _warn_if_untested_asar
+        printf >&2 '[debug] Verbose IPC logging and CLI I/O tracing are on.
+'
+        printf >&2 '[debug] Trace log: %s/claude-swift-trace.log (redacted, but treat it as sensitive)
+' "$LOG_DIR"
+        exec ./launch.sh --dev "$@" ;;
+    --devtools|--inspect|--perf|--dev)
+        _warn_if_untested_asar; exec ./launch.sh "$@" ;;
     --doctor)   exec ./install.sh --doctor ;;
     --update)   shift; exec ./install.sh --update "$@" ;;
     claude://*)
@@ -1621,8 +1632,8 @@ main() {
     echo ""
 
     # --update flow: re-fetch the asar, re-extract, re-apply stubs and
-    # patches, re-seed the version sentinel. Skip launcher/env/icon
-    # setup (already in place from the original install).
+    # patches, re-seed the version sentinel, regenerate the launcher. Skip
+    # env/icon setup (already in place from the original install).
     if [[ "$update_only" -eq 1 ]]; then
         local archive_path="$WORK_DIR/Claude.archive"
         get_archive "$archive_path"
@@ -1634,6 +1645,11 @@ main() {
         apply_patches
         echo ""
         seed_version_sentinel
+        echo ""
+        # Regenerate the launcher too: it is generated code, and fixes to it
+        # (flag handling, the quoted heredoc of #176) otherwise only reach an
+        # install that is re-run from scratch.
+        create_launcher
         echo ""
         log_info "Update complete. Restart claude-desktop to pick up the new asar."
         exit 0
@@ -1690,8 +1706,9 @@ main() {
     echo "  claude-desktop       (or claude-cowork)"
     echo ""
     echo "Options:"
-    echo "  claude-desktop --debug      Enable trace logging"
-    echo "  claude-desktop --devtools   Open with DevTools"
+    echo "  claude-desktop --debug      Foreground, verbose IPC logging + CLI I/O trace"
+    echo "  claude-desktop --devtools   Foreground, with DevTools"
+    echo "  claude-desktop --inspect    Foreground, Node inspector on 127.0.0.1:9229"
     echo "  claude-desktop --doctor     Run preflight diagnostics"
     echo "  claude-desktop --update     Re-fetch the Claude Desktop asar"
     echo "  bash install.sh --force     Skip the download confirmation prompt"
