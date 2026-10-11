@@ -90,3 +90,6 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+
+# bwrap_sandbox.test.cjs fixture (kept out of /tmp on purpose)
+.tmp-sandbox-*/

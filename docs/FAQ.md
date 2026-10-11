@@ -375,6 +375,26 @@ Update the port and relaunch (see "How do I update?"; AUR users rebuild the pack
 
 </details>
 
+<details>
+<summary><strong>Can I sandbox Cowork sessions? (<code>CLAUDE_COWORK_SANDBOX=1</code>, experimental)</strong></summary>
+
+On macOS the CLI runs in a VM that only sees the folders you attached. On Linux it runs on the host. Setting `CLAUDE_COWORK_SANDBOX=1` before launching wraps each Cowork session in bubblewrap:
+
+- The filesystem is read-only. Only the session directory, the folders you attached (read-only if attached that way), the working directory and `$TMPDIR` are writable.
+- `~/.ssh`, `~/.gnupg`, cloud credentials (`~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.kube`, `~/.docker`), password stores and keyrings, browser profiles, `~/.netrc`/`~/.npmrc`/`~/.git-credentials`, Claude Desktop's own state in `~/.config/Claude`, and `$XDG_RUNTIME_DIR` are hidden. Bedrock sessions keep `~/.aws` and Vertex sessions keep `~/.config/gcloud`.
+- Private PID/IPC/UTS namespaces; the network is shared.
+
+```bash
+CLAUDE_COWORK_SANDBOX=1 claude-desktop
+grep '\[sandbox\]' ~/.local/state/claude-cowork/logs/startup.log   # what each session could write and what was hidden
+```
+
+If bubblewrap is missing or can't create namespaces (some distros restrict unprivileged user namespaces), sessions are **refused** with a `[sandbox]` error rather than run unsandboxed. `CLAUDE_COWORK_NO_SANDBOX=1` overrides the setting.
+
+Status: the profile is covered by `tests/node/current-path/bwrap_sandbox.test.cjs`, including an end-to-end run under real bwrap, and the Claude Code CLI (2.1.296) was checked inside it: it starts, reaches the API, writes its session state, and can run nested bwrap for its own Bash sandbox. It has not yet been exercised through a full Cowork session in Claude Desktop; reports welcome. In v5.3.0 and earlier the variable silently did nothing.
+
+</details>
+
 ---
 
 ## Desktop Environment

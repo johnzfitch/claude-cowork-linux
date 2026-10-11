@@ -83,7 +83,7 @@ Run `claude-desktop --doctor` after installing to check your environment.
 - **asar** (`npm install -g @electron/asar`)
 - **7-Zip** (`p7zip`, or `7zip` on openSUSE) to unpack the macOS archive
 - **Python 3** &mdash; `enable-cowork.py` applies the Cowork platform-gate patch at install and update time
-- **bubblewrap** (checked by the installer and `--doctor`)
+- **bubblewrap** (checked by the installer and `--doctor`; also runs the experimental session sandbox, `CLAUDE_COWORK_SANDBOX=1`)
 - **Secret service provider** (optional) &mdash; gnome-keyring, KDE Wallet, or KeePassXC. Without one the launcher uses `--password-store=basic`.
 - A Claude plan with Cowork access
 
@@ -539,6 +539,7 @@ Trace lines look like:
 - **Header and fd guards.** Session-API tokens containing CR, LF, or NUL are rejected, and the auth-token file descriptor must be 3&ndash;9.
 - **Private directories.** Session and log directories are mode `700`; `/sessions` is a symlink, never a world-writable directory.
 - **Loopback-only debugging.** `--inspect` and `--perf` bind to `127.0.0.1`.
+- **Session sandbox (opt-in, experimental).** `CLAUDE_COWORK_SANDBOX=1` runs each Cowork session under bubblewrap: read-only filesystem except the session's own folders, credential stores and Desktop state hidden, private PID/IPC namespaces. It fails closed if bubblewrap can't run. See the [FAQ][faq] entry for what is and isn't exposed.
 
 How credentials move through the app is audited in [OAUTH-COMPLIANCE.md][oauth]. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
