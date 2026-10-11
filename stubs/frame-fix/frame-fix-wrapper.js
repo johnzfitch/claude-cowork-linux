@@ -157,7 +157,7 @@ const { createIpcTap } = require('./cowork/ipc_tap.js');
 const { createOverrideRegistry, matchOverride, extractEipcUuid, proactivelyRegisterOverrides, isProactiveChannel } = require('./cowork/ipc_overrides.js');
 const { createAutoPermissionsCap } = require('./cowork/auto_permissions_cap.js');
 const { createBridgeCanary } = require('./cowork/bridge_canary.js');
-const { redactHomeDir } = require('./cowork/credential_classifier.js');
+const { redactHomeDir, redactUrl } = require('./cowork/credential_classifier.js');
 
 // ── CoworkSpaces live events ────────────────────────────────────────────────
 // The renderer subscribes to space mutations via ipcRenderer.on(<channel>) and
@@ -1476,7 +1476,8 @@ try {
           }
         }
         if (url && url.length < 2048 && /^claude:\/\/[a-zA-Z0-9\-._~:/?#\[\]@!$&()*+,;=%]+$/.test(url)) {
-          console.log('[SingleInstance] forwarding URL via open-url: ' + url);
+          // Redacted: the query string is the OAuth authorization code.
+          console.log('[SingleInstance] forwarding URL via open-url: ' + redactUrl(url));
           app.emit('open-url', { preventDefault: function() {} }, url);
         }
       } catch (e) {

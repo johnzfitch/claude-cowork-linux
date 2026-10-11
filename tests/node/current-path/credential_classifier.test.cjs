@@ -9,6 +9,7 @@ const {
   isLikelyCredentialValue,
   redactCredentials,
   redactHomeDir,
+  redactUrl,
   shannonEntropy,
 } = require('../../../stubs/cowork/credential_classifier.js');
 
@@ -239,5 +240,46 @@ describe('redactHomeDir', () => {
     withHome('', () => {
       assert.equal(redactHomeDir('/usr/bin/claude'), '/usr/bin/claude');
     });
+  });
+});
+
+describe('redactUrl', () => {
+  it('keeps scheme, host, path and parameter names; drops every value', () => {
+    assert.equal(
+      redactUrl('claude://claude.ai/login/callback?code=AbCdEf123456&state=xyz#frag'),
+      'claude://claude.ai/login/callback?code=[REDACTED]&state=[REDACTED]#[REDACTED]',
+    );
+  });
+
+  it('leaves a URL with no query or fragment as it was', () => {
+    assert.equal(redactUrl('claude://open'), 'claude://open');
+  });
+
+  it('redacts a query that has no name=value pairs', () => {
+    assert.equal(redactUrl('claude://x/cb?AbCdEf123456'), 'claude://x/cb?[REDACTED]');
+  });
+
+  it('withholds anything that does not parse, rather than logging it', () => {
+    assert.equal(redactUrl('claude:// %%%?code=secret'), '[unparseable URL withheld]');
+    assert.equal(redactUrl(''), '');
+    assert.equal(redactUrl(undefined), '');
+  });
+});
+
+describe('redactCredentials URL parameters', () => {
+  it('redacts an OAuth code and state embedded in a log line', () => {
+    const out = redactCredentials('[SingleInstance] forwarding claude://x/cb?code=AbCdEf123456&state=xyz done');
+    assert.ok(!out.includes('AbCdEf123456'));
+    assert.ok(!out.includes('state=xyz'));
+    assert.ok(out.includes('code=[REDACTED]'));
+  });
+
+  it('redacts credential-named parameters in ordinary URLs and keeps the rest', () => {
+    const out = redactCredentials('see https://example.com/docs?page=2&key=abc123');
+    assert.equal(out, 'see https://example.com/docs?page=2&key=[REDACTED]');
+  });
+
+  it('leaves prose that merely contains name=value alone', () => {
+    assert.equal(redactCredentials('the code=foo in prose stays'), 'the code=foo in prose stays');
   });
 });
