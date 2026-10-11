@@ -24,7 +24,7 @@ set -euo pipefail
 # Configuration
 # ============================================================
 
-VERSION="5.1.0"
+VERSION="5.3.0"
 # Overridable so a fork/branch (or a local checkout) can be installed and tested
 # without editing this script. CLAUDE_REPO_REF is passed to `git clone --branch`.
 REPO_URL="${CLAUDE_REPO_URL:-https://github.com/johnzfitch/claude-cowork-linux.git}"

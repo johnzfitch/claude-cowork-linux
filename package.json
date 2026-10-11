@@ -1,10 +1,13 @@
 {
   "name": "claude-cowork-linux",
-  "version": "5.1.0",
+  "version": "5.3.0",
   "description": "Linux port of Claude Desktop Cowork (Local Agent Mode)",
   "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/node/current-path/*.test.cjs"
+  },
   "devDependencies": {
-    "@electron/asar": "^3.2.0",
-    "devtron": "^1.4.0"
+    "@electron/asar": "^3.2.0"
   }
 }
