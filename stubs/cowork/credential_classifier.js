@@ -130,8 +130,10 @@ function redactCredentials(text) {
     return match;
   });
 
-  // Pattern 2: JSON style ("key": "value")
-  out = out.replace(/("[^"]*"\s*:\s*")([^"]+)(")/g, (match, pre, value, post) => {
+  // Pattern 2: JSON style ("key": "value"). The value runs to the closing
+  // quote, stepping over \" and \\ -- stopping at an escaped quote would
+  // redact its backslash and leave JSON that no longer parses.
+  out = out.replace(/("[^"]*"\s*:\s*")((?:[^"\\]|\\.)+)(")/g, (match, pre, value, post) => {
     const key = pre.match(/"([^"]*)"/)?.[1] || '';
     if (classifyEnvEntry(key, value) !== 'safe') return pre + '[REDACTED]' + post;
     return match;
@@ -158,8 +160,9 @@ function redactCredentials(text) {
 
 // Query/fragment parameters whose values are credentials in OAuth and
 // session flows. Matched only after ? & or #, so prose like "code=foo" is
-// left alone.
-const _URL_CREDENTIAL_PARAM = /([?&#](?:code|state|token|access_token|refresh_token|id_token|code_verifier|client_secret|session|session_key|sessionKey|auth|key|secret|password|signature|sig)=)([^&#\s"'`<>]+)/gi;
+// left alone. The value stops at a backslash too, so inside JSON text the
+// escape of a following \" survives and the result still parses.
+const _URL_CREDENTIAL_PARAM = /([?&#](?:code|state|token|access_token|refresh_token|id_token|code_verifier|client_secret|session|session_key|sessionKey|auth|key|secret|password|signature|sig)=)([^&#\s"'`<>\\]+)/gi;
 
 function redactUrl(url) {
   // Display form of a URL for logs: scheme, host and path survive; every

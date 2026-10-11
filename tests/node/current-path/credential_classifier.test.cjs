@@ -283,3 +283,30 @@ describe('redactCredentials URL parameters', () => {
     assert.equal(redactCredentials('the code=foo in prose stays'), 'the code=foo in prose stays');
   });
 });
+
+describe('redactCredentials on JSON text', () => {
+  // claude-native's trace() redacts JSON.stringify(data) and parses the
+  // result back; a redaction that eats the backslash of an escaped quote
+  // leaves text that no longer parses.
+  const cases = [
+    { u: 'https://x/cb?code=abc"q' },
+    { t: 'see a?code=x"y and more words' },
+    { title: 'Done', body: 'Open https://example.com/p?sig=ab"c' },
+    { path: '/home/u/a?state=1"2' },
+    { b: 'x?token=ab"c' },
+    { u: 'claude://login/callback?code=AbCd1234&state=xyz' },
+    { api_key: 'sk-ant-api03-"quoted\back' },
+  ];
+  for (const data of cases) {
+    it('stays parseable: ' + JSON.stringify(data), () => {
+      const out = redactCredentials(JSON.stringify(data));
+      assert.doesNotThrow(() => JSON.parse(out), out);
+    });
+  }
+
+  it('still redacts the values', () => {
+    const out = redactCredentials(JSON.stringify({ u: 'claude://login/callback?code=AbCd1234&state=xyz' }));
+    assert.ok(!out.includes('AbCd1234'), out);
+    assert.ok(!out.includes('xyz'), out);
+  });
+});
