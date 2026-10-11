@@ -17,7 +17,7 @@ Reported working, each against a specific Claude Desktop build (see [COMPAT.md](
 nix run github:johnzfitch/claude-cowork-linux
 ```
 
-The flake builds a pinned Claude Desktop release (set in `nix/package.nix`) against nixpkgs' `electron_41`. `nix develop` gives a shell with every dependency `install.sh` needs, if you want the manual installer flow.
+The flake builds a pinned Claude Desktop release (set in `nix/package.nix`; it follows `LAST_TESTED_ASAR_VERSION` in COMPAT.md) against nixpkgs' `electron_41`. CI runs a real `nix build` whenever the Nix files, stubs or patchers change. `nix develop` gives a shell with every dependency `install.sh` needs, if you want the manual installer flow.
 
 </details>
 

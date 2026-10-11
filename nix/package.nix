@@ -24,13 +24,15 @@
   xdg-utils,
   which,
   procps,
-  # Pinned Claude Desktop release. To bump: run `node fetch-dmg.js --json` for
-  # the current version/url/sha256, then `nix hash convert --to sri --hash-algo
-  # sha256 <hex>` for `hash`. Newer releases ship as .zip (older ones were DMGs
-  # in LZFSE format that p7zip cannot open); the .zip is what we expect here.
-  claudeVersion ? "1.11187.4",
-  claudeUrl ? "https://downloads.claude.ai/releases/darwin/universal/1.11187.4/Claude-58400536f3ccde1cff9a129de6c3112dc8cb489a.zip",
-  claudeHash ? "sha256-qyVqIlNz1Y1PgBY940OOB2+i0E114w7MvubZ1LSx/Fs=",
+  # Pinned Claude Desktop release: COMPAT.md's LAST_TESTED_ASAR_VERSION, with
+  # the URL and SHA-256 from its pinning table. To bump: take the row for the
+  # new version from COMPAT.md (or `node fetch-dmg.js --json` for the latest),
+  # then `nix hash convert --to sri --hash-algo sha256 <hex>` for `hash`.
+  # Releases ship as .zip (older ones were DMGs in LZFSE format that p7zip
+  # cannot open); the .zip is what we expect here.
+  claudeVersion ? "1.26832.0",
+  claudeUrl ? "https://downloads.claude.ai/releases/darwin/universal/1.26832.0/Claude-056ee2be623b207f6a4d24dfb1b2fb5a82db0ecf.zip",
+  claudeHash ? "sha256-aw8sUcXhw/bbOIUjOtluSPkuYUOLC9mJLGny6hHFSVA=",
 }:
 
 let
@@ -147,7 +149,37 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     mkdir -p "$tree/cowork"
     cp -f stubs/cowork/*.js "$tree/cowork/"
 
-    python3 enable-cowork.py "$tree/.vite/build/index.js"
+    # Cowork platform gate. From 1.19367.0 the main process is a shim plus a
+    # few hundred index*.chunk-*.js files, and the gate lives in one of them,
+    # so patching index.js alone enabled nothing. Sweep every file
+    # patch-index.sh discovers -- the same loop install.sh and PKGBUILD run --
+    # and fail the build if none of them held the gate, rather than ship a
+    # package that starts with Cowork switched off.
+    # Output is stashed per file and shown only for the file that held the
+    # gate, as PKGBUILD does; the few hundred expected misses are printed only
+    # if nothing matched.
+    source ./patch-index.sh
+    patch_index_collect_targets "$tree/.vite/build"
+    echo "Applying cowork patch to ''${#INDEX_TARGETS[@]} file(s)..."
+    patched=0
+    miss_log=""
+    for t in "''${INDEX_TARGETS[@]}"; do
+      if out="$(python3 enable-cowork.py "$t" --sweep 2>&1)"; then
+        patched=1
+        [ -n "$out" ] && printf '%s\n' "$out"
+      else
+        miss_log+="--- ''${t##*/} ---"$'\n'"$out"$'\n'
+      fi
+    done
+    if [ "$patched" -ne 1 ]; then
+      echo "ERROR: Cowork platform gate not found in any of ''${#INDEX_TARGETS[@]} main-process files;" >&2
+      echo "       the bundle layout may have changed. enable-cowork.py output follows:" >&2
+      printf '%s' "$miss_log" >&2
+      exit 1
+    fi
+    # Never ship a tree that would open a blank window: every patched file
+    # must still parse.
+    PATCH_INDEX_STRICT_SYNTAX=1 patch_index_verify_syntax
 
     runHook postBuild
   '';

@@ -139,7 +139,7 @@ nix run github:johnzfitch/claude-cowork-linux
 # environment.systemPackages = [ inputs.claude-cowork-linux.packages.${system}.default ];
 ```
 
-The derivation extracts and patches a pinned Claude Desktop release at build time; a wrapper then mirrors the tree into `$XDG_DATA_HOME/claude-cowork-linux` (writable) and runs `launch.sh` with every dependency on `PATH`. The pin lives in [`nix/package.nix`](nix/package.nix). You can override `claudeVersion` / `claudeUrl` / `claudeHash`, but the derivation patches `index.js` only and unpacks `.zip` archives only, so it can't enable Cowork on split-entry builds (1.19367.0 and later) yet. `nix develop` gives a shell with everything `install.sh` needs.
+The derivation extracts and patches a pinned Claude Desktop release at build time; a wrapper then mirrors the tree into `$XDG_DATA_HOME/claude-cowork-linux` (writable) and runs `launch.sh` with every dependency on `PATH`. The pin lives in [`nix/package.nix`](nix/package.nix) and follows the last tested build in [COMPAT.md][compat] (currently 1.26832.0). The build sweeps every main-process chunk for the Cowork gate, as `install.sh` does, and fails rather than ship a package with Cowork off. Override `claudeVersion` / `claudeUrl` / `claudeHash` to track another release; the derivation unpacks `.zip` archives only. `nix develop` gives a shell with everything `install.sh` needs.
 
 ### Updating
 
