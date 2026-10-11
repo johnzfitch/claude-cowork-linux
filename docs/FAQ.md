@@ -159,11 +159,10 @@ This is an upstream Electron problem that can hit any Electron app after an uncl
 <details>
 <summary><strong>OAuth 401 errors</strong></summary>
 
-If Cowork sessions fail with 401 auth errors, check that `filterEnv()` (`stubs/cowork/env_filter.js`) hasn't been modified. The correct auth flow:
+If Cowork sessions fail with 401 auth errors, check that `filterEnv()` (`stubs/cowork/env_filter.js`) hasn't been modified. How credentials reach the CLI:
 
-1. The asar passes `CLAUDE_CODE_OAUTH_TOKEN` to the CLI via spawn env vars, and `filterEnv()` forwards it.
-2. The CLI uses this token through its own OAuth code path.
-3. `ANTHROPIC_AUTH_TOKEN` must NOT be injected (it bypasses OAuth and causes 401). The stub never sets it. From your own environment, `filterEnv()` forwards only a short allowlist (`PATH`, `HOME`, display and locale variables, `ANTHROPIC_API_KEY` and the Bedrock/Vertex switches), so exporting `ANTHROPIC_AUTH_TOKEN` in your shell does not reach the CLI.
+1. Claude Desktop builds the session's environment itself. For first-party sessions it sets `ANTHROPIC_API_KEY=""` and `ANTHROPIC_AUTH_TOKEN=""` so nothing inherited overrides its own credential; for bearer-scheme credentials (gateways, `sk-ant-oat` keys) it puts the credential in `ANTHROPIC_AUTH_TOKEN`. `filterEnv()` forwards those keys, empty values included &mdash; dropping them breaks those sessions.
+2. From your own shell, `filterEnv()` forwards only a short allowlist (`PATH`, `HOME`, display and locale variables, `ANTHROPIC_API_KEY` and the Bedrock/Vertex switches). Exporting `ANTHROPIC_AUTH_TOKEN` in your shell does not reach the CLI, and an exported `ANTHROPIC_API_KEY` is overridden by the bundle's `""`.
 
 To see which auth variables the bundle passed (names only; values are not logged):
 
@@ -171,7 +170,13 @@ To see which auth variables the bundle passed (names only; values are not logged
 grep "spawn envVars auth keys" ~/.local/state/claude-cowork/logs/claude-swift-trace.log | tail -5
 ```
 
-`filterEnv()` passes through any key from the bundle that starts with `ANTHROPIC_` or `CLAUDE_`. If that list includes `ANTHROPIC_AUTH_TOKEN`, the bundle itself is sending it. Open an issue with the asar version.
+If a key the bundle sends is being dropped, `startup.log` says so by name:
+
+```bash
+grep "\[env-filter\] dropped" ~/.local/state/claude-cowork/logs/startup.log
+```
+
+Open an issue with that line and the asar version.
 
 See [OAUTH-COMPLIANCE.md](OAUTH-COMPLIANCE.md) for full details.
 

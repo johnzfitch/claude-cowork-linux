@@ -95,52 +95,56 @@ its own environment. Forwarding either wholesale would hand the CLI whatever the
 
 **Implementation**: two allowlists, one per source. Nothing is forwarded unless it is listed.
 
-```javascript
-// Keys copied from the Electron process's own environment (process.env)
-const ENV_ALLOWLIST = [
-  'PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE',
-  'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
-  'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS',
-  'NODE_ENV', 'ELECTRON_RUN_AS_NODE',
-  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'
-];
+- **The Electron process's own environment** (the user's shell): only `ENV_ALLOWLIST` crosses
+  &mdash; locale, display, XDG and D-Bus variables, `PATH`/`HOME`/`USER`/`SHELL`, plus
+  `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`. A token the user
+  exported for some other tool does not reach the CLI.
+- **Claude Desktop's spawn `envVars`**: keys in `ADDITIONAL_ENV_ALLOWLIST`, or with a
+  `CLAUDE_`, `ANTHROPIC_` or `OTEL_` prefix. The explicit list holds the keys the bundle sends
+  that no prefix covers, read off the session-env builders in asar 1.26832.0:
+  `API_TIMEOUT_MS`, `MCP_CONNECTION_NONBLOCKING`, `USE_STAGING_OAUTH`, `USE_LOCAL_OAUTH`; the
+  managed-settings policy keys `DISABLE_AUTOUPDATER`, `DISABLE_ERROR_REPORTING`,
+  `DISABLE_FEEDBACK_COMMAND`, `DISABLE_GROWTHBOOK`, `DISABLE_TELEMETRY`, `ENABLE_TOOL_SEARCH`;
+  Bedrock's `AWS_*` credential, profile and config-file keys; Vertex's
+  `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT` and `CLOUD_ML_REGION`.
+  `tests/node/current-path/env_bundle_contract.test.cjs` pins the full per-builder key sets.
+- `envVars` is applied after the base environment, so a key Claude Desktop sets to `""`
+  overrides an inherited one.
 
-// Keys accepted from Claude Desktop's spawn envVars
-const ADDITIONAL_ENV_ALLOWLIST = new Set([
-  'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR',
-  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
-  'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL',
-  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
-  'AWS_REGION', 'AWS_DEFAULT_REGION',
-  'GOOGLE_APPLICATION_CREDENTIALS', 'VERTEX_PROJECT', 'VERTEX_REGION',
-]);
+**What Claude Desktop sends, and why it matters here** (asar 1.26832.0):
+- For first-party sessions the bundle sets `ANTHROPIC_API_KEY=""`, `ANTHROPIC_AUTH_TOKEN=""`
+  and `ANTHROPIC_CUSTOM_HEADERS=""` explicitly, so an API key in the user's shell cannot move
+  the session onto API billing or a different identity. Forwarding those empty values is what
+  makes that work.
+- For bearer-scheme credentials (third-party gateways, `sk-ant-oat` keys) the bundle puts the
+  credential in `ANTHROPIC_AUTH_TOKEN` and clears `ANTHROPIC_API_KEY`. Forwarding
+  `ANTHROPIC_AUTH_TOKEN` from `envVars` is therefore required, not a leak. Dropping it would
+  break those sessions. The variable in the user's own shell is still not inherited.
+- On the VM spawn path the bundle **removes** `CLAUDE_CODE_OAUTH_TOKEN` from `envVars` before
+  calling `vm.spawn()`; on macOS it hands the token to the VM's MITM proxy
+  (`addApprovedOauthToken`, §1) and passes it as a trailing `vm.spawn()` argument, which the
+  Linux stub does not read. How the CLI then authenticates on Linux has not been traced end to
+  end; see the open question in the summary below.
 
-// ...plus any envVars key with one of these prefixes
-const ADDITIONAL_ENV_PREFIX_ALLOWLIST = ['CLAUDE_', 'ANTHROPIC_'];
-```
+**In v5.3.0 and earlier** the explicit list was shorter, and `filterEnv` silently dropped
+`CLOUD_ML_REGION`, `GOOGLE_CLOUD_PROJECT`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_PROFILE`,
+`AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `API_TIMEOUT_MS`,
+`MCP_CONNECTION_NONBLOCKING` and the `DISABLE_*` policy keys: Vertex and Bedrock sessions lost
+their configuration, and an organisation's telemetry opt-out never reached the CLI.
 
-**What this means in practice**:
-- `CLAUDE_CODE_OAUTH_TOKEN` **is forwarded** to the Claude Code CLI subprocess when Claude
-  Desktop supplies it in `envVars`. This is intentional and required: it is how Claude
-  Desktop authenticates the CLI. It is **not** copied from the Electron process's own
-  environment, because it is not in `ENV_ALLOWLIST`.
-- `ANTHROPIC_API_KEY` is forwarded from either source. The Bedrock, Vertex, AWS and Google
-  credential keys in `ADDITIONAL_ENV_ALLOWLIST` are forwarded when Claude Desktop supplies them.
-- Any `envVars` key that is neither listed nor `CLAUDE_`/`ANTHROPIC_`-prefixed is dropped,
-  and the drop is traced as `filtered additionalEnv key: <KEY>` (the key name only).
-- `options.env` passed to `spawn()` is ignored, with a trace warning, so it cannot
-  override the filtered environment.
+**Dropped keys** are traced as `filtered additionalEnv key: <KEY>` and, once per key per run,
+printed as `[env-filter] dropped Claude Desktop env key not on the allowlist: <KEY>` to
+`startup.log` &mdash; the name only, never the value &mdash; so a key a new bundle starts
+sending is visible in a bug report. Loader and interpreter hooks (`LD_PRELOAD`, `NODE_OPTIONS`,
+`BASH_ENV`, `PYTHONPATH`, …) are never on the list.
 
-**What this does NOT do** (changed from earlier versions of this document): there is no
-longer a credential-name blocklist. The `BLOCKED_ENV_KEY_PATTERN` regex and
-`CREDENTIAL_EXEMPT_KEYS` set described previously no longer exist anywhere in the tree.
-Because of the `ANTHROPIC_` prefix rule, an `ANTHROPIC_AUTH_TOKEN` supplied by Claude Desktop
-in `envVars` **would be forwarded**; the same applies to any other `CLAUDE_*` or
-`ANTHROPIC_*` key. `ANTHROPIC_AUTH_TOKEN` in the Electron process's own environment is not
-forwarded. [docs/FAQ.md](FAQ.md#login-and-auth) ("OAuth 401 errors") says
-`ANTHROPIC_AUTH_TOKEN` must not be injected because it bypasses OAuth handling and causes
-401 errors; this layer never sets it, but `filterEnv` does not stop Claude Desktop from
-passing it.
+`options.env` passed to `spawn()` is ignored, with a trace warning, so it cannot override the
+filtered environment.
+
+There is no credential-name blocklist; the `BLOCKED_ENV_KEY_PATTERN` / `CREDENTIAL_EXEMPT_KEYS`
+pair described in earlier versions of this document was removed in May 2026. Given the
+bundle's use of `ANTHROPIC_AUTH_TOKEN` above, reinstating it would break bearer-credential
+sessions.
 
 **Scope**: `filterEnv` applies to processes started through the VM stub's `spawn()` (Cowork
 sessions). Commands that Claude Desktop launches through its macOS `disclaimer` wrapper are
@@ -318,14 +322,22 @@ These do not handle credentials directly, but an audit should know about them:
 |--------|--------|-------------|
 | Write OAuth tokens to disk | **Never** | `addApprovedOauthToken` discards its argument; no stub writes a token to a file |
 | Hold `CLAUDE_CODE_OAUTH_TOKEN` in memory | **Yes** | Sessions API client (§3), refreshed on each spawn |
-| Forward `CLAUDE_CODE_OAUTH_TOKEN` to Claude Code CLI | **Yes — intentional** | `ADDITIONAL_ENV_ALLOWLIST`; only from Claude Desktop's spawn `envVars`, never from the Electron process environment |
-| Forward other `envVars` keys | **Only if allowlisted** | `filterEnv`: exact list plus `CLAUDE_`/`ANTHROPIC_` prefixes; this admits `ANTHROPIC_AUTH_TOKEN` if Claude Desktop supplies it |
+| Forward `CLAUDE_CODE_OAUTH_TOKEN` to Claude Code CLI | **When Claude Desktop supplies it** | `ADDITIONAL_ENV_ALLOWLIST`; only from spawn `envVars`, never from the Electron process environment. On asar 1.26832.0 the VM spawn path removes it before `vm.spawn()` (§2) |
+| Forward other `envVars` keys | **Only if allowlisted** | `filterEnv`: exact list (pinned against the bundle's session builders) plus `CLAUDE_`/`ANTHROPIC_`/`OTEL_` prefixes. This admits `ANTHROPIC_AUTH_TOKEN`, which the bundle uses for bearer credentials and sets to `""` otherwise (§2) |
 | Forward Electron's own environment | **Only `ENV_ALLOWLIST` keys** | Includes `ANTHROPIC_API_KEY`; excludes `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` |
 | Register the `claude://` scheme | **Yes** | Installers and launchers (§5) |
 | Parse or extract data from OAuth callbacks | **Never** | The URL is shape-checked and re-emitted unchanged as `open-url`; `AuthRequest.isAvailable()` returns `false` |
 | Log token values | **Not in redacted trace logs** | `redactForLogs` on `trace()` lines; the `claude://` callback URL is logged unredacted to `startup.log` (§5, §7) |
 | Open non-Anthropic auth URLs | **Never** | `ALLOWED_AUTH_ORIGINS` checked in `AuthRequest.start()` |
 | Use OAuth tokens to call Anthropic's API | **No call path today** | The Sessions API client can, but none of its request methods has a non-test caller (§3) |
+
+**Open question.** On asar 1.26832.0, Claude Desktop removes `CLAUDE_CODE_OAUTH_TOKEN` from
+the VM spawn's `envVars` and passes the token as a trailing `vm.spawn()` argument instead (on
+macOS the VM's MITM proxy injects it). The Linux stub reads neither, so the token Claude Desktop
+intends for the session does not reach the CLI by either route. Cowork sessions on that build
+are reported working, which suggests the CLI authenticates some other way &mdash; possibly with
+credentials of its own. That has not been traced; until it is, this document makes no claim
+about which identity a Linux Cowork session uses.
 
 ---
 
