@@ -48,7 +48,8 @@ body:
       label: Relevant log output
       description: |
         Paste from `~/.local/state/claude-cowork/logs/claude-swift-trace.log`
-        or `./launch.sh 2>&1 | tee /tmp/cowork.log`. Redact any tokens or credentials.
+        and `~/.local/state/claude-cowork/logs/startup.log` (or run
+        `./launch.sh --dev 2>&1 | tee /tmp/cowork.log`). Redact any tokens or credentials.
       render: shell
 
   - type: input
@@ -59,11 +60,25 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: How did you install?
+      description: The AUR package can lag behind this repo; run `./check-aur-sync.sh` if you used it.
+      options:
+        - install.sh (or curl pipe)
+        - AUR helper (yay / paru)
+        - makepkg from a clone
+        - Nix flake
+        - Other
+    validations:
+      required: true
+
   - type: input
     id: version
     attributes:
       label: claude-cowork-linux version / commit
-      placeholder: "e.g. v3.0.3 or git rev (git rev-parse --short HEAD)"
+      placeholder: "e.g. v5.3.0, or `git -C ~/.local/share/claude-desktop rev-parse --short HEAD`"
     validations:
       required: true
 
@@ -71,7 +86,7 @@ body:
     id: claude_version
     attributes:
       label: Claude Desktop version (app.asar)
-      placeholder: "e.g. 1.1.4010 — check PKGBUILD or ./install.sh output"
+      placeholder: "e.g. 1.26832.0 — `cat ~/.local/share/claude-desktop/.installed-asar-version`"
 
   - type: checkboxes
     id: checklist

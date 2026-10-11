@@ -14,7 +14,7 @@ directly to Anthropic at <https://www.anthropic.com/security>.
 
 **You may open an issue for any security or permission problem you see.**
 
-You can also Report vulnerabilities by emailing me at: **zack@definitelynot.ai**
+You can also report vulnerabilities by email to: **zack@definitelynot.ai**
 
 Include:
 - A description of the vulnerability and its impact
@@ -23,9 +23,13 @@ Include:
 
 ## What Counts as a Vulnerability Here
 
-You may report anything you see as a risk around here. I will workshop it and then reply.
+Anything you see as a risk here: report it and it will be worked through with you.
 
- Response Commitment
+In particular: a way for a renderer-supplied path to escape its root, a way to
+get a command past `exec_capability_registry.js`, a credential reaching a log or
+a spawned process, or a patch pass that weakens a check in the bundle.
+
+## Response Commitment
 
 - Acknowledgement within **48 hours**
 - Assessment and patch timeline within **7 days**
@@ -33,4 +37,4 @@ You may report anything you see as a risk around here. I will workshop it and th
 
 ## Supported Versions
 
-Only the latest release on the `master` branch is actively maintained.
+Only the latest release and `master` are maintained. Fixes are not backported.

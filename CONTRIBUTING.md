@@ -97,21 +97,44 @@ bug you have already fixed will still reproduce in `build()`.
 ```bash
 git clone https://github.com/johnzfitch/claude-cowork-linux
 cd claude-cowork-linux
-./install.sh           # full install
-./launch.sh            # launch with auto-asar repack
-./launch-devtools.sh   # launch with Node.js inspector
-./install.sh --doctor  # validate environment
+./install.sh             # full install into ~/.local/share/claude-desktop
+./install.sh --doctor    # validate environment
 ```
+
+The install directory is a git checkout of this repo, and `launch.sh` re-syncs
+`stubs/` into the extracted app on every start. The quickest loop is to work in
+that checkout (or check your branch out there) and relaunch:
+
+```bash
+cd ~/.local/share/claude-desktop
+./launch.sh --dev        # foreground, output on the terminal
+./launch.sh --inspect    # + Node inspector on 127.0.0.1:9229 (chrome://inspect)
+./launch.sh --devtools   # + renderer DevTools and webapp asset dump
+./launch.sh --perf       # + remote debugging on 127.0.0.1:9222, IPC tap, verbose tracing
+```
+
+There is one launcher on purpose. Debug modes are flags on `launch.sh`, not
+separate scripts: a second launcher has to copy the sync, patch and repack
+steps, and the old `launch-devtools.sh` drifted from them (#170).
 
 ### Running Tests
 
 ```bash
-# All tests (599 tests across 36 files)
-node --test tests/node/current-path/*.test.cjs
+# Node suites (599 cases across 36 files)
+npm test        # = node --test tests/node/current-path/*.test.cjs
 
 # Single module
 node --test tests/node/current-path/session_orchestrator.test.cjs
+
+# Shell suites -- hermetic, no network. CI runs test-install-paths.sh stage 1
+# only; later stages download Claude Desktop or need Docker.
+for t in tests/test-compat-pins.sh tests/test-cowork-patch.sh tests/test-extract-swap.sh          tests/test-launcher-sync.sh tests/test-pkgbuild-disclaimer.sh; do bash "$t"; done
+bash tests/test-install-paths.sh 1
 ```
+
+The shell suites need LF line endings. `.gitattributes` forces LF in every
+checkout, but a clone made before it landed may still have CRLF on Windows;
+run them under WSL or Linux from a fresh clone.
 
 ### Log Paths
 
@@ -172,3 +195,16 @@ Changes to these files require extra care and a note in your PR explaining the s
 - `PKGBUILD` -- the root-owned `Helpers/disclaimer` script, which must stay fail-closed
 
 If your change affects credential handling, verify it against [OAUTH-COMPLIANCE.md](docs/OAUTH-COMPLIANCE.md).
+
+## Releasing
+
+1. Bump the version in `install.sh` (`VERSION=`), `package.json`, and the README
+   badge. `tests/test-compat-pins.sh` fails if the three disagree.
+2. If a Claude Desktop build was verified for the release, update the
+   machine-readable lines and pinning table in [COMPAT.md](COMPAT.md).
+3. Merge to `master`, tag `vX.Y.Z`, and publish the notes on the GitHub
+   Releases page -- that page is the changelog.
+4. The AUR package is versioned separately: `PKGBUILD`'s `pkgver` tracks the
+   Claude Desktop build and `pkgrel` the recipe. Bump `pkgrel` when the recipe
+   changes, regenerate `.SRCINFO`, and check the publish with
+   `./check-aur-sync.sh`.

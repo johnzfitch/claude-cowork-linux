@@ -389,7 +389,7 @@ if [[ "$_perf" == true ]]; then
   echo "  PERF MODE"
   echo "  Main process:  chrome://inspect (port 9229) -> Profiler tab"
   echo "  Renderer:      DevTools will open -> Performance tab -> Record"
-  echo "  IPC tap:       $LOG_DIR/ipc-tap.log"
+  echo "  IPC tap:       $STATE_HOME/claude-cowork/logs/ipc-tap.jsonl"
   echo "  Trace IO:      Enabled (stdin/stdout logging)"
   echo ""
 elif [[ "$_inspect" == true ]]; then

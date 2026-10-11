@@ -20,8 +20,10 @@
 
 ## Security impact
 
-<!-- If this touches filterEnv, spawn, AuthRequest, isPathSafe, or any credential handling:
-     describe the impact and confirm it aligns with OAUTH-COMPLIANCE.md. -->
+<!-- If this touches filterEnv, spawn, AuthRequest, isPathSafe, safe_fs.js,
+     exec_capability_registry.js, the PKGBUILD disclaimer, or any credential handling:
+     describe the impact and confirm it aligns with docs/OAUTH-COMPLIANCE.md.
+     The full list is under "Security-Sensitive Areas" in CONTRIBUTING.md. -->
 
 - [ ] This change does not touch credential handling, token passthrough, or process spawning
 - [ ] This change does touch security-sensitive code — explanation below:
@@ -33,3 +35,4 @@
 - [ ] No API keys, tokens, `.env` files, or log output with credentials included
 - [ ] Commit messages follow the project style (no emoji, brief summary + explanation)
 - [ ] `./install.sh --doctor` passes cleanly on my system
+- [ ] `npm test` and the shell suites in `tests/` pass (see CONTRIBUTING.md)
