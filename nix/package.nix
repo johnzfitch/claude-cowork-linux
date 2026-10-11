@@ -157,18 +157,19 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     # package that starts with Cowork switched off.
     # Output is stashed per file and shown only for the file that held the
     # gate, as PKGBUILD does; the few hundred expected misses are printed only
-    # if nothing matched.
+    # if nothing matched. (Not `out`: that is the derivation's output path,
+    # and clobbering it sends installPhase's mkdir somewhere nonsensical.)
     source ./patch-index.sh
     patch_index_collect_targets "$tree/.vite/build"
     echo "Applying cowork patch to ''${#INDEX_TARGETS[@]} file(s)..."
     patched=0
     miss_log=""
     for t in "''${INDEX_TARGETS[@]}"; do
-      if out="$(python3 enable-cowork.py "$t" --sweep 2>&1)"; then
+      if patch_out="$(python3 enable-cowork.py "$t" --sweep 2>&1)"; then
         patched=1
-        [ -n "$out" ] && printf '%s\n' "$out"
+        [ -n "$patch_out" ] && printf '%s\n' "$patch_out"
       else
-        miss_log+="--- ''${t##*/} ---"$'\n'"$out"$'\n'
+        miss_log+="--- ''${t##*/} ---"$'\n'"$patch_out"$'\n'
       fi
     done
     if [ "$patched" -ne 1 ]; then

@@ -38,7 +38,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
       - name: nix build
-        run: nix build .#default -L --print-out-paths --no-link | tee out-path
+        run: |
+          set -o pipefail
+          nix build .#default -L --print-out-paths --no-link | tee out-path
+          test -s out-path
       # The build itself fails if the sweep finds no platform gate; these
       # check the shipped tree independently of that logic.
       - name: Cowork gate is patched in the shipped tree
