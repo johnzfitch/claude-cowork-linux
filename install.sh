@@ -824,7 +824,7 @@ install_stubs() {
         [[ -d "$stub_src/stubs" ]] || die "stubs/ missing from $stub_src. Re-run from a complete checkout."
         cp -rf "$stub_src/stubs" "$INSTALL_DIR/"
         local _f
-        for _f in launch.sh launch-devtools.sh patch-index.sh install.sh COMPAT.md enable-cowork.py; do
+        for _f in launch.sh patch-index.sh install.sh COMPAT.md enable-cowork.py; do
             [[ -f "$stub_src/$_f" ]] || die "$_f missing from $stub_src. Re-run from a complete checkout."
             cp -f "$stub_src/$_f" "$INSTALL_DIR/$_f"
         done
