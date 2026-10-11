@@ -1,0 +1,52 @@
+name: Nix build
+
+permissions:
+  contents: read
+
+# A real `nix build` of the flake: it downloads the pinned Claude Desktop
+# archive from Anthropic's CDN (fetchurl checks the hash), extracts it,
+# installs the stubs and runs the Cowork patch sweep. Only on changes that can
+# affect that, since the archive is ~350 MB.
+on:
+  push:
+    branches: [master]
+    paths:
+      - nix/**
+      - flake.nix
+      - flake.lock
+      - enable-cowork.py
+      - patch-index.sh
+      - launch.sh
+      - stubs/**
+      - .github/workflows/nix.yml
+  pull_request:
+    paths:
+      - nix/**
+      - flake.nix
+      - flake.lock
+      - enable-cowork.py
+      - patch-index.sh
+      - launch.sh
+      - stubs/**
+      - .github/workflows/nix.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - name: nix build
+        run: |
+          set -o pipefail
+          nix build .#default -L --print-out-paths --no-link | tee out-path
+          test -s out-path
+      # The build itself fails if the sweep finds no platform gate; these
+      # check the shipped tree independently of that logic.
+      - name: Cowork gate is patched in the shipped tree
+        run: |
+          build="$(cat out-path)/share/claude-cowork-linux/linux-app-extracted/.vite/build"
+          grep -lF '/*cowork-patched*/' "$build"/index*.js
+      - name: Launcher wrapper is present
+        run: test -x "$(cat out-path)/bin/claude-desktop"
