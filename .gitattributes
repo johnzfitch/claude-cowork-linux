@@ -1,0 +1,5 @@
+# Scripts, patches and stubs execute on Linux: keep LF in every checkout,
+# including Windows clones with core.autocrlf=true.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

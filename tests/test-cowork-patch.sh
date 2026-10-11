@@ -389,13 +389,11 @@ fi
 # lines on every launch of a healthy install -- noise, and it makes a real #166
 # silent-no-op indistinguishable from the steady state. PKGBUILD must NOT set it:
 # build() always starts from a fresh extract, where a miss is real signal.
-for _launcher in launch.sh launch-devtools.sh; do
-  if grep -qE '^\s*PATCH_INDEX_WARN_ON_MISS=0' "$REPO_ROOT/$_launcher"; then
-    pass "$_launcher silences warn-on-miss (persistent tree)"
-  else
-    fail "$_launcher does not silence warn-on-miss (9 WARNs per launch)"
-  fi
-done
+if grep -qE '^\s*PATCH_INDEX_WARN_ON_MISS=0' "$REPO_ROOT/launch.sh"; then
+  pass "launch.sh silences warn-on-miss (persistent tree)"
+else
+  fail "launch.sh does not silence warn-on-miss (9 WARNs per launch)"
+fi
 if grep -qE '^\s*PATCH_INDEX_WARN_ON_MISS=' "$REPO_ROOT/PKGBUILD"; then
   fail "PKGBUILD overrides warn-on-miss (fresh extract per build -- a miss is real signal)"
 else
@@ -424,18 +422,25 @@ if [[ -f "$SHARED" ]]; then
   fi
 fi
 
-# launch-devtools.sh repacks now, so it must refuse a tree launch.sh has not
-# prepared -- repacking a stock package.json yields an asar that loads
-# index.pre.js directly and never runs frame-fix-wrapper. The guard has to come
-# BEFORE the repack, or it can never fire (the repack creates the file the
-# earlier existence check looks for).
-_dv="$REPO_ROOT/launch-devtools.sh"
-_guard_line="$(grep -n 'not been prepared by launch.sh' "$_dv" | head -1 | cut -d: -f1)"
-_repack_line="$(grep -n 'asar pack linux-app-extracted' "$_dv" | head -1 | cut -d: -f1)"
-if [[ -n "$_guard_line" && -n "$_repack_line" && "$_guard_line" -lt "$_repack_line" ]]; then
-  pass "launch-devtools.sh checks for a launch.sh-prepared tree before repacking"
+# The Node inspector is a launch.sh flag (--inspect, and --perf), not a second
+# launcher: a separate launch-devtools.sh had to copy launch.sh's sync, patch
+# and repack steps, and drifted from them (#170). Whatever turns the inspector
+# on must bind it to loopback -- a bare --inspect=0.0.0.0 hands the main
+# process, and the session tokens it holds, to anyone on the network.
+if grep -q -- '--inspect=127.0.0.1:9229' "$REPO_ROOT/launch.sh"    && grep -qE '"\$arg" == "--inspect"' "$REPO_ROOT/launch.sh"; then
+  pass "launch.sh --inspect attaches the Node inspector on 127.0.0.1"
 else
-  fail "launch-devtools.sh repacks without (or before) the prepared-tree check"
+  fail "launch.sh has no loopback-bound --inspect mode"
+fi
+if grep -E -- '--inspect(-brk)?(=|[[:space:]])' "$REPO_ROOT/launch.sh" | grep -v '127.0.0.1' | grep -vq '^[[:space:]]*#'; then
+  fail "launch.sh passes an --inspect flag not bound to 127.0.0.1"
+else
+  pass "every launch.sh --inspect flag is bound to 127.0.0.1"
+fi
+if [[ -e "$REPO_ROOT/launch-devtools.sh" ]]; then
+  fail "launch-devtools.sh is back -- use ./launch.sh --inspect instead of a second launcher"
+else
+  pass "no second launcher (launch-devtools.sh) to drift from launch.sh"
 fi
 
 # Source-level guards: chunk discovery now lives in the shared script, and the

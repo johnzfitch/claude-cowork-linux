@@ -1,6 +1,15 @@
 #!/bin/bash
-# Test launcher for claude-cowork-linux
-# Uses the AppImage's electron with a repacked app.asar (bakes in stubs/patches)
+# Launcher for claude-cowork-linux: syncs stubs/ into linux-app-extracted,
+# applies the main-process patches, repacks app.asar when anything changed,
+# and starts electron.
+#
+# Usage: ./launch.sh [--dev | --devtools | --inspect | --perf] [electron args...]
+#   (none)      detach; output goes to $CLAUDE_LOG_DIR/startup.log
+#   --dev       stay in the foreground, tee output to the terminal
+#   --devtools  foreground + open DevTools and dump webapp assets
+#   --inspect   foreground + Node inspector on 127.0.0.1:9229 (main process)
+#   --perf      foreground + inspector, remote debugging on 127.0.0.1:9222,
+#               IPC tap and verbose tracing
 
 set -o pipefail
 
@@ -259,13 +268,18 @@ if [[ -d "$CLAUDE_CODE_DIR" ]]; then
 fi
 
 # --devtools flag opens DevTools + asset dumper on launch
+# --inspect flag attaches the Node inspector to the main process
 # --perf flag enables Chromium tracing + Node inspector for profiling
 _args=()
 _perf=false
+_inspect=false
 _dev=false
 for arg in "$@"; do
   if [[ "$arg" == "--devtools" ]]; then
     export CLAUDE_DEVTOOLS=1
+    _dev=true
+  elif [[ "$arg" == "--inspect" ]]; then
+    _inspect=true
     _dev=true
   elif [[ "$arg" == "--perf" ]]; then
     _perf=true
@@ -375,14 +389,21 @@ if [[ "$_perf" == true ]]; then
   echo "  PERF MODE"
   echo "  Main process:  chrome://inspect (port 9229) -> Profiler tab"
   echo "  Renderer:      DevTools will open -> Performance tab -> Record"
-  echo "  IPC tap:       $LOG_DIR/ipc-tap.log"
+  echo "  IPC tap:       $STATE_HOME/claude-cowork/logs/ipc-tap.jsonl"
   echo "  Trace IO:      Enabled (stdin/stdout logging)"
+  echo ""
+elif [[ "$_inspect" == true ]]; then
+  # SECURITY: Bind to localhost only — never expose to network
+  _electron_args+=(--inspect=127.0.0.1:9229)
+  echo ""
+  echo "  INSPECT MODE"
+  echo "  Main process:  chrome://inspect (port 9229)"
   echo ""
 fi
 
 # Run electron with the repacked app.asar
 if [[ "$_dev" == true ]]; then
-  # Foreground: terminal stays attached (--dev, --devtools, --perf)
+  # Foreground: terminal stays attached (--dev, --devtools, --inspect, --perf)
   echo "Launching Claude Desktop (foreground, electron: $ELECTRON_BIN)..."
   "$ELECTRON_BIN" \
     "${_electron_args[@]}" \

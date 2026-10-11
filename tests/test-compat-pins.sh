@@ -142,5 +142,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "4. Project version agrees everywhere it is written"
+# ---------------------------------------------------------------------------
+# v5.2.0 shipped with install.sh, package.json and the README badge all still
+# reading 5.1.0, so `--doctor` and the generated launcher reported the wrong
+# release. A version bump has to touch all three.
+v_install="$(grep -m1 -oE '^VERSION="[^"]+"' "$REPO_ROOT/install.sh" | cut -d'"' -f2)"
+v_pkg="$(grep -m1 -oE '"version":[[:space:]]*"[^"]+"' "$REPO_ROOT/package.json" | sed -E 's/.*"([^"]+)"$/\1/')"
+v_badge="$(grep -m1 -oE 'badge/version-v[0-9][0-9.]*-' "$REPO_ROOT/README.md" | sed -E 's#badge/version-v(.*)-#\1#')"
+if [[ -n "$v_install" ]]; then pass "install.sh VERSION present ($v_install)"; else fail "install.sh VERSION missing"; fi
+assert_eq "$v_pkg" "$v_install" "package.json version matches install.sh"
+assert_eq "$v_badge" "$v_install" "README version badge matches install.sh"
+
+# ---------------------------------------------------------------------------
 echo -e "\n${BOLD}Summary:${NC} ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC}"
 [[ "$FAIL" -eq 0 ]]

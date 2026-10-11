@@ -1493,7 +1493,7 @@ class SwiftAddonStub extends EventEmitter {
        * applications:
        *   - Claude Desktop (Electron renderer) manages its own OAuth session
        *   - Claude Code CLI authenticates independently via CLAUDE_CODE_OAUTH_TOKEN
-       *     passed in spawn envVars (see filterEnv / CREDENTIAL_EXEMPT_KEYS above)
+       *     passed in spawn envVars (admitted by filterEnv in cowork/env_filter.js)
        *
        * This stub exists solely to satisfy the IPC contract — the renderer
        * expects a response on this channel. Removing it would crash the app.

@@ -87,13 +87,14 @@ To pin and verify a tested version:
 ```sh
 # 1. Download the tested build directly from Anthropic's CDN. Use -o to name
 #    the file predictably; curl -fLO would keep the long hash-based filename.
-curl -fL -o Claude-1.6259.1.dmg "<CDN URL from the table above>"
+#    The last tested build, 1.26832.0, is a .zip:
+curl -fL -o Claude-1.26832.0.zip "<CDN URL from the table above>"
 
 # 2. Verify the checksum matches the SHA-256 recorded above.
-sha256sum Claude-1.6259.1.dmg
+sha256sum Claude-1.26832.0.zip
 
 # 3. Install from the verified archive (the installer does not re-download).
-CLAUDE_ARCHIVE="$PWD/Claude-1.6259.1.dmg" bash install.sh
+CLAUDE_ARCHIVE="$PWD/Claude-1.26832.0.zip" bash install.sh
 ```
 
 These URLs and checksums are best-effort pointers contributed by users,

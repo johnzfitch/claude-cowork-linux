@@ -1,6 +1,14 @@
 # Safe Storage and Token Persistence
 
-## The Warning
+## The Warnings
+
+From the launcher (`launch.sh`, used by the `claude-desktop` launcher and the Nix package), in `startup.log`:
+
+```
+WARN: org.freedesktop.secrets not available, falling back to --password-store=basic
+```
+
+From Claude Desktop itself:
 
 ```
 [warn] safeStorage not available, tokens will not persist
@@ -8,27 +16,51 @@
 
 ## What This Means
 
-Electron's `safeStorage` API provides encrypted token storage using the system keyring. On Linux, it requires:
-- **GNOME**: `gnome-keyring` daemon running
-- **KDE**: `kwallet` daemon running
-- **Other**: `libsecret` compatible keyring
+Electron's `safeStorage` API encrypts stored tokens with a key kept in the system keyring. As
+this project launches it, Electron reaches the keyring only through the freedesktop
+**Secret Service** D-Bus API.
 
-Without a keyring, Claude Desktop:
-- ✅ Still works normally
-- ✅ Can authenticate and use your account
-- ❌ Won't save auth tokens between sessions
-- ❌ You'll need to re-authenticate each time you start the app
+At every start, the launcher asks the session bus whether anything owns the name
+`org.freedesktop.secrets`:
 
-## Check if You Have a Keyring
+- **Yes**: Electron is started with `--password-store=gnome-libsecret`, which talks to that
+  Secret Service provider.
+- **No** (or `dbus-send` is not installed): Electron is started with `--password-store=basic`
+  and `launch.sh` prints the warning above.
+
+Any Secret Service provider works: `gnome-keyring`, KeePassXC with Secret Service
+integration enabled, or KWallet when it is providing the Secret Service interface. The AUR
+launcher (`claude-cowork`) runs the same check silently.
+
+Without a Secret Service provider, Claude Desktop:
+- Still works normally
+- Can authenticate and use your account
+- Warns that it won't save auth tokens between sessions, so expect to sign in again each time you start the app
+
+## Check if You Have a Secret Service Provider
+
+This is the check the launcher runs:
 
 ```bash
-# Check if gnome-keyring is running
-ps aux | grep gnome-keyring
+dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+  org.freedesktop.DBus.NameHasOwner string:"org.freedesktop.secrets"
+# "boolean true" means the launcher will use the keyring
+```
 
-# Check if kwallet is running
-ps aux | grep kwalletd
+Or run the preflight diagnostics, which include it:
 
-# Check if secret-tool is available
+```bash
+claude-desktop --doctor
+# [OK] Secret service (org.freedesktop.secrets): available
+```
+
+To see what is installed:
+
+```bash
+# Is gnome-keyring or kwallet running?
+ps aux | grep -E 'gnome-keyring|kwalletd'
+
+# Is secret-tool available (used in Testing below)?
 which secret-tool
 ```
 
@@ -42,8 +74,8 @@ Works on any desktop environment:
 # Arch/Manjaro
 sudo pacman -S gnome-keyring libsecret
 
-# Debian/Ubuntu
-sudo apt install gnome-keyring libsecret-1-0
+# Debian/Ubuntu (libsecret-tools provides secret-tool)
+sudo apt install gnome-keyring libsecret-1-0 libsecret-tools
 
 # Fedora
 sudo dnf install gnome-keyring libsecret
@@ -66,13 +98,8 @@ For systemd (most modern distros):
 systemctl --user enable --now gnome-keyring-daemon.service
 ```
 
-**For Hyprland users:**
-
-Add to `~/.config/hypr/hyprland.conf`:
-
-```
-exec-once = gnome-keyring-daemon --start --components=secrets
-```
+For window-manager-specific lines (Hyprland, i3, Sway, XFCE), see
+[Desktop Environment Specifics](#desktop-environment-specifics).
 
 ### Option 2: Use KWallet (KDE Users)
 
@@ -89,7 +116,10 @@ sudo apt install kwalletmanager
 sudo dnf install kwalletmanager
 ```
 
-KWallet usually starts automatically on KDE.
+KWallet usually starts automatically on KDE. The launcher only uses it if it owns
+`org.freedesktop.secrets`; run the `dbus-send` check above. If it says `boolean false`,
+KWallet is not providing the Secret Service interface and the launcher will fall back to
+`basic`. Option 1 works alongside KDE.
 
 ### Option 3: Live with Re-Authentication
 
@@ -113,7 +143,8 @@ secret-tool lookup test key
 secret-tool clear test key
 ```
 
-If this works, restart Claude Desktop and the warning should be gone.
+If this works, restart Claude Desktop. The launcher checks for the keyring each time it
+starts, so the keyring must be running **before** you launch the app.
 
 ## Verify It's Fixed
 
@@ -121,26 +152,26 @@ If this works, restart Claude Desktop and the warning should be gone.
 # Clear old logs
 : > ~/.local/state/claude-cowork/logs/startup.log
 
-# Start Claude
-claude
+# Start Claude Desktop
+claude-desktop
 
-# Check for the warning
-grep "safeStorage" ~/.local/state/claude-cowork/logs/startup.log
+# Check for either warning
+grep -E "safeStorage|password-store=basic" ~/.local/state/claude-cowork/logs/startup.log
 ```
 
-If safeStorage is working, you won't see the warning.
+If the keyring is in use, neither warning appears. (The AUR `claude-cowork` launcher does not
+write `startup.log`; use the `dbus-send` check instead.)
 
 ## Security Notes
 
 ### With Keyring (Recommended)
-- Tokens stored encrypted in system keyring
+- Tokens stored encrypted with a key held in the system keyring
 - Protected by your login password (or keyring password)
 - Secure cross-session persistence
 
 ### Without Keyring
-- Tokens not persisted between sessions
+- Tokens not persisted between sessions, per Claude Desktop's warning
 - Re-authentication required each startup
-- Still secure during the session (tokens in memory only)
 
 ## Troubleshooting
 
@@ -154,27 +185,31 @@ gnome-keyring-daemon --start --components=secrets
 
 ### Keyring Unlocking Prompts
 
-If you get repeated unlock prompts:
+If you get repeated unlock prompts, set the default keyring's password to match your login
+password with Seahorse, the GNOME keyring manager:
 
 ```bash
-# Set default keyring password to match login password
-# Run this once after installing gnome-keyring
-seahorse  # GUI keyring manager
-# or
-secret-tool store --label="Login" login password
+seahorse
 ```
 
 ### Still Not Working?
 
-Check environment variables:
+The launcher's check needs `dbus-send` (from the `dbus` package) and a session bus:
 
 ```bash
-# These should be set when keyring is running
-echo $GNOME_KEYRING_CONTROL
-echo $XDG_RUNTIME_DIR
+which dbus-send
+echo $DBUS_SESSION_BUS_ADDRESS
 ```
 
-If not set, your desktop environment startup isn't initializing the keyring properly.
+If `dbus-send` is missing, install `dbus`. If `DBUS_SESSION_BUS_ADDRESS` is empty, your
+desktop environment's startup isn't exporting the session bus to the environment you launch
+Claude Desktop from; the `dbus-update-activation-environment --all` lines below fix this
+for most window managers.
+
+### WSL2
+
+Stock WSL2 has no Secret Service, so the launcher uses the basic password store and you sign
+in again after each WSL restart. See the WSL2 section of [FAQ.md](FAQ.md#wsl2).
 
 ## Desktop Environment Specifics
 
@@ -200,14 +235,12 @@ gnome-keyring-daemon --start --components=secrets
 ```
 
 ### GNOME/KDE
-Should work out of the box. If not, keyring package might not be installed.
+Should work out of the box. If not, the keyring package might not be installed.
 
 ## Summary
 
-**The warning is harmless but annoying.** Installing a keyring daemon:
-- ✅ Saves you from re-authenticating every session
-- ✅ Properly encrypts stored tokens
-- ✅ Follows Linux security best practices
-- ✅ Takes 5 minutes to set up
+**The warning is harmless but annoying.** Running a Secret Service provider before you launch:
+- Saves you from re-authenticating every session
+- Encrypts stored tokens with a keyring-held key
 
-Most users want Option 1 (gnome-keyring) as it works everywhere.
+Most users want Option 1 (gnome-keyring), as it works on any desktop environment.

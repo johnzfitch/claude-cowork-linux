@@ -8,38 +8,46 @@
 <br>
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20x86__64-blue?style=flat-square)
-![Version](https://img.shields.io/badge/version-v5.1.0-brightgreen?style=flat-square)
+![Version](https://img.shields.io/badge/version-v5.3.0-brightgreen?style=flat-square)
 ![Tested](https://img.shields.io/badge/tested-Arch%20Linux-1793D1?style=flat-square&logo=archlinux&logoColor=white)
 ![Status](https://img.shields.io/badge/status-Working-success?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
-**[Quick Start](#-quick-start)** · **[How It Works](#-how-it-works)** · **[Manual Setup](#-manual-setup)** · **[Troubleshooting](#-troubleshooting)**
+**[Quick Start](#-quick-start)** &middot; **[How It Works](#-how-it-works)** &middot; **[Installing by Hand](#-installing-by-hand)** &middot; **[Troubleshooting](#-troubleshooting)** &middot; **[FAQ][faq]**
 
 </div>
+
+[faq]: docs/FAQ.md
+[compat]: COMPAT.md
+[contributing]: CONTRIBUTING.md
+[oauth]: docs/OAUTH-COMPLIANCE.md
+[issues]: https://github.com/johnzfitch/claude-cowork-linux/issues
+[releases]: https://github.com/johnzfitch/claude-cowork-linux/releases
 
 ---
 
 ## ![](.github/assets/icons/info-24x24.png) Overview
 
-Claude Cowork is a special Claude Desktop build that works inside a folder you point it at—it reads, writes, and organizes files there while it runs a plan. Cowork is currently a **macOS-only preview** backed by a sandboxed Linux VM; this repo reverse-engineers and stubs the macOS-native pieces so Cowork can run directly on Linux (x86_64)—no VM and no macOS required. The stub translates VM paths to host paths so Cowork points at the right files on Linux.
+Claude Cowork is the Claude Desktop mode that works inside a folder you point it at &mdash; it reads, writes, and organizes files there while it runs a plan. Upstream, Cowork ships for **macOS** and runs the agent inside a sandboxed Linux VM. This project stubs the macOS-native pieces of the unmodified Claude Desktop app so Cowork runs directly on Linux (x86_64): no VM, no macOS machine.
 
-**How it works:**
+| Step | What happens |
+|:-----|:-------------|
+| ![](.github/assets/icons/script-24x24.png) **Stubbing** | macOS-only native modules (`@ant/claude-swift`, `@ant/claude-native`) are replaced with JavaScript implementations |
+| ![](.github/assets/icons/console-24x24.png) **Direct execution** | The Claude Code CLI runs on the host instead of in a VM &mdash; you're already on Linux |
+| ![](.github/assets/icons/translation-24x24.png) **Path translation** | VM paths (`/sessions/...`, `/usr/local/bin/claude`) are mapped to host paths |
+| ![](.github/assets/icons/platform-24x24.png) **Platform spoofing** | App code sees `process.platform === 'darwin'` and macOS 14, so the darwin-only Cowork code paths run |
 
-| Step | Description |
-|:-----|:------------|
-| ![](.github/assets/icons/script-24x24.png) **Stubbing** | Replace macOS-only native modules (`@ant/claude-swift`, `@ant/claude-native`) with JavaScript |
-| ![](.github/assets/icons/console-24x24.png) **Direct Execution** | Run the Claude Code binary directly (no VM needed—we're already on Linux!) |
-| ![](.github/assets/icons/translation-24x24.png) **Path Translation** | Convert VM paths to host paths transparently |
-| ![](.github/assets/icons/platform-24x24.png) **Platform Spoofing** | Send macOS headers so the server enables the feature |
+> [!IMPORTANT]
+> This repository contains **no Anthropic code**. The installer downloads Claude Desktop from Anthropic's <abbr title="Content Delivery Network">CDN</abbr> on your machine.
 
 ---
 
 ## ![](.github/assets/icons/status-24x24.png) Status
 
-- **Unofficial research preview**: This is reverse-engineered and may break when Claude Desktop updates.
-- **Linux support**: Currently targets **Linux x86_64**. Wayland: auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Ozone backend).
-- **Access**: Requires a Claude account. The installer auto-downloads the Claude Desktop DMG; no macOS machine needed.
-- **Tests**: 599 test cases across 36 test files validating IPC, path translation, security, and session persistence, plus six shell suites covering the patch passes, compat pins, launcher stub sync, install-script static analysis, the installer's staged extract-and-swap, and the AUR package's disclaimer wrapper and icon. All run in CI on every push and pull request.
+- **Unofficial research preview.** Reverse-engineered; a Claude Desktop update can break it. [COMPAT.md][compat] records which Desktop builds are known good.
+- **Linux x86_64.** Wayland is auto-detected via `$WAYLAND_DISPLAY` / `$XDG_SESSION_TYPE` (Electron Ozone backend).
+- **Access.** Requires a Claude account with Cowork access. No macOS machine is needed &mdash; the installer fetches the macOS build and unpacks it.
+- **Tests.** 599 `node:test` cases across 36 files (IPC, path translation, containment, credential handling, session persistence), plus six shell suites covering the patch passes, compat pins, launcher stub sync, installer static checks, the installer's staged extract-and-swap, and the AUR package's disclaimer wrapper and icon. CI runs all of them on every push and pull request.
 
 ---
 
@@ -47,35 +55,39 @@ Claude Cowork is a special Claude Desktop build that works inside a folder you p
 
 | Distro | Desktop | Status | Notes |
 |:-------|:--------|:-------|:------|
-| **Arch Linux** | Hyprland (Wayland) | Tested | Primary dev environment |
-| **Arch Linux** | KDE Plasma (Wayland) | Expected | KDE Wallet exposed via SecretService D-Bus |
-| **Arch Linux** | GNOME (Wayland) | Expected | Global shortcuts require manual DE config (GNOME lacks portal support) |
-| **Ubuntu 22.04+** | GNOME / X11 | Expected | gnome-keyring provides SecretService |
-| **Fedora 39+** | GNOME / KDE | Expected | May need `p7zip-plugins` for DMG extraction |
-| **Debian 12+** | Any | Expected | `p7zip-full` in apt |
-| **NixOS** | Any | Untested | Electron + bwrap sandboxing may need extra config |
-| **openSUSE** | Any | Tested | Uses `7zip` package (not `p7zip`); `nodejs-default` for Node.js |
+| **Arch Linux** | Hyprland (Wayland) | Tested | Primary development environment |
+| **Arch Linux** | KDE Plasma (Wayland) | Expected | KDE Wallet is exposed through the SecretService D-Bus API |
+| **Manjaro** | Cinnamon (X11) | Reported working | Asar 1.26832.0, via both `install.sh` and `makepkg` |
+| **Fedora 39+** | GNOME / KDE | Expected | May need `p7zip-plugins` for archive extraction; a Fedora 44 report (#171) was against an independent fork |
+| **Ubuntu 22.04+** | GNOME / X11, WSLg | Reported working | gnome-keyring provides SecretService; see [WSL2 notes](#-troubleshooting) |
+| **CachyOS** | KDE Plasma (Wayland) | Reported working | Asar 1.40609.0 |
+| **Debian 12+** | Any | Expected | `p7zip-full` from apt |
+| **openSUSE** | Any | Tested | Uses the `7zip` package (not `p7zip`) and `nodejs-default` |
+| **NixOS** | Any | Packaged | Nix flake ([Method 4](#method-4-nix-flake-nixos)); `install.sh` does not work on NixOS |
+
+"Reported working" rows come from contributor reports recorded in [COMPAT.md][compat], not from a maintainer test run.
 
 **Known caveats:**
-- Wayland compositors that don't implement the `GlobalShortcuts` portal (GNOME) won't have global hotkey support -- set a custom shortcut in your DE settings instead.
-- If `gnome-keyring` or another SecretService provider isn't running, the launcher falls back to `--password-store=basic` (credentials stored on disk, not in a keyring).
-- The `/sessions` root symlink requires `sudo` once during install. If your distro restricts root symlinks differently, point it manually: `sudo ln -s "$HOME/.config/Claude/local-agent-mode-sessions/sessions" /sessions`.
+- Compositors without the `GlobalShortcuts` portal (GNOME before 48) have no global hotkey &mdash; bind `claude-desktop` to a custom shortcut in your DE settings instead.
+- With no SecretService provider running, the launcher falls back to `--password-store=basic` (credentials on disk, not in a keyring).
 
-Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to validate your environment.
+Run `claude-desktop --doctor` after installing to check your environment.
 
 ---
 
 ## ![](.github/assets/icons/checkbox-24x24.png) Requirements
 
-- **Linux x86_64** (tested on Arch Linux, kernel 6.18.13)
-- **Node.js 18+** / npm
+- **Linux x86_64**
+- **Node.js 18+** and npm
 - **Electron** (system package or npm global)
 - **asar** (`npm install -g @electron/asar`)
-- **p7zip** (to extract the macOS DMG; openSUSE uses `7zip` instead)
-- **bubblewrap** (sandbox isolation)
-- **Python 3.11+** (optional, for `enable-cowork.py` patching — the installer uses Node.js to download DMGs)
-- **Claude Pro** (or higher) subscription for Cowork access
-- **Secret service provider** (optional) -- gnome-keyring, KDE Wallet, or KeePassXC for secure credential storage. Without one, the launcher falls back to `--password-store=basic`.
+- **7-Zip** (`p7zip`, or `7zip` on openSUSE) to unpack the macOS archive
+- **Python 3** &mdash; `enable-cowork.py` applies the Cowork platform-gate patch at install and update time
+- **bubblewrap** (checked by the installer and `--doctor`)
+- **Secret service provider** (optional) &mdash; gnome-keyring, KDE Wallet, or KeePassXC. Without one the launcher uses `--password-store=basic`.
+- A Claude plan with Cowork access
+
+`install.sh` installs missing packages through your package manager (and asks for `sudo` only for that).
 
 ---
 
@@ -86,11 +98,11 @@ Run `./install.sh --doctor` (or `claude-desktop --doctor`) after install to vali
 ```bash
 git clone https://github.com/johnzfitch/claude-cowork-linux.git
 cd claude-cowork-linux
-./install.sh          # prompts before downloading the Claude Desktop asar
+./install.sh          # prompts before downloading Claude Desktop
 claude-desktop
 ```
 
-The installer prompts before downloading the Claude Desktop asar so you can confirm the version. See [COMPAT.md](COMPAT.md) for the tested-versions matrix. Pass `--force` (or `--yes`) to skip the prompt for scripted installs.
+The installer shows the Claude Desktop version it found and asks before downloading it. Answering <kbd>t</kbd> at that prompt prints the download URL and SHA-256 of the last version recorded as tested in [COMPAT.md][compat] instead. Pass `--force` (or `--yes`) to skip the prompt in scripts.
 
 ### Method 2: AUR (Arch Linux)
 
@@ -98,60 +110,26 @@ The installer prompts before downloading the Claude Desktop asar so you can conf
 yay -S claude-cowork-linux
 ```
 
-> **Check that the AUR package is current before relying on it.** The AUR
-> listing is pushed by a workflow that can fail, and when it does the package
-> keeps serving an older recipe with nothing to say so. That happened between
-> 2026-04-23 and the fix for [#189](https://github.com/johnzfitch/claude-cowork-linux/issues/189):
-> the publish workflow failed on a bad signing key for five months, so
-> `yay -S` kept building `pkgrel` 10 while this repo moved on to 13.
->
-> It fails in a way that looks like something else. The package's `source=`
-> clones this repo at `master` with no tag pinned, so a stale build recipe
-> drives current helper scripts — you get today's `enable-cowork.py` invoked
-> the way a recipe from months ago invoked it. On a split-entry Claude Desktop
-> bundle that means the patcher is pointed at the `index.js` shim alone and
-> reports:
->
-> ```
-> ERROR: Platform-gate function not found in .../.vite/build/index.js
-> ```
->
-> which reads like a new bundle layout and is not. `enable-cowork.py` now
-> recognises that shape and says so, but only once the stale recipe reaches the
-> point of calling it.
->
-> Compare the published version with this tree at any time:
+> [!WARNING]
+> The AUR listing is published by a workflow, and if that workflow fails the package silently keeps serving an old recipe. From 2026-04-23 until [#189](https://github.com/johnzfitch/claude-cowork-linux/issues/189) it did exactly that, and the symptom looked like a new bundle layout: <samp>ERROR: Platform-gate function not found in .../.vite/build/index.js</samp>. Compare the published package with this tree before relying on it:
 >
 > ```bash
 > ./check-aur-sync.sh
 > ```
 >
-> If they differ, build from the repo — Methods 1 and 3 both do, and so does
-> `makepkg -si` in a clone.
+> If they differ, build from the repo instead (Method 1, or `makepkg -si` in a clone). CI now runs the same check on every push.
 
 ### Method 3: curl pipe
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/johnzfitch/claude-cowork-linux/master/install.sh) --force
 ```
 
-Piped (non-interactive) installs refuse to download without an explicit confirmation flag. Use:
-
-```bash
-bash <(curl -fsSL .../install.sh) --force
-```
-
-You can also provide an archive manually:
-
-```bash
-./install.sh ~/Downloads/Claude-*.dmg
-# or
-CLAUDE_ARCHIVE=~/Downloads/Claude-1.6259.1.dmg ./install.sh
-```
+A piped install can't answer the download prompt, so it refuses to download without `--force`.
 
 ### Method 4: Nix flake (NixOS)
 
-NixOS can't use `install.sh` directly: its package-manager branch runs imperative `nix-env -iA`, and the npm `electron` it would otherwise install is a prebuilt ELF that won't run on NixOS. The flake builds the app against `electron_41` from nixpkgs instead.
+`install.sh` can't install on NixOS: it would run imperative `nix-env -iA`, and the npm `electron` it falls back to is a prebuilt binary that won't run there. The flake builds against `electron_41` from nixpkgs instead.
 
 ```bash
 # Run without installing
@@ -161,170 +139,159 @@ nix run github:johnzfitch/claude-cowork-linux
 # environment.systemPackages = [ inputs.claude-cowork-linux.packages.${system}.default ];
 ```
 
-The derivation extracts and patches the pinned Claude release at build time, then a wrapper mirrors the tree into `$XDG_DATA_HOME/claude-cowork-linux` (writable) and runs the upstream `launch.sh` with all dependencies on `PATH`. The pinned version lives in [`nix/package.nix`](nix/package.nix); override `claudeVersion`/`claudeUrl`/`claudeHash` to track a different release.
-
-A `nix develop` shell is also provided with every dependency `install.sh` needs, for the manual installer flow.
+The derivation extracts and patches a pinned Claude Desktop release at build time; a wrapper then mirrors the tree into `$XDG_DATA_HOME/claude-cowork-linux` (writable) and runs `launch.sh` with every dependency on `PATH`. The pin lives in [`nix/package.nix`](nix/package.nix). You can override `claudeVersion` / `claudeUrl` / `claudeHash`, but the derivation patches `index.js` only and unpacks `.zip` archives only, so it can't enable Cowork on split-entry builds (1.19367.0 and later) yet. `nix develop` gives a shell with everything `install.sh` needs.
 
 ### Updating
 
 ```bash
-claude-desktop --update          # re-fetch and repack with prompt (install.sh flow)
+claude-desktop --update
 ```
 
-The launcher prints a `[WARN]` line once if your installed asar is newer than the last tested version listed in [COMPAT.md](COMPAT.md). To dismiss the warning permanently for the current version, just keep using the app -- it only fires once per asar version change.
+This pulls the latest scripts and stubs into the install directory, then re-fetches, re-extracts, and re-patches Claude Desktop (with the same prompt as a fresh install). If the installed Desktop build is newer than the last tested one, the launcher prints a one-time `[WARN]` per version.
 
-> [!IMPORTANT]
-> This repo does not include Anthropic's proprietary code. The installer downloads it directly from Anthropic's CDN.
+### Launcher options
+
+<dl>
+<dt><code>claude-desktop</code></dt>
+<dd>Start detached; output goes to <code>~/.local/state/claude-cowork/logs/startup.log</code>.</dd>
+<dt><code>claude-desktop --devtools</code></dt>
+<dd>Open DevTools and dump webapp assets to <code>~/.local/state/claude-cowork/logs/webapp-assets/</code>. Runs detached like a plain launch; use <code>./launch.sh --devtools</code> in the install directory to keep it in the foreground.</dd>
+<dt><code>claude-desktop --doctor</code></dt>
+<dd>Preflight diagnostics: binaries, Node, the Claude CLI, <code>/sessions</code>, secret service, patch markers, and installed-vs-tested asar version.</dd>
+<dt><code>claude-desktop --update</code></dt>
+<dd>Update scripts, stubs, and Claude Desktop (see above).</dd>
+</dl>
+
+`launch.sh` in the install directory takes further flags for development &mdash; see [Development](#-development).
 
 ---
 
 ## ![](.github/assets/icons/architecture-24x24.png) Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Claude Desktop (Electron)                   │
-├─────────────────────────────────────────────────────────────────┤
-│  @ant/claude-swift (STUBBED)                                    │
-│  ├── vm.setEventCallbacks() → Register process event handlers   │
-│  ├── vm.startVM() → No-op (we're already on Linux)              │
-│  ├── vm.spawn() → Delegates to session orchestrator             │
-│  ├── vm.kill() → Kills spawned processes                        │
-│  └── vm.writeStdin() → Writes to process stdin                  │
-├─────────────────────────────────────────────────────────────────┤
-│  @ant/claude-native (STUBBED)                                   │
-│  ├── AuthRequest → Opens system browser (xdg-open)              │
-│  └── Platform helpers → Minimal compatibility shims             │
-├─────────────────────────────────────────────────────────────────┤
-│  stubs/cowork/ — Orchestration Layer (15 modules)               │
-│  ├── session_orchestrator.js   → Coordinates spawn lifecycle   │
-│  ├── asar_adapter.js            → Asar IPC API compatibility    │
-│  ├── process_manager.js         → Process lifecycle & I/O       │
-│  ├── resume_coordinator.js      → Session resume logic          │
-│  ├── sessions_api.js            → Session CRUD operations       │
-│  ├── session_store.js           → In-memory session state       │
-│  ├── transcript_store.js        → Transcript persistence        │
-│  ├── file_registry.js           → Working directory tracking    │
-│  ├── file_watch_manager.js      → File change detection         │
-│  ├── stream_protocol.js         → JSON-RPC stream parsing       │
-│  ├── credential_classifier.js   → Token leak prevention         │
-│  ├── eipc_channel.js            → EIPC message protocol         │
-│  ├── ipc_tap.js                 → IPC channel discovery         │
-│  ├── dirs.js                    → XDG directory resolution      │
-│  └── file_identity.js           → Path normalization            │
-├─────────────────────────────────────────────────────────────────┤
-│  Claude Code Binary                                             │
-│  └── Resolved from ~/.local/bin, mise/asdf shims, PATH, etc.   │
-│      (launch.sh replaces macOS Mach-O binary with Linux symlink)│
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                 Claude Desktop (unmodified Electron app)          │
+├──────────────────────────────────────────────────────────────────┤
+│  frame-fix-entry.js → frame-fix-wrapper.js  (loads first)        │
+│  ├── process.platform / os.platform → 'darwin' for app code      │
+│  ├── stubs darwin-only Electron APIs (systemPreferences, …)      │
+│  ├── IPC overrides registered by channel suffix                  │
+│  └── Linux menus, tray icon, claude:// URL handling, shutdown    │
+├──────────────────────────────────────────────────────────────────┤
+│  @ant/claude-swift (stub)                                        │
+│  └── vm.* API → session orchestrator (spawn, kill, stdin, events)│
+├──────────────────────────────────────────────────────────────────┤
+│  @ant/claude-native (stub)                                       │
+│  ├── AuthRequest → system browser (xdg-open), origin-checked     │
+│  └── safe_fs.js → openRootDir / *Beneath containment             │
+├──────────────────────────────────────────────────────────────────┤
+│  stubs/cowork/  orchestration layer (29 modules)                 │
+│  ├── sessions & processes   ├── IPC                              │
+│  ├── paths & files          └── security policy                  │
+├──────────────────────────────────────────────────────────────────┤
+│  Claude Code CLI (host binary, no VM)                            │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### Path Translation
+At build/launch time, `patch-index.sh` applies sed passes to the minified main-process bundle (macOS titlebar options, `file://` preload origins, `--effort xhigh`, Handoff API no-ops, resource and MCP node-host paths, the Chrome-bridge WebSocket fallback), and `enable-cowork.py` replaces the Cowork platform gate in whichever `index*.chunk-*.js` carries it and stops the darwin automount-root rule from refusing `/home`. `launch.sh` and the AUR `PKGBUILD` source the same `patch-index.sh`, so the two paths can't drift apart.
 
-The stub translates VM paths to host paths:
+### Path translation
 
-| VM Path | Host Path |
+| VM path | Host path |
 |:--------|:----------|
-| `/usr/local/bin/claude` or `claude` | Resolved via `~/.local/bin/claude`, `~/.config/Claude/claude-code-vm/{version}/claude`, or PATH |
+| `/usr/local/bin/claude`, `claude` | Resolved on the host &mdash; see "Direct execution" under [How It Works](#-how-it-works) |
 | `/sessions/...` | `~/.config/Claude/local-agent-mode-sessions/sessions/...` |
 
-### Mount Symlinks
+The frame-fix wrapper rewrites `/sessions/` paths at the Node `fs` layer, so the `/sessions` root symlink that `install.sh` offers to create (with `sudo`) is optional.
 
-When you select a folder in Cowork, the stub creates symlinks to make it accessible at the expected VM path:
+### Mount symlinks
+
+When you pick a folder for a Cowork session, the swift stub creates one symlink per mount under the session directory, so the CLI sees the layout it would have inside the VM:
 
 ```
-~/.config/Claude/local-agent-mode-sessions/sessions/<session-name>/mnt/
-├── <folder>  → /home/user/path/to/selected/folder (symlink)
-├── .claude   → ~/.config/Claude/local-agent-mode-sessions/.../session/.claude (symlink)
-├── .skills   → ~/.config/Claude/local-agent-mode-sessions/skills-plugin/... (symlink)
-└── uploads/  (directory for file uploads)
+~/.config/Claude/local-agent-mode-sessions/sessions/<session>/mnt/
+├── <mount name>  → ~/<path from additionalMounts>
+└── uploads       → the session's host upload directory
 ```
 
-The `additionalMounts` parameter from Claude Desktop provides the mapping between mount names and host paths.
-
-> [!NOTE]
-> The Claude Code binary expects `/sessions` to exist. `install.sh` creates `/sessions` as a symlink into `~/.config/Claude/local-agent-mode-sessions/sessions` (requires `sudo` once) so you don't need a world-writable root directory.
+Mount paths come from Claude Desktop's `additionalMounts` and must resolve inside your home directory; anything else is refused.
 
 ---
 
 ## ![](.github/assets/icons/how-it-works-24x24.png) How It Works
 
 <details>
-<summary><strong>1. Platform Spoofing</strong></summary>
+<summary><strong>1. Platform spoofing</strong></summary>
 
-The app sends these headers to Anthropic's servers:
+`frame-fix-wrapper.js` runs before any app code. It makes `process.platform` and `os.platform()` report `darwin` to app code (the stubs still see the real platform), reports macOS 14.0 from `process.getSystemVersion()`, and gives web contents a macOS user agent. The darwin-only Electron APIs the app then reaches for &mdash; the `systemPreferences` surface, the Handoff activity APIs, and similar &mdash; are stubbed so they answer safely instead of throwing.
 
-```javascript
-'Anthropic-Client-OS-Platform': 'darwin'
-'Anthropic-Client-OS-Version': '14.0'
+</details>
+
+<details>
+<summary><strong>2. Platform gate bypass</strong></summary>
+
+The function that decides whether Cowork is supported has a different minified name in every build (`ke()` on 1.26832.0, `xPt()` and `wj()` in older ones) and, on split-entry builds (1.19367.0+), lives in one of a few hundred `index*.chunk-*.js` files. `enable-cowork.py` sweeps every chunk, finds the gate by shape rather than by name, replaces it with one that returns `{status:"supported"}`, and leaves a `/*cowork-patched*/` marker.
+
+</details>
+
+<details>
+<summary><strong>3. Swift addon stub</strong></summary>
+
+Upstream, `@ant/claude-swift` drives Apple's Virtualization framework. The stub implements the same `vm` API surface (`setEventCallbacks`, `startVM`, `spawn`, `kill`, `writeStdin`, …) and hands spawning to `session_orchestrator.js`, which line-buffers the CLI's JSON stream, translates paths, and manages mounts and process lifecycle.
+
+</details>
+
+<details>
+<summary><strong>4. Native utilities stub</strong></summary>
+
+`@ant/claude-native` is a macOS native module. The stub provides what the app needs on Linux: OAuth via the system browser (`xdg-open`, restricted to Anthropic origins), keyboard and platform helpers, and &mdash; since asar 1.22209.x &mdash; the safe-fs containment API (`openRootDir` plus `*Beneath` operations) in `safe_fs.js`, which the app uses for artifact, upload, and transcript writes.
+
+</details>
+
+<details>
+<summary><strong>5. Session orchestration layer</strong></summary>
+
+`stubs/cowork/` holds 29 CommonJS modules plus the plugin permission shim:
+
+<dl>
+<dt>Sessions &amp; processes</dt>
+<dd><code>session_orchestrator</code>, <code>process_manager</code>, <code>resume_coordinator</code>, <code>session_store</code>, <code>session_normalization</code>, <code>sessions_api</code>, <code>transcript_store</code>, <code>stream_protocol</code>, <code>spaces_store</code> (CoworkSpaces)</dd>
+<dt>IPC</dt>
+<dd><code>ipc_overrides</code>, <code>linux_ipc_stubs</code>, <code>eipc_channel</code>, <code>ipc_tap</code>, <code>bridge_canary</code>, <code>asar_adapter</code></dd>
+<dt>Paths &amp; files</dt>
+<dd><code>dirs</code> (XDG paths, VM&rarr;host translation), <code>file_identity</code>, <code>file_registry</code>, <code>file_watch_manager</code>, <code>mount_root_bound</code></dd>
+<dt>Security policy</dt>
+<dd><code>exec_capability_registry</code> (the only exec admission point), <code>user_mcp_allowlist</code>, <code>env_filter</code>, <code>credential_classifier</code>, <code>auto_permissions_cap</code>, <code>tool_preflight_policy</code>, <code>scheduled_task_gate</code></dd>
+<dt>Desktop integration</dt>
+<dd><code>portal_shortcuts</code> (Wayland GlobalShortcuts portal), <code>startup_check</code></dd>
+</dl>
+
+All paths follow the XDG Base Directory spec; each module has a test file in `tests/node/current-path/`.
+
+</details>
+
+<details>
+<summary><strong>6. Direct execution</strong></summary>
+
+On macOS, Cowork runs the CLI in a Linux VM. Here it runs on the host. The swift stub resolves the binary in this order, taking the first hit:
+
 ```
-
-This makes the server think we're on macOS 14 (Sonoma), enabling Cowork features.
-
-</details>
-
-<details>
-<summary><strong>2. Platform Gate Bypass</strong></summary>
-
-The platform-gate function (minified name changes per build — `xPt()` in v1.1.3963, `wj()` in older builds) checks if Cowork is supported. `enable-cowork.py` finds it automatically and replaces it to unconditionally return `{status: "supported"}`.
-
-</details>
-
-<details>
-<summary><strong>3. Swift Addon Stub</strong></summary>
-
-The original `@ant/claude-swift` uses Apple's Virtualization Framework. Our stub:
-
-- Implements the same API surface
-- Delegates spawn logic to `session_orchestrator.js` for proper lifecycle management
-- Line-buffers JSON output for proper stream parsing
-- Translates VM paths to host paths
-
-Key insight: The app calls `Si()` which returns `module.default.vm`, so methods must be on the `vm` object.
-
-</details>
-
-<details>
-<summary><strong>4. Native Utilities Stub</strong></summary>
-
-The app also expects `@ant/claude-native` (a macOS-specific native module). Our stub provides minimal compatibility so the app can start on Linux. For example, OAuth flows fall back to opening the system browser via `xdg-open`.
-
-</details>
-
-<details>
-<summary><strong>5. Session Orchestration Layer</strong></summary>
-
-The `stubs/cowork/` orchestration layer provides 15 modules that handle session lifecycle, IPC communication, transcript persistence, and security:
-
-- **session_orchestrator.js** coordinates all spawn operations, mount symlinks, and process cleanup
-- **credential_classifier.js** prevents auth token leakage to spawned processes
-- **ipc_tap.js** discovers EIPC channels at runtime by tapping `ipcMain._invokeHandlers.set()`
-- **transcript_store.js** persists conversation history to `~/.config/Claude/local-agent-mode-sessions/`
-- **file_watch_manager.js** detects file changes in the working directory
-
-All modules follow XDG Base Directory conventions and are tested with 599 test cases.
-
-</details>
-
-<details>
-<summary><strong>6. Direct Execution</strong></summary>
-
-On macOS, Cowork runs a Linux VM. On Linux, we skip the VM entirely and run the Claude Code binary directly on the host. This is actually simpler and faster!
-
-The stub resolves the binary in priority order:
-```
-$CLAUDE_CODE_PATH                                    (explicit override)
-~/.config/Claude/claude-code-vm/{version}/claude    (downloaded by Desktop)
-~/.local/bin/claude                                  (npm/bun global)
+~/.config/Claude/claude-code-vm/<version>/claude   (newest first; Linux ELF or script only)
+$CLAUDE_CODE_PATH                                   (explicit override)
+~/.local/bin/claude
 ~/.npm-global/bin/claude
 /usr/local/bin/claude
 /usr/bin/claude
-/home/linuxbrew/.linuxbrew/bin/claude               (Linuxbrew system)
-~/.linuxbrew/bin/claude                              (Linuxbrew user)
-~/.local/share/mise/shims/claude                     (mise version manager)
-~/.asdf/shims/claude                                 (asdf version manager)
+/home/linuxbrew/.linuxbrew/bin/claude
+~/.linuxbrew/bin/claude
+~/.local/share/mise/shims/claude
+~/.asdf/shims/claude
+claude                                              (PATH lookup)
 ```
 
-**Code tab binary fixup**: `launch.sh` automatically detects if the Claude Code binary in the asar is a macOS Mach-O binary and replaces it with a symlink to the host Linux binary. This enables the Code tab to work seamlessly.
+Desktop-downloaded binaries that are macOS Mach-O files or symlinks are skipped, so a stale download can't cause an exit-127 session.
+
+**Code tab.** Desktop downloads a macOS CLI into `~/.config/Claude/claude-code/<version>/claude`. On each start `launch.sh` replaces a Mach-O file there with a copy of your Linux `claude` (keeping the original as `claude.macho-backup`).
 
 </details>
 
@@ -334,209 +301,83 @@ $CLAUDE_CODE_PATH                                    (explicit override)
 
 ```
 claude-cowork-linux/
+├── install.sh              # installer, generated launcher, --doctor, --update
+├── launch.sh               # sync stubs → patch → repack app.asar → start electron
+├── patch-index.sh          # main-process sed passes, sourced by launch.sh and PKGBUILD
+├── enable-cowork.py        # Cowork platform-gate patch (sweeps every chunk)
+├── fetch-dmg.js            # finds the current Claude Desktop download (Homebrew cask metadata)
+├── check-aur-sync.sh       # is the published AUR package this recipe?
+├── PKGBUILD, .SRCINFO      # AUR package
+├── flake.nix, flake.lock   # Nix flake
+├── nix/                    # package.nix, launcher wrapper, icon extraction
 ├── stubs/
-│   ├── @ant/claude-swift/js/index.js   # Primary stub: vm.spawn() → delegates to orchestrator
-│   ├── @ant/claude-native/index.js     # Auth (xdg-open), keyboard constants, platform helpers
-│   ├── cowork/                         # Orchestration layer (15 modules)
-│   │   ├── session_orchestrator.js     # Spawn lifecycle coordinator
-│   │   ├── asar_adapter.js             # Asar IPC API compatibility
-│   │   ├── process_manager.js          # Process lifecycle & I/O
-│   │   ├── resume_coordinator.js       # Session resume logic
-│   │   ├── sessions_api.js             # Session CRUD operations
-│   │   ├── session_store.js            # In-memory session state
-│   │   ├── transcript_store.js         # Transcript persistence
-│   │   ├── file_registry.js            # Working directory tracking
-│   │   ├── file_watch_manager.js       # File change detection
-│   │   ├── stream_protocol.js          # JSON-RPC stream parsing
-│   │   ├── credential_classifier.js    # Token leak prevention
-│   │   ├── eipc_channel.js             # EIPC message protocol
-│   │   ├── ipc_tap.js                  # IPC channel discovery
-│   │   ├── dirs.js                     # XDG directory resolution
-│   │   └── file_identity.js            # Path normalization
-│   └── frame-fix/
-│       ├── frame-fix-wrapper.js        # Early bootstrap: TMPDIR fix, platform spoofing, graceful shutdown
-│       └── frame-fix-entry.js          # Entry point: loads frame-fix-wrapper then main index.js
+│   ├── @ant/claude-swift/js/index.js   # vm.* API → session orchestrator
+│   ├── @ant/claude-native/             # index.js (auth, platform helpers), safe_fs.js
+│   ├── cowork/                         # orchestration layer (29 modules + plugin shim)
+│   └── frame-fix/                      # entry, wrapper (spoofing, API stubs), OAuth forwarder
 ├── tests/
-│   ├── node/current-path/             # 36 test files, 599 node:test cases
-│   │   ├── asar_adapter.test.cjs
-│   │   ├── credential_classifier.test.cjs
-│   │   ├── dirs.test.cjs
-│   │   ├── eipc_channel.test.cjs
-│   │   ├── file_identity.test.cjs
-│   │   ├── file_registry.test.cjs
-│   │   ├── file_watch_manager.test.cjs
-│   │   ├── ipc_tap.test.cjs
-│   │   ├── process_manager.test.cjs
-│   │   ├── resume_coordinator.test.cjs
-│   │   ├── session_orchestrator.test.cjs
-│   │   ├── session_store.test.cjs
-│   │   ├── sessions_api.test.cjs
-│   │   ├── stream_protocol.test.cjs
-│   │   ├── transcript_store.test.cjs
-│   │   └── ... (integration tests)
-│   ├── test-install-paths.sh          # 8-stage install validation (static analysis → Docker)
-│   ├── test-extract-swap.sh           # install.sh stages a fresh tree and swaps; failures leave the live one
-│   ├── test-pkgbuild-disclaimer.sh    # AUR Helpers/disclaimer stays fail-closed; package() installs the icon
-│   └── Dockerfile.test                # Arch Linux container for full install testing
-├── scripts/
-│   ├── fetch-dmg.js                   # Auto-download Claude DMG via Node.js fetch
-│   └── enable-cowork.py               # Patches platform gate to return {status:"supported"}
-├── docs/
-│   ├── FAQ.md                         # Detailed troubleshooting guide
-│   ├── extensions.md                  # MCP and Chrome Extension integration overview
-│   └── safestorage-tokens.md          # How to persist tokens across restarts
-├── config/
-│   └── hyprland/claude.conf           # Optional: Hyprland window rules
-├── .github/assets/                    # README icons and hero image
-├── install.sh                         # Installer + --doctor preflight diagnostics
-├── launch.sh                          # Launcher: syncs stubs, repacks asar, runs electron
-├── launch-devtools.sh                 # Launcher with --inspect (Node.js DevTools)
-├── validate.sh                        # Env var checks, stub URL validation, log scanning
-├── PKGBUILD                           # Arch Linux AUR package definition
-├── check-aur-sync.sh                  # is the published AUR package this recipe?
-├── docs/releases/                     # Per-version release notes
-├── docs/OAUTH-COMPLIANCE.md           # OAuth token handling audit
-├── COMPAT.md                          # Tested asar versions and known breakage
-├── CONTRIBUTING.md                    # Orientation, conventions, security-sensitive areas
-├── README.md                          # This file
-└── LICENSE
+│   ├── node/current-path/              # 36 node:test files, 599 cases
+│   ├── test-*.sh                       # six shell suites (patches, pins, sync, install, swap, PKGBUILD)
+│   └── Dockerfile.test                 # Arch container for full install runs
+├── config/hyprland/claude.conf         # optional Hyprland window rules
+├── docs/                               # FAQ, extensions, safeStorage tokens, OAuth compliance audit
+├── COMPAT.md                           # tested Claude Desktop versions, pins, known breakage
+├── CONTRIBUTING.md, SECURITY.md, LICENSE
+└── .github/                            # CI, AUR publish workflow, issue templates, README icons
 ```
 
-After running `install.sh`, the `linux-app-extracted/` directory will contain the extracted Claude Desktop.
+`install.sh` puts everything in `~/.local/share/claude-desktop/` (a clone of this repo plus `linux-app-extracted/`, the unpacked app) and writes the launcher to `~/.local/bin/claude-desktop`. Release notes live on the [Releases][releases] page.
 
 ---
 
-## ![](.github/assets/icons/console-24x24.png) Manual Setup
+## ![](.github/assets/icons/console-24x24.png) Installing by Hand
 
-If the automated installer doesn't work, follow these steps:
-
-<details>
-<summary><strong>1. Extract Claude Desktop from DMG</strong></summary>
-
-The installer handles `app.asar` extraction automatically. For manual extraction or older unpacked versions:
+If the installer can't download Claude Desktop for you, download the macOS archive yourself and hand it over &mdash; everything after the download is the same:
 
 ```bash
-# Extract DMG with 7z
-7z x Claude-*.dmg -o/tmp/claude-extract
-
-# Create app directory
-mkdir -p linux-app-extracted
-
-# For newer versions (app.asar):
-if [ -f "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar" ]; then
-    npx --yes asar extract "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar" linux-app-extracted
-    # Copy unpacked files if they exist
-    [ -d "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar.unpacked" ] && \
-        cp -r "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app.asar.unpacked/"* linux-app-extracted/
-# For older versions (unpacked app/):
-elif [ -d "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app" ]; then
-    cp -r "/tmp/claude-extract/Claude/Claude.app/Contents/Resources/app/"* linux-app-extracted/
-fi
-
-# Cleanup
-rm -rf /tmp/claude-extract
+node fetch-dmg.js --url                # prints the current download URL
+./install.sh ~/Downloads/Claude-*.zip  # or a .dmg
+# equivalently: CLAUDE_ARCHIVE=~/Downloads/Claude-1.26832.0.zip ./install.sh
 ```
 
-</details>
+What the installer does with the archive, in order:
 
-<details>
-<summary><strong>2. Install Stub Modules</strong></summary>
+1. `7z x` the archive, find `Claude.app`, and `asar extract` its `Contents/Resources/app.asar` into a **staging** directory, adding `app.asar.unpacked/` and the other `Resources/` files (i18n JSON goes to `resources/i18n/`).
+2. Swap the staged tree in as `linux-app-extracted/`. A failure at any earlier point leaves the previous working tree in place.
+3. Copy `stubs/` and the helper scripts into the install directory, and seed the `.installed-asar-version` sentinel.
+4. Run `enable-cowork.py --sweep` over `index.js` and every `index*.chunk-*.js` that `patch-index.sh` discovers.
+5. Create the session directory (mode `700`), optionally `/sessions`, the desktop entry and icon, the `claude://` handler, and `~/.local/bin/claude-desktop`.
 
-```bash
-# Copy our stubs over the original modules
-cp -r stubs/@ant/* linux-app-extracted/node_modules/@ant/
-cp -r stubs/cowork linux-app-extracted/node_modules/
-```
-
-</details>
-
-<details>
-<summary><strong>3. Patch index.js</strong></summary>
-
-Run the cowork patch (auto-detects the minified function name):
-
-```bash
-python3 scripts/enable-cowork.py linux-app-extracted/.vite/build/index.js
-```
-
-</details>
-
-<details>
-<summary><strong>4. Create Required Directories</strong></summary>
-
-```bash
-# Create user session directory
-mkdir -p "$HOME/.config/Claude/local-agent-mode-sessions/sessions"
-chmod 700 "$HOME/.config/Claude/local-agent-mode-sessions/sessions"
-
-# Create symlink (requires sudo once)
-sudo ln -s "$HOME/.config/Claude/local-agent-mode-sessions/sessions" /sessions
-```
-
-</details>
-
-<details>
-<summary><strong>5. Install Electron and asar</strong></summary>
-
-```bash
-# System package (preferred)
-# Arch: pacman -S electron
-# Ubuntu/Debian: apt install electron
-# Or via npm:
-npm install -g electron @electron/asar
-```
-
-</details>
+On first launch `launch.sh` does the rest: syncs the stubs into the extracted tree, points `package.json`'s `main` at `frame-fix-entry.js`, applies the `patch-index.sh` passes, and repacks `app.asar` into `.asar-cache/`.
 
 ---
 
 ## Recovery
 
-If your install was working and then stopped after an update, the upstream
-asar likely changed in a way claude-cowork-linux has not yet caught up to.
-Two recovery paths:
+If a working install broke after a Claude Desktop update, the new build probably changed something this project hasn't caught up with yet.
 
-### Option 1: roll back to the last tested asar
-
-The installer reads `LAST_TESTED_ASAR_VERSION` from [COMPAT.md](COMPAT.md)
-and prompts before downloading. To roll back:
+### Roll back to the last tested build
 
 ```bash
 cd ~/.local/share/claude-desktop
 git pull
 
-# Wipe cached chromium artifacts (preserves your sessions and credentials):
-rm -rf ~/.config/Claude/Cache \
-       "~/.config/Claude/Code Cache" \
-       ~/.config/Claude/GPUCache \
-       ~/.config/Claude/DawnGraphiteCache
+# Clear Chromium caches (sessions and credentials are kept)
+rm -rf ~/.config/Claude/Cache ~/.config/Claude/"Code Cache" \
+       ~/.config/Claude/GPUCache ~/.config/Claude/DawnGraphiteCache
 
-# Reinstall:
-bash install.sh --force
+bash install.sh          # no --force: it would skip the prompt and take the latest build
 ```
 
-When the prompt offers to download an untested version, decline and supply
-the last-tested archive manually:
+When the latest build is newer than the tested one, the prompt offers <kbd>t</kbd>, which prints the URL and SHA-256 recorded in [COMPAT.md][compat] for the tested build. Download and verify it, then:
 
 ```bash
-CLAUDE_ARCHIVE=/path/to/Claude-<last-tested>.dmg bash install.sh --force
+CLAUDE_ARCHIVE=/path/to/Claude-<last-tested>.zip bash install.sh --force
 ```
 
-### Option 2: stay on your current install, wait for a fix
+### Stay put and wait for a fix
 
-The launcher prints a `[WARN]` line on the first launch after an untested
-version is installed. If the warning appears and the app is broken for
-you, the issue is likely already being tracked. Search the open issues at
-<https://github.com/johnzfitch/claude-cowork-linux/issues> for the asar
-version in the warning.
-
-To update later once a fix is published:
-
-```bash
-claude-desktop --update
-```
-
-You will be prompted before the new asar is downloaded.
+The launcher prints a `[WARN]` on the first launch of an untested build. If that build is broken for you, search the [open issues][issues] for its version number; when a fix lands, `claude-desktop --update` picks it up.
 
 ### Diagnostics
 
@@ -544,95 +385,71 @@ You will be prompted before the new asar is downloaded.
 claude-desktop --doctor
 ```
 
-Reports the installed-vs-tested asar versions plus the rest of the
-preflight checks. An `[OK] Asar version: X (matches last tested)` line
-means you are on the verified baseline. A `[WARN] Asar version: X (newer
-than last tested Y -- see COMPAT.md)` line means you are ahead of the
-matrix.
+<samp>[OK] Asar version: X (matches last tested)</samp> means you're on the verified baseline; <samp>[WARN] Asar version: X (newer than last tested Y -- see COMPAT.md)</samp> means you're ahead of it.
 
 ---
 
 ## ![](.github/assets/icons/warning-24x24.png) Troubleshooting
 
-For detailed troubleshooting guides, see **[docs/FAQ.md](docs/FAQ.md)**.
+More in the **[FAQ][faq]**.
 
 <details>
-<summary><strong>Verify patches were applied</strong></summary>
+<summary><strong>Check that the Cowork patch applied</strong></summary>
 
-Check that the Cowork patch is present in `linux-app-extracted/.vite/build/index.js`:
+On split-entry builds the gate lives in a chunk, not `index.js`, so search the whole build directory:
 
 ```bash
-grep -q 'cowork-patched' linux-app-extracted/.vite/build/index.js && echo "✓ Cowork patch applied" || echo "✗ Patch missing - run ./install.sh"
+grep -l 'cowork-patched' ~/.local/share/claude-desktop/linux-app-extracted/.vite/build/*.js \
+  && echo "Cowork patch applied" || echo "Patch missing - run claude-desktop --update"
 ```
 
-The patch replaces the platform-gate function to return `{status:"supported"}` unconditionally, enabling Cowork on Linux. The `/*cowork-patched*/` marker indicates successful patching.
+`claude-desktop --doctor` runs the same check. With the patch in place the composer shows a **Chat / Cowork** mode toggle; stock Desktop shows Chat only.
 
 </details>
 
 <details>
-<summary><strong>EACCES: permission denied, mkdir '/sessions'</strong></summary>
+<summary><strong><samp>EACCES: permission denied, mkdir '/sessions'</samp></strong></summary>
 
-Create a symlink to user space instead of a world-writable directory:
-
-```bash
-mkdir -p "$HOME/.config/Claude/local-agent-mode-sessions/sessions"
-sudo ln -s "$HOME/.config/Claude/local-agent-mode-sessions/sessions" /sessions
-```
-
-</details>
-
-<details>
-<summary><strong>Unexpected non-whitespace character after JSON</strong></summary>
-
-JSON parsing issue. The stub uses line buffering to send complete JSON objects. If this persists, check the trace log:
+Create `/sessions` as a symlink into your home directory rather than a world-writable directory:
 
 ```bash
-cat ~/.local/state/claude-cowork/logs/claude-swift-trace.log
+mkdir -p ~/.config/Claude/local-agent-mode-sessions/sessions
+sudo ln -s ~/.config/Claude/local-agent-mode-sessions/sessions /sessions
 ```
 
 </details>
 
 <details>
-<summary><strong>Failed to start Claude's workspace</strong></summary>
+<summary><strong><samp>Claude Code process exited with code 127</samp> / "Claude Code crashed"</strong></summary>
 
-Run `claude-desktop --doctor` first to check your environment. Then verify:
-
-1. The swift stub is properly loaded (check for `[claude-swift-stub] LOADING MODULE` in logs)
-2. The Claude binary exists at one of the resolved paths (`~/.local/bin/claude`, `~/.config/Claude/claude-code-vm/{version}/claude`, etc.)
-3. You have a valid Claude account
+The CLI couldn't be executed. Run `claude-desktop --doctor`, make sure a Linux `claude` exists at one of the paths listed under "Direct execution" in [How It Works](#-how-it-works), and check `~/.local/state/claude-cowork/logs/startup.log` for `[exec-capability] BLOCKED` lines &mdash; those name the command that was refused and why. [COMPAT.md][compat] lists the builds that changed how the CLI is invoked.
 
 </details>
 
 <details>
-<summary><strong>Process exits immediately (code=1)</strong></summary>
+<summary><strong><samp>Unexpected non-whitespace character after JSON</samp></strong></summary>
 
-Check stderr in the trace log for the actual error:
+A JSON stream parsing problem. The stub line-buffers CLI output so each JSON object arrives whole; if this persists, check the trace log:
 
 ```bash
 tail -50 ~/.local/state/claude-cowork/logs/claude-swift-trace.log
 ```
 
-Common issues:
-- Missing `/sessions` symlink
-- Binary not found
-- Permission issues
-
 </details>
 
 <details>
-<summary><strong>t.setEventCallbacks is not a function</strong></summary>
+<summary><strong>"Failed to start Claude's workspace" / process exits immediately</strong></summary>
 
-This means the stub isn't exporting methods correctly. The app expects:
-- `module.default.vm.setEventCallbacks()` — NOT on the class directly
-
-Ensure the stub has methods on the `this.vm` object, not just the class.
+1. Run `claude-desktop --doctor`.
+2. Check the trace log for `=== MODULE LOADING ===` (the stub loaded) and for the spawn error itself.
+3. Common causes: no Claude binary found, `/sessions` missing, or a permission error on the session directory.
 
 </details>
 
 <details>
 <summary><strong>App won't relaunch / appears to do nothing</strong></summary>
 
-A previous instance may not have shut down cleanly, leaving a stale lock file. Clear it and relaunch:
+A previous instance didn't shut down cleanly and left a stale lock:
 
 ```bash
 rm -f ~/.config/Claude/SingletonLock ~/.config/Claude/SingletonSocket ~/.config/Claude/SingletonCookie
@@ -642,23 +459,23 @@ claude-desktop
 </details>
 
 <details>
-<summary><strong>Global shortcuts don't work on Wayland (GNOME)</strong></summary>
+<summary><strong>Global shortcuts don't work on Wayland</strong></summary>
 
-The app routes global shortcuts through the `org.freedesktop.portal.GlobalShortcuts` portal on Wayland (Electron's native `globalShortcut` relies on X11 `XGrabKey`, which Wayland doesn't expose). This works on **KDE Plasma**, **Hyprland**, **COSMIC**, and **GNOME 48+** — `xdg-desktop-portal-gnome` implements the GlobalShortcuts portal since version 48 (refined in 50). The shortcut shows up under Settings > Keyboard and may prompt for confirmation the first time it's registered.
+Electron's own `globalShortcut` relies on X11 `XGrabKey`, which Wayland doesn't expose, so the app registers shortcuts through the `org.freedesktop.portal.GlobalShortcuts` portal instead. That works on **KDE Plasma**, **Hyprland**, **COSMIC**, and **GNOME 48+** (`xdg-desktop-portal-gnome` 48 and later); the shortcut appears under Settings &rsaquo; Keyboard and may ask for confirmation the first time.
 
-**Workaround for GNOME < 48 (and compositors without the portal):** Set a custom shortcut in GNOME Settings > Keyboard > Custom Shortcuts to launch `claude-desktop`.
+On GNOME before 48 and compositors without the portal, bind `claude-desktop` to a custom shortcut under Settings &rsaquo; Keyboard &rsaquo; Custom Shortcuts.
 
 </details>
 
 <details>
 <summary><strong>Running under WSL2</strong></summary>
 
-Cowork runs on WSL2 (tested with WSLg on Ubuntu). Four things to know — `./install.sh --doctor` checks all of them:
+Cowork runs on WSL2 (tested with WSLg on Ubuntu). Four things to know; `./install.sh --doctor` checks the last three:
 
-1. **Dependency install conflicts** — if Node.js came from NodeSource, the distro `npm` package conflicts with it. The installer installs packages individually so one conflict no longer blocks the rest (`zstd`, `curl`, …); NodeSource's `nodejs` already bundles npm.
-2. **Missing Electron libraries** — fresh minimal installs lack NSS/NSPR/ALSA. The installer adds them on apt; manually: `sudo apt install -y libnspr4 libnss3 libasound2t64` (or `libasound2` before Ubuntu 24.04).
-3. **OAuth opens in the Windows browser** — WSL2's `xdg-open` forwards URLs to Windows via interop, so the `claude://` login callback never reaches the Linux app. The installer offers an opt-in wrapper at `~/.local/bin/xdg-open` that routes `claude://` to `claude-desktop` and `http(s)` to a Linux browser. Install it any time with `bash install.sh --wsl-xdg-open`; remove with `rm ~/.local/bin/xdg-open`. You'll need a Linux browser (install Chrome/Firefox via `.deb`/apt, not snap) for the OAuth round-trip under WSLg.
-4. **No Secret Service / safeStorage** — expected on stock WSL2; credentials fall back to the basic password store and you re-login after each WSL restart. Enabling systemd plus `gnome-keyring` makes logins persist.
+1. **Dependency conflicts.** NodeSource's `nodejs` bundles npm and conflicts with the distro `npm` package. The installer installs packages one at a time so one conflict doesn't block the rest.
+2. **Missing Electron libraries.** Minimal installs lack NSS/NSPR/ALSA. The installer adds them on apt; by hand: `sudo apt install -y libnspr4 libnss3 libasound2t64` (`libasound2` before Ubuntu 24.04).
+3. **OAuth opens in the Windows browser.** WSL's `xdg-open` forwards URLs to Windows, so the `claude://` login callback never reaches the Linux app. The installer offers an opt-in `~/.local/bin/xdg-open` wrapper that routes `claude://` to `claude-desktop` and `http(s)` to a Linux browser; install it with `bash install.sh --wsl-xdg-open`, remove it with `rm ~/.local/bin/xdg-open`. You need a Linux browser (from `.deb`/apt, not snap) for the round trip.
+4. **No Secret Service.** Expected on stock WSL2: credentials fall back to the basic store and you sign in again after each WSL restart. Enabling systemd plus `gnome-keyring` makes logins persist.
 
 </details>
 
@@ -667,77 +484,72 @@ Cowork runs on WSL2 (tested with WSLg on Ubuntu). Four things to know — `./ins
 ## ![](.github/assets/icons/console-24x24.png) Development
 
 ```bash
-./launch.sh                   # repacks asar automatically if stubs changed
-./launch-devtools.sh          # with Node.js inspector
-./validate.sh                 # env var checks, stub URL validation, log errors
-./install.sh --doctor         # preflight: binaries, node, CLI, /sessions, secret service, patches
+./launch.sh             # sync stubs, patch, repack if anything changed, start detached
+./launch.sh --dev       # same, in the foreground with output on the terminal
+./launch.sh --devtools  # foreground + DevTools + webapp asset dump
+./launch.sh --inspect   # foreground + Node inspector on 127.0.0.1:9229 (chrome://inspect)
+./launch.sh --perf      # inspector + remote debugging on 127.0.0.1:9222 + IPC tap + verbose tracing
+./install.sh --doctor   # environment preflight
 
-# Run tests
-node --test tests/node/current-path/*.test.cjs
+npm test                                   # node:test suites (= node --test tests/node/current-path/*.test.cjs)
+for t in tests/test-*.sh; do bash "$t"; done   # shell suites (test-install-paths.sh: pass 1 for the CI stage)
 ```
 
-### Debug Logging
+The install directory is itself a git checkout, and `launch.sh` re-syncs `stubs/` into the app on every start. To try a change against a real install, edit (or check out a branch) in `~/.local/share/claude-desktop` and relaunch. To run a fork through the full installer, see [CONTRIBUTING.md][contributing].
+
+### Debug logging
+
+<dl>
+<dt><code>CLAUDE_COWORK_TRACE_IO=1</code></dt>
+<dd>Include the CLI's stdin/stdout in the trace log (redacted, but still treat logs as sensitive).</dd>
+<dt><code>CLAUDE_COWORK_VERBOSE=1</code></dt>
+<dd>Verbose IPC-override logging (also set by <code>--perf</code>).</dd>
+<dt><code>CLAUDE_COWORK_IPC_TAP=1</code></dt>
+<dd>Log IPC channel traffic to <code>~/.local/state/claude-cowork/logs/ipc-tap.jsonl</code>.</dd>
+<dt><code>CLAUDE_COWORK_DEBUG=1</code></dt>
+<dd>Extra swift-stub debug output.</dd>
+<dt><code>CLAUDE_LOG_DIR</code></dt>
+<dd>Log directory; default <code>~/.local/state/claude-cowork/logs</code>.</dd>
+</dl>
 
 ```bash
-# Include Claude Code stdout/stderr in the trace log (redacted, but still treat logs as sensitive)
-export CLAUDE_COWORK_TRACE_IO=1
-
-# Enable debug mode
-export CLAUDE_COWORK_DEBUG=1
-
-# Enable Electron logging
-export ELECTRON_ENABLE_LOGGING=1
-
-# Clear old logs
-rm -f ~/.local/state/claude-cowork/logs/claude-swift-trace.log
-
-# Run with output capture
-./launch.sh 2>&1 | tee /tmp/claude-full.log
-
-# In another terminal, watch the trace
-tail -f ~/.local/state/claude-cowork/logs/claude-swift-trace.log
+tail -f ~/.local/state/claude-cowork/logs/claude-swift-trace.log   # the most useful log
 ```
 
-### Trace Log Format
-
-The stub writes to `~/.local/state/claude-cowork/logs/claude-swift-trace.log`:
+Trace lines look like:
 
 ```
 [timestamp] === MODULE LOADING ===
-[timestamp] vm.setEventCallbacks() CALLED
-[timestamp] vm.startVM() bundlePath=... memoryGB=4
-[timestamp] vm.spawn() id=... cmd=... args=[...]
-[timestamp] Translated command: /usr/local/bin/claude -> ~/.config/Claude/...
-[timestamp] stdout line: {"type":"stream_event",...}
-[timestamp] Process ... exited: code=0
+[timestamp] vm.setEventCallbacks() CALLED with callbacks: stdout=...
+[timestamp] vm.spawn() id=...
+[timestamp] Resolved Claude binary (Linux): /home/<you>/.local/bin/claude
+[timestamp] Process ... exited: code=0 signal=null
 ```
 
 ---
 
 ## ![](.github/assets/icons/shield-security-protection-24x24.png) Security
 
-This project includes security hardening:
+- **Single exec admission point.** Every command the app asks to run goes through `exec_capability_registry.js`, which admits known binaries and the specific commands you declared as MCP servers &mdash; not any file in a user-writable directory.
+- **Fail-closed disclaimer wrapper.** The AUR package's root-owned `Helpers/disclaimer` refuses anything the registry refuses.
+- **Environment allowlist.** Spawned processes get an allowlisted environment (`env_filter.js`); `credential_classifier.js` redacts tokens from logs, traces, and IPC.
+- **Path containment.** Renderer-supplied paths are realpath-checked and must stay inside their root; `safe_fs.js` anchors `*Beneath` operations on a pinned parent fd with `O_NOFOLLOW`.
+- **No shell strings.** Processes are started with `execFile` / `spawn` and argument arrays.
+- **Origin-checked auth.** `AuthRequest.start()` only opens Anthropic origins; `claude://` URLs are allowlisted.
+- **Header and fd guards.** Session-API tokens containing CR, LF, or NUL are rejected, and the auth-token file descriptor must be 3&ndash;9.
+- **Private directories.** Session and log directories are mode `700`; `/sessions` is a symlink, never a world-writable directory.
+- **Loopback-only debugging.** `--inspect` and `--perf` bind to `127.0.0.1`.
 
-- **Command allowlist** - Only vetted binary paths are accepted by `vm.spawn()`; unknown commands are rejected
-- **Command injection prevention** - Uses `execFile()` instead of `exec()`
-- **Path traversal protection** - Validates session paths with `isPathSafe()`
-- **Environment filtering** - Allowlist of safe environment variables
-- **Secure permissions** - Session directory uses 700, not 777
-- **Symlink for /sessions** - No world-writable directories
-- **URL origin validation** - `Auth_$_doAuthInBrowser` and `AuthRequest.start()` enforce Anthropic-only domains
-- **OAuth compliance** - `BLOCKED_ENV_KEY_PATTERN` + `CREDENTIAL_EXEMPT_KEYS` prevent token leakage to subprocesses
-- **Credential classification** - `credential_classifier.js` enforces strict token leak prevention with allowlist-based exemptions
-- **CRLF guards** - Stream parsers reject CRLF injection attempts in JSON-RPC messages
-- **FD bounds checking** - File descriptor limits enforced on spawned processes to prevent resource exhaustion
+How credentials move through the app is audited in [OAUTH-COMPLIANCE.md][oauth]. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ---
 
 ## Legal Notice
 
 > [!CAUTION]
-> This project is for **educational and research purposes**. Claude Desktop is proprietary software owned by Anthropic PBC. Use of Cowork requires a valid Claude account.
+> This project is for **educational and research purposes**. Claude Desktop is proprietary software owned by Anthropic PBC, and using Cowork requires a valid Claude account.
 >
-> This repository contains only stub implementations and patches—**not** the Claude Desktop application itself. You must obtain Claude Desktop directly from Anthropic.
+> This repository contains only stub implementations and patches &mdash; **not** the Claude Desktop application. You must obtain Claude Desktop from Anthropic.
 >
 > This project is **not affiliated with, endorsed by, or sponsored by** Anthropic. "Claude" is a trademark of Anthropic PBC.
 
@@ -745,18 +557,19 @@ This project includes security hardening:
 
 ## Credits
 
-Reverse engineered and implemented by examining the Claude Desktop Electron app structure, binary analysis with pyghidra-lite, and iterative debugging.
+Reverse engineered by examining the Claude Desktop Electron app, binary analysis with pyghidra-lite, and a lot of iterative debugging.
 
-**Contributors:**
-- [@Boermt-die-Buse](https://github.com/Boermt-die-Buse) -- Linux UI fixes: native window frames, titlebar patch, icon extraction
-- [@JaPossert](https://github.com/JaPossert) -- Resources copy fix, Wayland global shortcuts report
-- [@alpham8](https://github.com/alpham8) -- openSUSE compatibility fixes, binary resolution paths, Swift stub method stubs
-- [@matiasandina](https://github.com/matiasandina) -- icon fix and terminal detach proposals (issue #37)
+**Contributors** (see the full list on [GitHub](https://github.com/johnzfitch/claude-cowork-linux/graphs/contributors)):
+- [@Boermt-die-Buse](https://github.com/Boermt-die-Buse) &mdash; Linux UI fixes: native window frames, titlebar patch, icon extraction
+- [@JaPossert](https://github.com/JaPossert) &mdash; resources copy fix, Wayland global shortcuts report
+- [@alpham8](https://github.com/alpham8) &mdash; openSUSE compatibility, binary resolution paths, Swift stub methods
+- [@matiasandina](https://github.com/matiasandina) &mdash; icon fix and terminal detach proposals ([#37](https://github.com/johnzfitch/claude-cowork-linux/issues/37))
+- [@chefboyrdave21](https://github.com/chefboyrdave21) &mdash; root-causing the automount-root refusal behind [#172](https://github.com/johnzfitch/claude-cowork-linux/issues/172) against a real bundle
 
 ---
 
 <div align="center">
 
-**MIT License** · See [LICENSE](LICENSE) for details
+**MIT License** &middot; See [LICENSE](LICENSE) for details
 
 </div>

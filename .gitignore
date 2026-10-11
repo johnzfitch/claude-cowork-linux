@@ -1,125 +1,92 @@
-# Extracted Claude Desktop app (proprietary - do not commit)
-app
+# --- Anthropic's app (proprietary: never commit any part of it) ---
 app/
 app-extracted/
 linux-app-extracted/
+linux-app-extracted.zip
 mnt/
 squashfs-root/
 claude-app-*/
 extracted-mac-claude-desktop-*/
 extracted-mac-claude-desktop-*.zip
-linux-app-extracted.zip
 .asar-cache/
+# Loose copies of bundle files pulled out for inspection. A 976 KB copy of the
+# main-process bundle sat at the repo root from 2026-03 to 2026-10.
+/index.js
+/index.pre.js
+/index.chunk-*.js
 mainView.js
-
-# AppImage and binaries
 *.AppImage
 *.dmg
-swift_addon.node
-
-# Node modules
-node_modules/
-
-# npm
-package-lock.json
-
-# Logs
-*.log
-/tmp/
-
-# Working/investigation files (keep repo clean)
-
-# Audit artifacts
-AUDIT-REPORT.md
-IMPLEMENTATION-GUIDE.md
-code-audit.sql
-docs/frame-fix-wrapper-audit.md
-/archive/
-AGENT_HANDOFF.md
-ARCHITECTURE_MAP.md
-COMPLETE_SYSTEM_MAP.md
-CORPUS_ARCHITECTURE.md
-DEBUG_FINDINGS.md
-FILESYSTEM_MAP.md
-FINAL_REPORT.md
-HANDOFF.md
-HANDOFF_*.md
-INSTALLATION_REPORT.md
-SECURITY_ANALYSIS.md
-SECURITY_FIXES.md
-TEST_RESULTS.md
-
-# AUR package (separate git repo)
-/aur/
-
-# Build artifacts
 *.exe
 *.nupkg
-*.pkg.tar.*
+swift_addon.node
+
+# --- Build output ---
+# AUR / makepkg (the AUR package is its own git repo)
+/aur/
 pkg/
 src/
+*.pkg.tar.*
 claude-cowork-linux/
+# Nix
+result
+result-*
 
-# Debug scripts (not needed for users)
-analyze-logs.sh
-debug-launch.sh
-debug.sh
-test-loader.js
-ipc-handler-setup.js
-scripts/
+# --- Node / Python ---
+node_modules/
+package-lock.json
+__pycache__/
 
-# Old loader variants
-linux-loader-fixed.js
-linux-loader-minimal.js
-linux-loader-traced.js
-linux-loader-updated.js
-linux-loader-v2.js
-
-# Old scripts
-final-fix.sh
-fix-structure.sh
-install-claude-linux.sh
-claude-launcher-fixed.sh
-
-# Internal docs (may contain paths, session IDs, etc.)
-docs/plans/
-docs/logs/
-docs/handoff-*.md
-docs/ARCHITECTURE.md
-ARCHITECTURE.md
-PLAN-*.md
-auth_code_reference.txt
-auth_findings_summary.md
-
-# Tests that depend on local webapp dumps
-tests/node/current-path/webapp_conformance.test.cjs
-
-# Dev artifacts
-AGENTS.md
-HANDOFF*.md
-REVIEW-*.md
+# --- Logs and local run state ---
+*.log
+/tmp/
 server.pid
-server.log
 cowork-logs.txt
 data/
 target/
 local-*
 
-# Local Claude Code config
+# --- Agent and investigation files ---
+# CONTRIBUTING.md: no agent instruction files in the repo.
+AGENTS.md
+CLAUDE.md
 .claude/
 .mcp.json
+.cursorrules
+# Working notes, handoffs and audit dumps (may hold paths or session IDs)
+TASKS.md
+HANDOFF*.md
+AGENT_HANDOFF.md
+PLAN-*.md
+REVIEW-*.md
+*AUDIT*.md
+*_REPORT.md
+*_MAP.md
+*_FINDINGS.md
+SECURITY_ANALYSIS.md
+SECURITY_FIXES.md
+TEST_RESULTS.md
+IMPLEMENTATION-GUIDE.md
+ARCHITECTURE.md
+CORPUS_ARCHITECTURE.md
+code-audit.sql
+auth_code_reference.txt
+auth_findings_summary.md
+/archive/
+/scripts/
+docs/plans/
+docs/logs/
+docs/handoff-*.md
+docs/ARCHITECTURE.md
+docs/frame-fix-wrapper-audit.md
+# Tests that depend on local webapp dumps
+tests/node/current-path/webapp_conformance.test.cjs
 
-# OS files
+# --- OS / editor ---
 .DS_Store
 Thumbs.db
-
-# Editor files
 *.swp
 *.swo
 *~
 .idea/
 .vscode/
-install-oneclick.sh.backup*
-__pycache__/
-FAST-PASS-AUDIT.md
-LONG_AUDIT.md
