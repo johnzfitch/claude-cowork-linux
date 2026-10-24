@@ -419,6 +419,14 @@ The port's portal client (`stubs/cowork/portal_shortcuts.js`) works with any com
 busctl --user introspect org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop | grep GlobalShortcuts
 ```
 
+**In v5.3.0 and earlier, portal shortcuts never bound on any compositor.** The client ran each D-Bus call as a separate `gdbus` process, and xdg-desktop-portal ties a session to the connection that created it, so the session closed as soon as it was made. The symptom is this line in `startup.log`, 10 seconds after launch:
+
+```
+[portal-shortcuts] Session creation failed: Portal response timeout
+```
+
+Later versions keep one connection open for the session. A working registration logs `[portal-shortcuts] Session created:` and `Registered: Ctrl+Alt+Space → <ctrl><alt>space`. If the portal refuses, the shortcut falls back to Electron's own registration and the log says `falling back to Electron`.
+
 </details>
 
 <details>

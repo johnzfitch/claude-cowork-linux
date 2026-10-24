@@ -1913,18 +1913,33 @@ Module.prototype.require = function(id) {
           const origUnregisterAll = module.globalShortcut.unregisterAll.bind(module.globalShortcut);
           const origIsRegistered = module.globalShortcut.isRegistered.bind(module.globalShortcut);
 
+          // Accelerators the portal refused, now held by Electron's own
+          // globalShortcut. With --enable-features=GlobalShortcutsPortal
+          // (launch.sh, PKGBUILD) that is Chromium's portal client, so a
+          // failure here degrades instead of silently binding nothing.
+          const electronHeld = new Set();
           module.globalShortcut.register = function(accelerator, callback) {
-            portal.register(accelerator, callback);
-            return true; // Match Electron's sync return
+            portal.register(accelerator, callback).then((ok) => {
+              if (ok) return;
+              console.warn('[Frame Fix] Portal shortcut failed for', accelerator, '-- falling back to Electron');
+              if (origRegister(accelerator, callback)) electronHeld.add(accelerator);
+            }).catch((e) => {
+              console.warn('[Frame Fix] Portal shortcut error for', accelerator, '--', e.message);
+              if (origRegister(accelerator, callback)) electronHeld.add(accelerator);
+            });
+            return true; // Electron's API is synchronous; the outcome is logged above
           };
           module.globalShortcut.unregister = function(accelerator) {
             portal.unregister(accelerator);
+            if (electronHeld.delete(accelerator)) origUnregister(accelerator);
           };
           module.globalShortcut.unregisterAll = function() {
             portal.unregisterAll();
+            if (electronHeld.size > 0) { electronHeld.clear(); origUnregisterAll(); }
           };
           module.globalShortcut.isRegistered = function(accelerator) {
-            return portal.isRegistered(accelerator);
+            return portal.isRegistered(accelerator)
+              || (electronHeld.has(accelerator) && origIsRegistered(accelerator));
           };
 
           // Clean up on quit
