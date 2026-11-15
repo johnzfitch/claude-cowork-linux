@@ -1095,10 +1095,29 @@ try {
   function wrapFsMethod(obj, name) {
     const orig = obj[name];
     if (typeof orig !== 'function' || obj[name].__coworkSessionsPatched) return;
-    obj[name] = function(p, ...rest) {
+    const wrapped = function(p, ...rest) {
       return orig.call(this, rewritePath(p), ...rest);
     };
-    obj[name].__coworkSessionsPatched = true;
+    // Carry over what Node hangs on some fs functions: realpath.native and
+    // realpathSync.native, exists' util.promisify.custom. A bare wrapper
+    // dropped them, and asar 5.x runs promisify(fs.realpath.native) when its
+    // settings resolver loads: promisify(undefined) throws
+    // ERR_INVALID_ARG_TYPE, the resolver never loads, and the local policy
+    // gate reports "managed settings could not be read" (#205). Function
+    // extras take a path first, so they get the same /sessions/ rewrite.
+    for (const key of Reflect.ownKeys(orig)) {
+      if (key === 'length' || key === 'name' || key === 'prototype') continue;
+      const desc = Object.getOwnPropertyDescriptor(orig, key);
+      if (typeof desc.value === 'function') {
+        const extra = desc.value;
+        desc.value = function(p, ...rest) {
+          return extra.call(this, rewritePath(p), ...rest);
+        };
+      }
+      try { Object.defineProperty(wrapped, key, desc); } catch (_) {}
+    }
+    wrapped.__coworkSessionsPatched = true;
+    obj[name] = wrapped;
   }
 
   const PATH_METHODS = [

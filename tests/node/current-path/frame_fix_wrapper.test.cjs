@@ -613,3 +613,56 @@ test('the require hook does not replace an existing systemPreferences.registerDe
     /if \(typeof module\.systemPreferences\.registerDefaults !== 'function'\) \{\s*module\.systemPreferences\.registerDefaults\s*=/,
     'the hook assignment must be guarded by a typeof check');
 });
+
+// #205: asar 5.x promisifies fs.realpath.native when its settings resolver
+// loads. The /sessions/ fs redirect replaced fs.realpath with a bare wrapper,
+// so .native was undefined, promisify threw ERR_INVALID_ARG_TYPE, and the
+// local policy gate blocked every local Code session as "managed settings
+// could not be read".
+function loadSessionsFsPatch(fakeFs) {
+  const wrapperPath = path.join(__dirname, '..', '..', '..', 'stubs', 'frame-fix', 'frame-fix-wrapper.js');
+  const source = fs.readFileSync(wrapperPath, 'utf8');
+  const start = source.indexOf('(function patchFsSessionsPaths() {');
+  const marker = source.indexOf("console.log('[Sessions] fs path redirect", start);
+  const end = source.indexOf('})();', marker) + '})();'.length;
+  if (start === -1 || marker === -1 || end <= start) {
+    throw new Error('Failed to locate patchFsSessionsPaths in ' + wrapperPath);
+  }
+  const context = {
+    fs: fakeFs,
+    console: { log: () => {} },
+    global: { __coworkDirs: { claudeSessionsBase: '/base' } },
+    process,
+    require: (request) => (request === 'fs/promises' ? {} : require(request)),
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context, { filename: path.basename(wrapperPath) });
+  return fakeFs;
+}
+
+test('the /sessions/ fs redirect keeps realpath.native and exists promisify.custom (#205)', async () => {
+  const util = require('util');
+  const seen = [];
+  const realpath = (p, cb) => cb(null, p);
+  realpath.native = (p, cb) => { seen.push(['realpath.native', p]); cb(null, p); };
+  const realpathSync = (p) => p;
+  realpathSync.native = (p) => { seen.push(['realpathSync.native', p]); return p; };
+  const exists = (p, cb) => cb(true);
+  exists[util.promisify.custom] = async (p) => { seen.push(['exists.custom', p]); return true; };
+  const fakeFs = loadSessionsFsPatch({ realpath, realpathSync, exists });
+
+  assert.equal(typeof fakeFs.realpath.native, 'function');
+  assert.equal(typeof fakeFs.realpathSync.native, 'function');
+  // The asar 5.x load-time call: must not throw.
+  const nativeAsync = util.promisify(fakeFs.realpath.native);
+  assert.equal(await nativeAsync('/sessions/a/x'), '/base/a/x');
+  assert.equal(fakeFs.realpathSync.native('/sessions/a/y'), '/base/a/y');
+  assert.equal(await util.promisify(fakeFs.exists)('/sessions/a/z'), true);
+  assert.deepEqual(seen, [
+    ['realpath.native', '/base/a/x'],
+    ['realpathSync.native', '/base/a/y'],
+    ['exists.custom', '/base/a/z'],
+  ]);
+  // Paths outside /sessions/ pass through untouched.
+  assert.equal(fakeFs.realpathSync.native('/etc/claude-code'), '/etc/claude-code');
+});
