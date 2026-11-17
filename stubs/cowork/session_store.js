@@ -373,6 +373,13 @@ class SessionStore {
     // on every IPC round-trip. TTL keeps them fresh without manual invalidation.
     this._normalizedCache = new Map();   // sessionId -> { ts, data }
     this._sessionInfoCache = new Map();  // sessionId -> { ts, info }
+    // processName -> metadataPath, for spawns that carry no session id
+    // (vm.spawn ids are `oneshot-<uuid>`). Metadata files embed the system
+    // prompt (~1 MB each), so each file is parsed once; a miss only parses
+    // files added since the last scan. A name held by two sessions maps to
+    // null: a wrong session is worse than none.
+    this._processNameIndex = new Map();
+    this._processNameIndexedPaths = new Set();
   }
 
   _getCached(cache, key, ttlMs) {
@@ -463,6 +470,51 @@ class SessionStore {
     return this.getSessionInfoByMetadataPath(deriveMetadataPathFromConfigDir(configDirPath));
   }
 
+  findMetadataPathByProcessName(processName) {
+    if (typeof processName !== 'string' || !processName.trim()) {
+      return null;
+    }
+    const lookup = () => {
+      const metadataPath = this._processNameIndex.get(processName);
+      return metadataPath && fs.existsSync(metadataPath) ? metadataPath : null;
+    };
+    if (this._processNameIndex.has(processName)) {
+      const hit = lookup();
+      if (hit || this._processNameIndex.get(processName) === null) {
+        return hit;
+      }
+    }
+
+    for (const metadataPath of listLocalSessionMetadataFiles(this._localAgentRoot)) {
+      if (this._processNameIndexedPaths.has(metadataPath)) {
+        continue;
+      }
+      let sessionData;
+      try {
+        sessionData = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      } catch (_) {
+        continue;
+      }
+      const names = new Set(
+        [sessionData && sessionData.processName, sessionData && sessionData.vmProcessName]
+          .filter((name) => typeof name === 'string' && name.trim())
+      );
+      if (names.size === 0) {
+        continue; // not named yet: look again on a later miss
+      }
+      this._processNameIndexedPaths.add(metadataPath);
+      for (const name of names) {
+        const known = this._processNameIndex.get(name);
+        this._processNameIndex.set(name, known === undefined || known === metadataPath ? metadataPath : null);
+      }
+    }
+    return lookup();
+  }
+
+  getSessionInfoByProcessName(processName) {
+    return this.getSessionInfoByMetadataPath(this.findMetadataPathByProcessName(processName));
+  }
+
   observeSessionRead(sessionData) {
     const normalizedSessionData = this.normalizeSessionRecord(sessionData);
     if (!normalizedSessionData || typeof normalizedSessionData !== 'object' || Array.isArray(normalizedSessionData)) {
@@ -548,14 +600,20 @@ class SessionStore {
       return sessionId;
     }
 
-    const requestedConversationCount = requestedSessionInfo.transcriptCandidate
-      ? requestedSessionInfo.transcriptCandidate.conversationEntryCount || 0
-      : 0;
+    // Only an empty duplicate is rerouted: a session whose transcript exists
+    // but holds no conversation yet. Two real sessions on the same folder are
+    // both live conversations, and rerouting between them sends a prompt to
+    // the chat the UI last refreshed instead of the one the user typed in.
+    // A session with no transcript at all is not rerouted either: that is a
+    // new chat before its first write, not a duplicate.
+    const requestedTranscript = requestedSessionInfo.transcriptCandidate;
+    if (!requestedTranscript || (requestedTranscript.conversationEntryCount || 0) > 0) {
+      return sessionId;
+    }
     const activeConversationCount = activeSessionInfo.transcriptCandidate
       ? activeSessionInfo.transcriptCandidate.conversationEntryCount || 0
       : 0;
-
-    if (activeConversationCount < requestedConversationCount) {
+    if (activeConversationCount === 0) {
       return sessionId;
     }
 
