@@ -257,3 +257,99 @@ test('resolveMutationSessionId prefers the session that was just opened for the 
   assert.equal(store.resolveMutationSessionId(duplicateSessionId), activeSessionId);
   assert.equal(store.resolveMutationSessionId(activeSessionId), activeSessionId);
 });
+
+// --- cross-session routing (two live sessions on one folder) -------------
+
+function writeNamedSession(localAgentRoot, sessionId, fields, turns) {
+  const metadataPath = writeSessionFixture(localAgentRoot, sessionId, 'user/org');
+  const folder = fields.userSelectedFolders[0];
+  fs.writeFileSync(metadataPath, JSON.stringify({
+    sessionId,
+    cliSessionId: sessionId + '-cli',
+    cwd: '/sessions/' + fields.processName,
+    isArchived: false,
+    ...fields,
+  }, null, 2), 'utf8');
+  if (turns !== null) {
+    const lines = [];
+    for (let i = 0; i < turns; i += 1) {
+      lines.push('{"type":"user","message":{"role":"user","content":"q' + i + '"}}');
+      lines.push('{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"a"}]}}');
+    }
+    if (lines.length === 0) {
+      lines.push('{"type":"queue-operation","operation":"enqueue"}');
+    }
+    writeTranscript(metadataPath.replace(/\.json$/, ''), sanitizeTranscriptProjectKey(folder), sessionId + '-cli', lines);
+  }
+  return metadataPath;
+}
+
+test('resolveMutationSessionId never reroutes between two live sessions on the same folder', async (t) => {
+  const localAgentRoot = createTempRoot(t);
+  const folder = '/home/zack/Projects/Shared';
+  writeNamedSession(localAgentRoot, 'local_A', { processName: 'proc-a', userSelectedFolders: [folder] }, 10);
+  writeNamedSession(localAgentRoot, 'local_B', { processName: 'proc-b', userSelectedFolders: [folder] }, 12);
+
+  const store = createSessionStore({ localAgentRoot });
+  store.observeSessionId('local_A'); // user focuses A
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  store.observeSessionRead(store.getSessionInfo('local_B').sessionData); // UI refreshes B
+
+  // Before the fix both resolved to local_B: the prompt typed in A ran in B.
+  assert.equal(store.resolveMutationSessionId('local_A'), 'local_A');
+  assert.equal(store.resolveMutationSessionId('local_B'), 'local_B');
+});
+
+test('resolveMutationSessionId does not reroute a new session that has no transcript yet', async (t) => {
+  const localAgentRoot = createTempRoot(t);
+  const folder = '/home/zack/Projects/Shared';
+  writeNamedSession(localAgentRoot, 'local_new', { processName: 'proc-new', userSelectedFolders: [folder] }, null);
+  writeNamedSession(localAgentRoot, 'local_live', { processName: 'proc-live', userSelectedFolders: [folder] }, 3);
+
+  const store = createSessionStore({ localAgentRoot });
+  store.observeSessionId('local_new');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  store.observeSessionId('local_live');
+
+  assert.equal(store.resolveMutationSessionId('local_new'), 'local_new');
+});
+
+test('getSessionInfoByProcessName finds the session that owns a vm process name', (t) => {
+  const localAgentRoot = createTempRoot(t);
+  writeNamedSession(localAgentRoot, 'local_A', {
+    processName: 'beautiful-epic-sagan',
+    vmProcessName: 'beautiful-epic-sagan',
+    userSelectedFolders: ['/home/zack/Projects/HoP'],
+  }, 1);
+  writeNamedSession(localAgentRoot, 'local_B', {
+    processName: 'keen-tender-hopper',
+    userSelectedFolders: ['/home/zack/Projects/TPMS'],
+  }, 1);
+
+  const store = createSessionStore({ localAgentRoot });
+  assert.equal(store.getSessionInfoByProcessName('beautiful-epic-sagan').preferredRoot, '/home/zack/Projects/HoP');
+  assert.equal(store.getSessionInfoByProcessName('keen-tender-hopper').preferredRoot, '/home/zack/Projects/TPMS');
+  assert.equal(store.getSessionInfoByProcessName('no-such-name'), null);
+  assert.equal(store.getSessionInfoByProcessName(''), null);
+});
+
+test('getSessionInfoByProcessName picks up a session created after the first scan', async (t) => {
+  const localAgentRoot = createTempRoot(t);
+  writeNamedSession(localAgentRoot, 'local_A', { processName: 'first-name', userSelectedFolders: ['/home/zack/A'] }, 1);
+  const store = createSessionStore({ localAgentRoot });
+  assert.ok(store.getSessionInfoByProcessName('first-name'));
+
+  writeNamedSession(localAgentRoot, 'local_C', { processName: 'later-name', userSelectedFolders: ['/home/zack/C'] }, 1);
+  // listLocalSessionMetadataFiles caches the directory walk for 5 s.
+  await new Promise((resolve) => setTimeout(resolve, 5100));
+  assert.equal(store.getSessionInfoByProcessName('later-name').preferredRoot, '/home/zack/C');
+});
+
+test('getSessionInfoByProcessName refuses a name that two sessions share', (t) => {
+  const localAgentRoot = createTempRoot(t);
+  writeNamedSession(localAgentRoot, 'local_A', { processName: 'dup-name', userSelectedFolders: ['/home/zack/A'] }, 1);
+  writeNamedSession(localAgentRoot, 'local_B', { processName: 'dup-name', userSelectedFolders: ['/home/zack/B'] }, 1);
+
+  const store = createSessionStore({ localAgentRoot });
+  assert.equal(store.getSessionInfoByProcessName('dup-name'), null);
+});

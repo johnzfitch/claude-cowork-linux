@@ -55,13 +55,15 @@ function isLocalSessionMutationChannel(channel) {
   if (!isLocalSessionChannel) {
     return false;
   }
+  // Channels whose session id may be rerouted from an empty duplicate to the
+  // live session on the same folder (SessionStore.resolveMutationSessionId).
+  // stop*, archive and share are deliberately absent: rerouting them acts on
+  // a session the user did not pick, and `stop` as a substring also caught
+  // stopTask, stopFamily and stopShellPty.
   return normalizedChannel.includes('sendmessage') ||
     normalizedChannel.includes('setmodel') ||
     normalizedChannel.includes('updatesession') ||
-    normalizedChannel.includes('stop') ||
-    normalizedChannel.includes('archive') ||
     normalizedChannel.includes('openoutputsdir') ||
-    normalizedChannel.includes('sharesession') ||
     normalizedChannel.includes('setmcpservers') ||
     normalizedChannel.includes('mcpcalltool') ||
     normalizedChannel.includes('mcpreadresource') ||
@@ -371,6 +373,7 @@ class AsarAdapter {
       return args;
     }
 
+    console.warn('[cowork-reroute] ' + String(channel).split('_$_').pop() + ': ' + sessionId + ' -> ' + routedSessionId);
     return joinIpcArgs(eventArg, [routedSessionId, ...rest]);
   }
 

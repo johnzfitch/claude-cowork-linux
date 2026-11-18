@@ -919,3 +919,54 @@ test('normalizeLiveEvent handles transcript_loaded with metadata extraction', ()
   assert.strictEqual(result[0].messages[0].type, 'assistant');
   assert.ok(result[0].coworkCompatibilityState, 'should carry accumulated metadata');
 });
+
+// --- workspace bash spawns: cwd comes from the spawning session ----------
+
+function writeCoworkSession(localAgentRoot, sessionId, processName, folder) {
+  const metadataDir = path.join(localAgentRoot, 'user', 'org');
+  fs.mkdirSync(metadataDir, { recursive: true });
+  fs.writeFileSync(path.join(metadataDir, sessionId + '.json'), JSON.stringify({
+    sessionId,
+    processName,
+    vmProcessName: processName,
+    cwd: '/sessions/' + processName,
+    userSelectedFolders: [folder],
+  }, null, 2), 'utf8');
+}
+
+function spawnOneshot(orchestrator, processName) {
+  return orchestrator.prepareVmSpawn({
+    processId: 'oneshot-4f5c9d92-3040-4f7c-87dd-99b8ff1f511a',
+    processName,
+    command: 'bash',
+    args: ['-c', 'git status'],
+    envVars: { TZ: 'UTC' },
+    additionalMounts: null,
+    sharedCwdPath: false,
+  });
+}
+
+test('prepareVmSpawn takes a oneshot cwd from the spawning session, not the active one', (t) => {
+  const localAgentRoot = createTempDir(t);
+  writeCoworkSession(localAgentRoot, 'local_hop', 'beautiful-epic-sagan', '/home/zack/Projects/HoP Companion');
+  writeCoworkSession(localAgentRoot, 'local_tpms', 'keen-tender-hopper', '/home/zack/Projects/TPMS Roadmap');
+  const sessionStore = createSessionStore({ localAgentRoot });
+  sessionStore.observeSessionId('local_tpms'); // the UI last touched the other session
+
+  const result = spawnOneshot(createOrchestrator({ sessionStore }), 'beautiful-epic-sagan');
+
+  assert.equal(result.success, true);
+  assert.equal(result.sharedCwdPath, '/home/zack/Projects/HoP Companion');
+});
+
+test('prepareVmSpawn leaves a oneshot cwd unset rather than borrow the active session folder', (t) => {
+  const localAgentRoot = createTempDir(t);
+  writeCoworkSession(localAgentRoot, 'local_tpms', 'keen-tender-hopper', '/home/zack/Projects/TPMS Roadmap');
+  const sessionStore = createSessionStore({ localAgentRoot });
+  sessionStore.observeSessionId('local_tpms');
+
+  const result = spawnOneshot(createOrchestrator({ sessionStore }), 'unknown-process-name');
+
+  assert.equal(result.success, true);
+  assert.notEqual(result.sharedCwdPath, '/home/zack/Projects/TPMS Roadmap');
+});

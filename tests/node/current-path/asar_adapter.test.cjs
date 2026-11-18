@@ -46,6 +46,18 @@ test('isLocalSessionMutationChannel matches local session mutating channels', ()
   assert.equal(isLocalSessionMutationChannel('$eipc_message$_cowork_$_claude.web_$_LocalSessions_$_getAll'), false);
 });
 
+test('isLocalSessionMutationChannel never reroutes stop, archive or share', () => {
+  for (const method of ['stop', 'stopTask', 'stopFamily', 'stopShellPty', 'archive', 'shareSession']) {
+    for (const iface of ['LocalAgentModeSessions', 'LocalSessions']) {
+      assert.equal(
+        isLocalSessionMutationChannel('$eipc_message$_cowork_$_claude.web_$_' + iface + '_$_' + method),
+        false,
+        iface + '.' + method,
+      );
+    }
+  }
+});
+
 test('isFileSystemPathRewriteChannel matches bounded FileSystem channels', () => {
   assert.equal(
     isFileSystemPathRewriteChannel('$eipc_message$_x_$_claude.web_$_FileSystem_$_readLocalFile'),
@@ -164,9 +176,18 @@ test('wrapHandler rewrites mutating local-session calls to the canonical active 
     },
   );
 
-  const result = await handler('local_duplicate', 'hello');
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(message);
+  let result;
+  try {
+    result = await handler('local_duplicate', 'hello');
+  } finally {
+    console.warn = originalWarn;
+  }
   assert.deepEqual(seenSessionIds, ['local_active']);
   assert.equal(result.sessionId, 'local_active');
+  assert.deepEqual(warnings, ['[cowork-reroute] sendMessage: local_duplicate -> local_active']);
 });
 
 test('rewriteAliasedFilePath remaps stale historical repo paths when target exists', (t) => {

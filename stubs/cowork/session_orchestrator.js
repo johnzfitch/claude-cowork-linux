@@ -489,23 +489,36 @@ class SessionOrchestrator {
     } = context || {};
 
     // Fix: asar passes sharedCwdPath=false (boolean) instead of a path string.
-    // When falsy, recover from session metadata's userSelectedFolders so the CLI
-    // gets the correct cwd and project key persists across restarts.
+    // When falsy, recover from the SPAWNING session's metadata
+    // (userSelectedFolders) so the CLI gets the correct cwd and project key
+    // persists across restarts. Workspace bash spawns have ids of the form
+    // `oneshot-<uuid>`, so the session is found by processName. Never fall
+    // back to whichever session the UI touched last: with two sessions open,
+    // that ran one session's commands in the other's project folder.
     const trace = this._deps.trace || (() => {});
     let sharedCwdPath = rawSharedCwdPath;
     if (!sharedCwdPath || typeof sharedCwdPath !== 'string') {
       const sessionStore = this._deps.sessionStore;
       if (sessionStore) {
-        const activeInfo = sessionStore.getActiveSessionInfo();
-        if (activeInfo && activeInfo.preferredRoot) {
-          sharedCwdPath = activeInfo.preferredRoot;
-          trace('[cwd-fix] Recovered sharedCwdPath from active session: ' + sharedCwdPath);
-        } else if (typeof processId === 'string' && processId.startsWith('local_')) {
-          const sessionInfo = sessionStore.getSessionInfo(processId);
-          if (sessionInfo && sessionInfo.preferredRoot) {
-            sharedCwdPath = sessionInfo.preferredRoot;
-            trace('[cwd-fix] Recovered sharedCwdPath from session metadata: ' + sharedCwdPath);
-          }
+        let sessionInfo = null;
+        let source = null;
+        if (typeof processId === 'string' && processId.startsWith('local_')) {
+          sessionInfo = sessionStore.getSessionInfo(processId);
+          source = 'session id';
+        }
+        if (
+          !(sessionInfo && sessionInfo.preferredRoot) &&
+          typeof processName === 'string' &&
+          typeof sessionStore.getSessionInfoByProcessName === 'function'
+        ) {
+          sessionInfo = sessionStore.getSessionInfoByProcessName(processName);
+          source = 'process name';
+        }
+        if (sessionInfo && sessionInfo.preferredRoot) {
+          sharedCwdPath = sessionInfo.preferredRoot;
+          trace('[cwd-fix] Recovered sharedCwdPath from session metadata (' + source + '): ' + sharedCwdPath);
+        } else {
+          trace('[cwd-fix] No session metadata for process ' + processId + ' (' + processName + '); leaving sharedCwdPath unset');
         }
       }
     }
