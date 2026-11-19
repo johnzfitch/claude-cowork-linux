@@ -287,10 +287,20 @@ class CurlClientRequest extends EventEmitter {
     this.emit('abort');
     const response = this._response;
     if (response && !response.readableEnded && !response.destroyed) {
+      this._unpipe();
       response.emit('aborted');
       destroyResponse(response, new Error('Request aborted'));
     }
     this.emit('close');
+  }
+
+  // Detach curl's stdout before ending the response: pipe() leaves its own
+  // 'error' listener on the response, which destroyResponse would otherwise
+  // count as a consumer, and which re-throws when nobody else listens.
+  _unpipe() {
+    if (this._child && this._child.stdout && this._response) {
+      this._child.stdout.unpipe(this._response);
+    }
   }
 
   _kill() {
@@ -304,6 +314,7 @@ class CurlClientRequest extends EventEmitter {
     this._finished = true;
     this._kill();
     if (this._response) {
+      this._unpipe();
       destroyResponse(this._response, error);
     } else {
       this._onCurlFailure(error);
@@ -347,6 +358,16 @@ class CurlClientRequest extends EventEmitter {
       if (parsed.rest.length) response.write(parsed.rest);
       child.stdout.pipe(response, { end: false });
       this.emit('response', response);
+      // A body nobody reads would fill the pipe and leave curl blocked on
+      // stdout forever. The downloader starts reading a 200/206 inside its
+      // 'response' handler and never reads a 404 or 416, so whatever is
+      // still unread a turn later is drained, as Node's http client does
+      // for an unconsumed response.
+      setImmediate(() => {
+        if (response.destroyed || response.readableFlowing !== null) return;
+        if (response.listenerCount('data') > 0 || response.listenerCount('readable') > 0) return;
+        response.resume();
+      });
     };
     child.stdout.on('data', onHeadData);
     child.stderr.on('data', (chunk) => {

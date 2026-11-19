@@ -288,6 +288,43 @@ test('a failed transfer of an unread response does not throw', { skip: !REAL_CUR
   assert.equal(res.destroyed, true);
 });
 
+test('abort() of a response nobody reads closes it without throwing', { skip: !REAL_CURL && 'curl not installed' }, async (t) => {
+  // pipe() leaves its own 'error' listener on the response; it must not be
+  // mistaken for a consumer, or the abort error is re-thrown as uncaught.
+  const base = await startServer(t, (req, res) => {
+    res.writeHead(404, { 'Content-Length': '100000' });
+    res.write('partial');
+  });
+  const uncaught = [];
+  const onUncaught = (error) => uncaught.push(error);
+  process.prependListener('uncaughtException', onUncaught);
+  t.after(() => process.removeListener('uncaughtException', onUncaught));
+  const req = localRequest(base + '/missing');
+  const responsePromise = once(req, 'response');
+  req.end();
+  const res = await responsePromise;
+  const closed = once(res, 'close');
+  req.abort();
+  await closed;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(uncaught.map((e) => e.message), []);
+});
+
+test('a large response nobody reads is drained so curl can exit', { skip: !REAL_CURL && 'curl not installed' }, async (t) => {
+  const big = Buffer.alloc(2 * 1048576, 1);
+  const base = await startServer(t, (req, res) => {
+    res.writeHead(404, { 'Content-Length': String(big.length) });
+    res.end(big);
+  });
+  const req = localRequest(base + '/missing');
+  const responsePromise = once(req, 'response');
+  req.end();
+  const res = await responsePromise; // left unread, as the downloader does
+  assert.equal(res.statusCode, 404);
+  await once(req, 'close');
+  assert.equal(req._child.exitCode, 0, 'curl finished instead of blocking on a full pipe');
+});
+
 test('abort() mid-transfer kills curl and errors the response', { skip: !REAL_CURL && 'curl not installed' }, async (t) => {
   let serverSocketClosed;
   const closed = new Promise((resolve) => { serverSocketClosed = resolve; });
