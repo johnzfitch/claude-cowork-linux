@@ -514,6 +514,8 @@ The install directory is itself a git checkout, and `launch.sh` re-syncs `stubs/
 <dd>Extra swift-stub debug output.</dd>
 <dt><code>CLAUDE_LOG_DIR</code></dt>
 <dd>Log directory; default <code>~/.local/state/claude-cowork/logs</code>.</dd>
+<dt><code>CLAUDE_COWORK_CURL_DOWNLOADS=0</code></dt>
+<dd>Let Claude Desktop download the Claude Code binary with Electron's own network stack again. By default the launcher hands those downloads (<code>downloads.claude.ai/claude-code-releases/</code> only) to <code>curl</code>, because Electron's stack stalls on some systems (#204). Claude Desktop still checks the file's checksum either way. Look for <code>[curl-download]</code> lines in <code>startup.log</code>.</dd>
 </dl>
 
 ```bash

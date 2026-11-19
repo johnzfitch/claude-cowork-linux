@@ -2058,10 +2058,24 @@ Module.prototype.require = function(id) {
   // On Linux, wrap the electron module in a Proxy to intercept the
   // non-configurable BrowserWindow getter (see native titlebar patch above).
   if (id === 'electron' && REAL_PLATFORM === 'linux' && global.__coworkPatchedBrowserWindow) {
+    // Claude Code release downloads go through curl instead of net.request,
+    // which stalls with no data on system Electron 44 (#204). See
+    // cowork/curl_download.js for the scope. Resolved lazily: reading
+    // module.net here would load Electron's net before the asar asks for it.
+    if (!global.__coworkNetRouter) {
+      try {
+        const { createNetRouter } = require('./cowork/curl_download.js');
+        global.__coworkNetRouter = createNetRouter({ log: (msg) => console.log(msg) });
+      } catch (e) {
+        console.warn('[curl-download] unavailable:', e.message);
+        global.__coworkNetRouter = (realNet) => realNet;
+      }
+    }
     return new Proxy(module, {
       get(target, prop) {
         if (prop === 'BrowserWindow') return global.__coworkPatchedBrowserWindow;
         if (prop === 'Tray' && global.__coworkPatchedTray) return global.__coworkPatchedTray;
+        if (prop === 'net') return global.__coworkNetRouter(target.net);
         return target[prop];
       },
       set(target, prop, value) {
